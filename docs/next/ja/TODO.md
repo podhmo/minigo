@@ -149,7 +149,7 @@
 - [ ] **P4-2 スロット分類**: ストア、selector の読み出し、レシーバを分類の対象にする。Plain なローカルでは `OpNewLocal`/`OpRenewVar` がその場に書き込む。特殊形式の呼び出し地点から見えるローカルは Boxed にする。完了条件: escape する chunk が約 10% になる。[references/slot-classification.md](./references/slot-classification.md)
   - [x] **P4-2a 分類を記録する**: ストア、読み出し、アドレス取得、捕捉、メソッドのレシーバ、特殊形式からの参照を分類して計測する。M4 の事実を使い、レシーバが不明な場合は保守的に Boxed とする。
   - [x] **P4-2b Plain ローカルの初期化と書き込み**: P4-2a と P4-1 のあと、`OpNewLocal` / `OpRenewVar` を Plain スロットの直接書き込みに切り替える。ループ変数・多重代入・名前付き戻り値を確認する。
-  - [ ] **P4-2c selector・レシーバと特殊形式**: P4-2b のあと、値の読み出しとアドレスが必要な経路を分ける。ポインタレシーバ、closure、Quoted Go が参照するローカルの同一性を確認し、escape 率を同じケース集合で測る。
+  - [x] **P4-2c selector・レシーバと特殊形式**: P4-2b のあと、値の読み出しとアドレスが必要な経路を分ける。ポインタレシーバ、closure、Quoted Go が参照するローカルの同一性を確認し、escape 率を同じケース集合で測る。
 - [ ] **P4-3 goroutine ごとの連続スタック**: frame を `(base, sp)` の窓にし、引数はその場で渡す。
   - [ ] **P4-3a frame を連続スタックの窓にする**: P4-1/2 のあと、goroutine ごとに `(base, sp)` を使う。ネストした呼び出し、スタックの拡張、panic/recover 前後の値をテストする。
   - [ ] **P4-3b 引数をスタック上で受け渡す**: P4-3a のあと、通常呼び出しから切り替える。可変長引数、defer、host callback を個別に移し、既存の結果と割り当て数を測る。

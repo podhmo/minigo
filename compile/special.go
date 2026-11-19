@@ -75,7 +75,7 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 			q.Locals[name] = b.slot
 			// specialCtx.Eval lends the frame's cells to the eval — every
 			// snapshotted slot escapes.
-			c.fs.box(b.slot)
+			c.fs.box(b.slot, "special")
 		}
 	}
 	for name, i := range c.fs.upmap {

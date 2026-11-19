@@ -51,5 +51,11 @@ func ChunksBoxedAny() int64   { return 0 }
 func SlotsLocal() int64       { return 0 }
 func SlotsBoxed() int64       { return 0 }
 
+// NoteBoxReason is a no-op without the spike tag.
+func NoteBoxReason(why string) {}
+
+// BoxReasons reports the box-mark attribution; empty without the tag.
+func BoxReasons() map[string]int64 { return nil }
+
 // Reset zeroes every counter.
 func Reset() {}

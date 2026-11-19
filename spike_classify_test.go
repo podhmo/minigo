@@ -36,4 +36,7 @@ func TestSpikeSlotClassification(t *testing.T) {
 	t.Logf("local slots: %d, boxed: %d (%.1f%%)",
 		locals, boxed, 100*float64(boxed)/float64(max(locals, 1)))
 	t.Logf("run-time escape checks: %d", spike.ChunksScanned())
+	for why, n := range spike.BoxReasons() {
+		t.Logf("box[%s]: %d", why, n)
+	}
 }

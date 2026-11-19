@@ -12,6 +12,7 @@
 package compile
 
 import (
+	"fmt"
 	"go/ast"
 	"go/constant"
 	"go/token"
@@ -23,6 +24,7 @@ import (
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/internal/source"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -998,7 +1000,15 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		}
 		return opTyp{}
 	case *ast.IndexExpr, *ast.IndexListExpr:
-		// generic instantiation: the result type mentions type params.
+		// an index access on a func-typed container — `fs[0]()`,
+		// `x.f()` — answers its declared signature through the
+		// operand's static type; a generic instantiation's FuncType
+		// spells type params that funcTypeResultOpTyp rejects.
+		if t := c.staticOpTyp(x.Fun); t.te != nil {
+			if ft, ok := ast.Unparen(t.te).(*ast.FuncType); ok {
+				return c.funcTypeResultOpTyp(ft, t.teFile)
+			}
+		}
 		return opTyp{}
 	}
 	return opTyp{}
@@ -1101,6 +1111,14 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) (*ast.FuncType, *syntax.File) 
 		// `p := S{F: func() int{…}}; p.F()` has a declared signature.
 		if ft, ok := ast.Unparen(c.structFieldTypExpr(base.te, f.Sel.Name)).(*ast.FuncType); ok {
 			return ft, c.typSpecFile(base.te)
+		}
+	default:
+		// a non-decl callee — `fs[0]()`, `g()()` — answers its declared
+		// signature through the operand's static type.
+		if t := c.staticOpTyp(x.Fun); t.te != nil {
+			if ft, ok := ast.Unparen(t.te).(*ast.FuncType); ok {
+				return ft, t.teFile
+			}
 		}
 	}
 	return nil, nil
@@ -2064,6 +2082,13 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 	if te != nil {
 		c.fs.noteDeclTyp(name, c.declTypCanon(te), teFile)
 		return
+	}
+	if !isConst {
+		shape := fmt.Sprintf("%T", rhs)
+		if ce, ok := rhs.(*ast.CallExpr); ok {
+			shape = fmt.Sprintf("call:%T", ast.Unparen(ce.Fun))
+		}
+		spike.NoteBoxReason("bindmiss:" + shape)
 	}
 	if isConst {
 		c.fs.noteUntypedConst(name, nil)

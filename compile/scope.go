@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -295,10 +296,15 @@ func (s *fscope) lookupLocal(name string) (int, bool) {
 	return 0, false
 }
 
-// box marks a local slot of this function as escaping its frame.
-func (s *fscope) box(slot int) {
+// box marks a local slot of this function as escaping its frame; why
+// attributes the mark for spike measurement ("ref", "fieldref",
+// "select", "capture", "special").
+func (s *fscope) box(slot int, why string) {
 	if s.boxed == nil {
 		s.boxed = map[int]bool{}
+	}
+	if !s.boxed[slot] {
+		spike.NoteBoxReason(why)
 	}
 	s.boxed[slot] = true
 }
@@ -309,11 +315,11 @@ func (s *fscope) box(slot int) {
 // nothing; a name the inner scopes only reach through upvals still
 // finds its declaring scope's binding here, so an `&x` on an upvalue
 // boxes the owner's slot directly.
-func (s *fscope) boxName(name string) {
+func (s *fscope) boxName(name, why string) {
 	for cur := s; cur != nil; cur = cur.parent {
 		for i := len(cur.blocks) - 1; i >= 0; i-- {
 			if b, ok := cur.blocks[i][name]; ok {
-				cur.box(b.slot)
+				cur.box(b.slot, why)
 				return
 			}
 		}
@@ -376,7 +382,7 @@ func (s *fscope) capture(name string) bool {
 	if !fromUpval {
 		// the captured var's cell moves into this closure's upvalue
 		// table — it outlives the parent's frame.
-		s.parent.box(idx)
+		s.parent.box(idx, "capture")
 	}
 	s.upvals = append(s.upvals, bytecode.UpvalDesc{FromParentUpval: fromUpval, Index: idx})
 	s.upmap[name] = len(s.upvals) - 1

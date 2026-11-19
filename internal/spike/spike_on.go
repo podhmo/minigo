@@ -2,7 +2,10 @@
 
 package spike
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 var (
 	compileDepth        atomic.Int64
@@ -14,6 +17,7 @@ var (
 	chunksBoxedAny      atomic.Int64
 	slotsLocal          atomic.Int64
 	slotsBoxed          atomic.Int64
+	boxReasons          sync.Map // why -> *atomic.Int64
 )
 
 func EnterCompile() { compileDepth.Add(1) }
@@ -57,6 +61,24 @@ func NoteChunkClassified(boxed []bool) {
 	slotsBoxed.Add(boxedN)
 }
 
+// NoteBoxReason attributes one slot-box mark to why — the compile-time
+// classification source ("ref", "fieldref", "select", "capture",
+// "special"). The distribution tells P4-2c where the escape gap lives.
+func NoteBoxReason(why string) {
+	v, _ := boxReasons.LoadOrStore(why, &atomic.Int64{})
+	v.(*atomic.Int64).Add(1)
+}
+
+// BoxReasons returns a snapshot of the per-reason box-mark counts.
+func BoxReasons() map[string]int64 {
+	out := map[string]int64{}
+	boxReasons.Range(func(k, v any) bool {
+		out[k.(string)] = v.(*atomic.Int64).Load()
+		return true
+	})
+	return out
+}
+
 func CompileBuilds() int64     { return buildsDuringCompile.Load() }
 func InitDuringCompile() int64 { return initDuringCompile.Load() }
 func ChunksScanned() int64     { return chunksScanned.Load() }
@@ -76,4 +98,8 @@ func Reset() {
 	chunksBoxedAny.Store(0)
 	slotsLocal.Store(0)
 	slotsBoxed.Store(0)
+	boxReasons.Range(func(k, _ any) bool {
+		boxReasons.Delete(k)
+		return true
+	})
 }
