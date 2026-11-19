@@ -350,7 +350,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 		c.expr(st.Rhs[0])
 		c.emit(bytecode.OpSwap, 0, 0, target.Pos())
 		c.emit(bytecode.OpDup, 0, 0, target.Pos())
-		c.emit(bytecode.OpDeref, 0, 0, target.Pos())
+		c.emitDerefSite(target.Pos())
 		c.emit(bytecode.OpRot3, 0, 0, target.Pos())
 		c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
 		c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())

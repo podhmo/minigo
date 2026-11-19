@@ -331,7 +331,7 @@ func (v *VM) loop(f *frame) {
 				// a nil pointer still panics and host/promoted fields
 				// resolve like a plain `x.f` read (FieldRef.Get only
 				// knows plain struct storage).
-				f.push(v.selectMember(f, fr.Base, fr.Name))
+				f.push(v.selectMember(f, fr.Base, fr.Name, v.selSite(f, ins)))
 			} else if td, ok := x.(*runtime.TypeDef); ok {
 				// `(*T)` in a method-expression position evaluates to the
 				// pointer typedef so selectMember can bind pointer methods.
