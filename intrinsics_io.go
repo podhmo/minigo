@@ -5,6 +5,7 @@ import (
 	"go/constant"
 	"io"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -306,7 +307,7 @@ func readResult64(c runtime.MemberCaller, r runtime.Value) (int64, error) {
 		}
 		var werr error
 		if len(t.Elems) > 1 {
-			werr = hostErrOf(c, t.Elems[1])
+			werr = hostbridge.HostErrOf(c, t.Elems[1])
 		}
 		return n, werr
 	}
@@ -404,7 +405,7 @@ func (s *scriptWriter) Write(p []byte) (int, error) {
 			}
 		}
 		if len(t.Elems) > 1 {
-			return n, hostErrOf(s.v, t.Elems[1])
+			return n, hostbridge.HostErrOf(s.v, t.Elems[1])
 		}
 		return n, nil
 	default:

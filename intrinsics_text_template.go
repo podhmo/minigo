@@ -72,7 +72,7 @@ func templateMust(target any) *runtime.BuiltinFunc {
 		default:
 			return nil, fmt.Errorf("template.Must needs 2 args, got %d", len(args))
 		}
-		if err := hostErrOf(v, ev); err != nil {
+		if err := hostbridge.HostErrOf(v, ev); err != nil {
 			panic(&runtime.Panic{Value: errVal(err), VC: v})
 		}
 		return scriptVal(hostbridge.GoNative(t)), nil

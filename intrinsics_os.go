@@ -198,7 +198,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 				// the error arg stays a script value — h.fn2's
 				// hostbridge.GoNative flattening would drop a script error's
 				// type and methods before hostErrOf can box them.
-				return errVal(os.NewSyscallError(str(hostbridge.GoNative(args[0])), hostErrArg(vc, args[1]))), nil
+				return errVal(os.NewSyscallError(str(hostbridge.GoNative(args[0])), hostbridge.HostErrArg(vc, args[1]))), nil
 			},
 		},
 		"Link": h.fn2("os.Link", func(a []any) (any, error) {
