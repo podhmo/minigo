@@ -193,7 +193,7 @@ var FileBudgets = map[string]int{
 	"vm/loop.go":                                   1102,
 	"vm/panic.go":                                  543,
 	"vm/processcaller.go":                          179,
-	"vm/profile.go":                                359,
+	"vm/profile.go":                                361,
 	"vm/sched.go":                                  352,
 	"vm/select.go":                                 36,
 	"vm/selectsite.go":                             192,

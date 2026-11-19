@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 type T struct{ n int }
 
@@ -79,9 +82,23 @@ func recvLoop(n int) {
 // exactly seven calls — sampling could never answer that.
 func marker() {}
 
+// joinWait parks on a host join (WaitGroup.Wait): like a channel park,
+// its wait must not be sampled — only synchronous host sleeps count as
+// wall time.
+func joinWait() {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		wg.Done()
+	}()
+	wg.Wait()
+}
+
 // Ops returns recvLoop's wall time in ms.
 func Ops() int {
 	slowDefer()
+	joinWait()
 	start := time.Now()
 	recvLoop(300000)
 	for range 7 {
