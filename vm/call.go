@@ -21,9 +21,9 @@ package vm
 import (
 	"fmt"
 	"go/token"
-	"reflect"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -351,7 +351,7 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 			callee = runtime.Unwrap(callee)
 			continue
 		case *runtime.GoValue:
-			if fv := reflect.ValueOf(c.V); fv.IsValid() && fv.Kind() == reflect.Func {
+			if fv := hostbridge.RVOf(c.V); fv.IsValid() && fv.Kind() == hostbridge.KindFunc {
 				name := fmt.Sprintf("%v", fv.Type())
 				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(f, winArgs, args)), c.V)
 				if err != nil {

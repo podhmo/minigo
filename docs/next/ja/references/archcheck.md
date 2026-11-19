@@ -133,3 +133,15 @@ import とセレクタ名の検査では、コールバック経由の実行が�
 - vm には `callReflectFunc`/`callOpaqueStore`/`SnapshotOf` の薄い wrapper
   を残す（hostZeroMethod・composite・call・panic の呼び出し元と
   minigo.go の公開 API）。
+
+- P2-7f 後半: vm に残る reflect は typedef 同一性解決（`hostTypedefOf`/
+  `hostTypedefIs`/`sameTypedef`/`reflectTypeExpr`/`reflectFuncTypedef`）、
+  const 評価、assert、composite/convert/binop の dispatch 等 vm 固有の
+  ロジックなので移動せず、`hostbridge/spell.go` のエイリアス
+  （`Value`/`Type`/`Kind`/`StructTag`/`ChanDir`、Kind 定数群）と
+  passthrough（`TypeOf`/`RVOf`/`ZeroOf`/`NewRV`/`PointerTo`/`DeepEqual`/
+  `SliceOf`/`MapOf`/`ChanTypOf`/`FuncOf`/`MakeFunc`/`NewAt`/`IsFunc`/
+  `IsPointer`/`IsInterface`/`IsStruct`/`IsStringV`/`TypeString`/
+  `KindOf`/`PointerToElem`/`TypeForOf`）で spelled だけを差し替え。
+- `archcheck.BannedImports` + `CheckBannedImports` で `vm` → `reflect`
+  import を禁止（負例テスト `TestCheckBannedImportsViolation` 付き）。

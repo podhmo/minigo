@@ -23,7 +23,6 @@ import (
 	"go/constant"
 	"go/token"
 	"math"
-	"reflect"
 	"unicode/utf8"
 
 	"github.com/podhmo/minigo/bytecode"
@@ -74,10 +73,10 @@ func bareScalarConst(x runtime.Value) (*runtime.UConst, bool) {
 // for an int8 parameter (or 1.5 for an int one, 1e300 for a float32 one)
 // is gc's compile error rather than a silent wrap. ok is false for every
 // other parameter kind, which takes the constant's default type.
-func hostConstArg(u *runtime.UConst, t reflect.Type) (rv reflect.Value, ok bool, err error) {
+func hostConstArg(u *runtime.UConst, t hostbridge.Type) (rv hostbridge.Value, ok bool, err error) {
 	name, ok := hostConstKindNames[t.Kind()]
 	if !ok {
-		return reflect.Value{}, false, nil
+		return hostbridge.Value{}, false, nil
 	}
 	cv := u.V
 	if cv.Kind() == constant.Complex && constant.Sign(constant.Imag(cv)) == 0 {
@@ -85,43 +84,43 @@ func hostConstArg(u *runtime.UConst, t reflect.Type) (rv reflect.Value, ok bool,
 		cv = constant.Real(cv)
 	}
 	switch t.Kind() {
-	case reflect.Float32, reflect.Float64:
+	case hostbridge.KindFloat32, hostbridge.KindFloat64:
 		if u.Wrap && u.WrapSure {
-			return reflect.Value{}, true, fmt.Errorf("invalid operation: shifted operand (type %s) must be integer", t)
+			return hostbridge.Value{}, true, fmt.Errorf("invalid operation: shifted operand (type %s) must be integer", t)
 		}
 		f, ok := constFloat(cv)
 		if !ok {
-			return reflect.Value{}, true, fmt.Errorf("cannot use constant %s as %s", u.V, t)
+			return hostbridge.Value{}, true, fmt.Errorf("cannot use constant %s as %s", u.V, t)
 		}
-		if t.Kind() == reflect.Float32 {
+		if t.Kind() == hostbridge.KindFloat32 {
 			f32, _ := constant.Float32Val(cv)
 			if math.IsInf(float64(f32), 0) || math.IsInf(f, 0) {
-				return reflect.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
+				return hostbridge.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
 			}
 			f = runtime.CanonConstZero(float64(f32))
 		} else if math.IsInf(f, 0) {
-			return reflect.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
+			return hostbridge.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
 		}
-		return reflect.ValueOf(f).Convert(t), true, nil
+		return hostbridge.RVOf(f).Convert(t), true, nil
 	}
 	switch cv.Kind() {
 	case constant.Int:
 	case constant.Float:
 		if ti, ok := toIntConst(cv); !ok || ti.Kind() != constant.Int {
-			return reflect.Value{}, true, fmt.Errorf("cannot use constant %s as %s (truncated)", u.V, t)
+			return hostbridge.Value{}, true, fmt.Errorf("cannot use constant %s as %s (truncated)", u.V, t)
 		}
 	default:
-		return reflect.Value{}, true, fmt.Errorf("cannot use constant %s as %s", u.V, t)
+		return hostbridge.Value{}, true, fmt.Errorf("cannot use constant %s as %s", u.V, t)
 	}
 	i, ok := fitsUConst(&runtime.UConst{V: cv, Wrap: u.Wrap}, name)
 	if !ok {
-		return reflect.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
+		return hostbridge.Value{}, true, fmt.Errorf("constant %s overflows %s", u.V, t)
 	}
-	if t.Kind() >= reflect.Uint && t.Kind() <= reflect.Uintptr {
+	if t.Kind() >= hostbridge.KindUint && t.Kind() <= hostbridge.KindUintptr {
 		// i carries a uint64 above MaxInt64 in its two's-complement bits.
-		return reflect.ValueOf(uint64(i)).Convert(t), true, nil
+		return hostbridge.RVOf(uint64(i)).Convert(t), true, nil
 	}
-	return reflect.ValueOf(i).Convert(t), true, nil
+	return hostbridge.RVOf(i).Convert(t), true, nil
 }
 
 // constTruthy evaluates a constant's truthiness without materializing —
@@ -191,18 +190,18 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 // is reported (gc's compile error) instead of wrapping silently.
 func (v *VM) matBuiltinArgs(args []runtime.Value, target any) ([]runtime.Value, error) {
 	var out []runtime.Value
-	var ft reflect.Type // resolved on the first bare constant
+	var ft hostbridge.Type // resolved on the first bare constant
 	for i, a := range args {
 		var mv runtime.Value
 		var err error
 		if u, ok := a.(*runtime.UConst); ok && target != nil && constNeedsParamType(u) {
 			if ft == nil {
-				if ft = reflect.TypeOf(target); ft.Kind() != reflect.Func {
+				if ft = hostbridge.TypeOf(target); ft.Kind() != hostbridge.KindFunc {
 					target = nil
 					ft = nil
 				}
 			}
-			var pt reflect.Type
+			var pt hostbridge.Type
 			if ft != nil {
 				pt = hostParamType(ft, i, len(args))
 			}
@@ -271,8 +270,8 @@ func constNeedsParamType(u *runtime.UConst) bool {
 
 // hostConstParamTDs holds one basic typedef per numeric parameter kind,
 // shared so a bound call converting a constant allocates none.
-var hostConstParamTDs = func() map[reflect.Kind]*runtime.TypeDef {
-	m := make(map[reflect.Kind]*runtime.TypeDef, len(hostConstKindNames))
+var hostConstParamTDs = func() map[hostbridge.Kind]*runtime.TypeDef {
+	m := make(map[hostbridge.Kind]*runtime.TypeDef, len(hostConstKindNames))
 	for k, name := range hostConstKindNames {
 		m[k] = &runtime.TypeDef{Name: name, Kind: runtime.KindNamedBasic}
 	}
@@ -286,15 +285,15 @@ var hostConstParamTDs = func() map[reflect.Kind]*runtime.TypeDef {
 // for a float64 one), kept free of go/constant and reflect work. The
 // typed path checks representability: a constant above MaxInt64 for a
 // uint64 parameter, an out-of-range or fractional one, float32 rounding.
-func hostConstParamTD(u *runtime.UConst, pt reflect.Type) *runtime.TypeDef {
+func hostConstParamTD(u *runtime.UConst, pt hostbridge.Type) *runtime.TypeDef {
 	k := pt.Kind()
 	switch k {
-	case reflect.Int, reflect.Int64:
+	case hostbridge.KindInt, hostbridge.KindInt64:
 		if u.V.Kind() == constant.Int && (u.Wrap || fitsInt64Const(u.V)) {
 			return nil // the default int already masks a shift's value
 		}
-	case reflect.Int8, reflect.Int16, reflect.Int32,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+	case hostbridge.KindInt8, hostbridge.KindInt16, hostbridge.KindInt32,
+		hostbridge.KindUint, hostbridge.KindUint8, hostbridge.KindUint16, hostbridge.KindUint32, hostbridge.KindUint64, hostbridge.KindUintptr:
 		if u.V.Kind() == constant.Int && !u.Wrap {
 			// in range for the parameter (and so for int64): the default
 			// int carries the same value.
@@ -302,11 +301,11 @@ func hostConstParamTD(u *runtime.UConst, pt reflect.Type) *runtime.TypeDef {
 				return nil
 			}
 		}
-	case reflect.Float64:
+	case hostbridge.KindFloat64:
 		if !u.Wrap && (u.V.Kind() == constant.Float || u.V.Kind() == constant.Int && fitsInt64Const(u.V)) {
 			return nil
 		}
-	case reflect.Float32:
+	case hostbridge.KindFloat32:
 	default:
 		return nil
 	}
@@ -314,21 +313,21 @@ func hostConstParamTD(u *runtime.UConst, pt reflect.Type) *runtime.TypeDef {
 }
 
 // int64FitsKind reports whether i is representable in integer kind k.
-func int64FitsKind(i int64, k reflect.Kind) bool {
+func int64FitsKind(i int64, k hostbridge.Kind) bool {
 	switch k {
-	case reflect.Int8:
+	case hostbridge.KindInt8:
 		return i == int64(int8(i))
-	case reflect.Int16:
+	case hostbridge.KindInt16:
 		return i == int64(int16(i))
-	case reflect.Int32:
+	case hostbridge.KindInt32:
 		return i == int64(int32(i))
-	case reflect.Uint8:
+	case hostbridge.KindUint8:
 		return i == int64(uint8(i))
-	case reflect.Uint16:
+	case hostbridge.KindUint16:
 		return i == int64(uint16(i))
-	case reflect.Uint32:
+	case hostbridge.KindUint32:
 		return i == int64(uint32(i))
-	case reflect.Uint, reflect.Uint64, reflect.Uintptr:
+	case hostbridge.KindUint, hostbridge.KindUint64, hostbridge.KindUintptr:
 		return i >= 0
 	}
 	return true
@@ -343,7 +342,7 @@ func fitsInt64Const(cv constant.Value) bool {
 // hostParamType is the type argument i of nargs binds to in a call of
 // host func type ft — the variadic element past the fixed parameters —
 // or nil when the call's arity does not match ft.
-func hostParamType(ft reflect.Type, i, nargs int) reflect.Type {
+func hostParamType(ft hostbridge.Type, i, nargs int) hostbridge.Type {
 	nin := ft.NumIn()
 	if !ft.IsVariadic() {
 		if nargs != nin {
@@ -1041,10 +1040,10 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 			}
 		}
 	} else if g, ok := other.(*runtime.GoValue); ok && hostbridge.HostNamedInt(g.V) {
-		// a named host int (reflect.Kind, parse.NodeType) adopts the
+		// a named host int (hostbridge.Kind, parse.NodeType) adopts the
 		// constant into its own type — `k == 2` compares two boxed
 		// host values like Go converting 2 to the operand's type.
-		if r, ok := hostbridge.ConstToHostInt(u, reflect.TypeOf(g.V)); ok {
+		if r, ok := hostbridge.ConstToHostInt(u, hostbridge.TypeOf(g.V)); ok {
 			return r
 		}
 	} else if s, ok := scalarConst(u, other); ok {

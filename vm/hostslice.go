@@ -4,8 +4,6 @@
 package vm
 
 import (
-	"reflect"
-
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -13,7 +11,7 @@ import (
 // HostSliceOf reports whether x — a bare box, a variable cell holding
 // one, or a Named tag over either — carries a host slice, and returns the
 // box and the slice itself.
-func HostSliceOf(x runtime.Value) (*runtime.GoValue, reflect.Value, bool) {
+func HostSliceOf(x runtime.Value) (*runtime.GoValue, hostbridge.Value, bool) {
 	return hostbridge.HostSliceOf(x)
 }
 
@@ -62,6 +60,6 @@ func (v *VM) hostSliceConv(td *runtime.TypeDef, x runtime.Value) (runtime.Value,
 }
 
 // hostSliceLiteral builds the literal td{...} of a host slice type.
-func (v *VM) hostSliceLiteral(f *frame, td *runtime.TypeDef, rt reflect.Type, n int, kv bool, raw []runtime.Value) runtime.Value {
+func (v *VM) hostSliceLiteral(f *frame, td *runtime.TypeDef, rt hostbridge.Type, n int, kv bool, raw []runtime.Value) runtime.Value {
 	return marshalHost.HostSliceLiteral(v.indexHooks(f), td, rt, n, kv, raw)
 }

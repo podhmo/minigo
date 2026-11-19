@@ -21,7 +21,6 @@ package vm
 import (
 	"fmt"
 	"go/ast"
-	"reflect"
 	"unsafe"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
@@ -76,7 +75,7 @@ func init() {
 
 // funcMapElemFor returns funcMapElem when t is a registered FuncMap
 // type, else nil.
-func funcMapElemFor(t reflect.Type) func(runtime.Value, runtime.VMCaller) (reflect.Value, error) {
+func funcMapElemFor(t hostbridge.Type) func(runtime.Value, runtime.VMCaller) (hostbridge.Value, error) {
 	if funcMapTypes[t] {
 		return funcMapElem
 	}
@@ -87,12 +86,12 @@ func funcMapElemFor(t reflect.Type) func(runtime.Value, runtime.VMCaller) (refle
 // for — the fresh value HostNew mints, or the raw scalar HostScalar
 // marks — so its method set can be probed where the typedef's own
 // declared Methods stay empty. nil when the typedef binds no host type.
-func hostTypOf(td *runtime.TypeDef) reflect.Type {
+func hostTypOf(td *runtime.TypeDef) hostbridge.Type {
 	if td == nil {
 		return nil
 	}
 	if td.HostScalar != nil {
-		return reflect.TypeOf(td.HostScalar)
+		return hostbridge.TypeOf(td.HostScalar)
 	}
 	if td.HostNew != nil {
 		return td.HostType()
@@ -148,9 +147,9 @@ func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, boo
 		if err != nil || et == nil || et.HostNew == nil {
 			return nil, false
 		}
-		rt = reflect.TypeOf(et.HostNew())
-		if rt.Kind() != reflect.Pointer {
-			rt = reflect.PointerTo(rt)
+		rt = hostbridge.TypeOf(et.HostNew())
+		if rt.Kind() != hostbridge.KindPointer {
+			rt = hostbridge.PointerTo(rt)
 		}
 	}
 	return hostZeroMethod(rt, name)
@@ -158,8 +157,8 @@ func (v *VM) hostNilMethod(td *runtime.TypeDef, name string) (runtime.Value, boo
 
 // hostZeroMethod binds method name on the zero (nil) value of host type
 // rt, or reports false when rt has no such method.
-func hostZeroMethod(rt reflect.Type, name string) (runtime.Value, bool) {
-	m := reflect.Zero(rt).MethodByName(name)
+func hostZeroMethod(rt hostbridge.Type, name string) (runtime.Value, bool) {
+	m := hostbridge.ZeroOf(rt).MethodByName(name)
 	if !m.IsValid() {
 		return nil, false
 	}
@@ -181,29 +180,29 @@ func hostZeroMethod(rt reflect.Type, name string) (runtime.Value, bool) {
 // (Go's visibility rule), read through the field's address so
 // interpreted stdlib code can see what it stamped — net/http's
 // ServeMux reading back the r.pat it wrote on a host *http.Request.
-func hostField(v any, name, pkg string) (reflect.Value, bool) {
-	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+func hostField(v any, name, pkg string) (hostbridge.Value, bool) {
+	rv := hostbridge.RVOf(v)
+	for rv.Kind() == hostbridge.KindPointer || rv.Kind() == hostbridge.KindInterface {
 		if rv.IsNil() {
-			return reflect.Value{}, false
+			return hostbridge.Value{}, false
 		}
 		rv = rv.Elem()
 	}
-	if rv.Kind() != reflect.Struct {
-		return reflect.Value{}, false
+	if rv.Kind() != hostbridge.KindStruct {
+		return hostbridge.Value{}, false
 	}
 	fv := rv.FieldByName(name)
 	if !fv.IsValid() {
-		return reflect.Value{}, false
+		return hostbridge.Value{}, false
 	}
 	if fv.CanInterface() {
 		return fv, true
 	}
 	sf, _ := rv.Type().FieldByName(name)
 	if pkg == "" || sf.PkgPath != pkg || !fv.CanAddr() {
-		return reflect.Value{}, false
+		return hostbridge.Value{}, false
 	}
-	return reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem(), true
+	return hostbridge.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem(), true
 }
 
 // initHostLiteral writes keyed composite-literal fields onto a
@@ -212,14 +211,14 @@ func hostField(v any, name, pkg string) (reflect.Value, bool) {
 // field, and the value marshals to the field's type (a script func for
 // New, via toReflectValue's adaptFunc).
 func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtime.Value) {
-	rv := reflect.ValueOf(hv)
-	for rv.Kind() == reflect.Pointer {
+	rv := hostbridge.RVOf(hv)
+	for rv.Kind() == hostbridge.KindPointer {
 		if rv.IsNil() {
 			f.trap("cannot initialize host type %s: nil struct", td.Name)
 		}
 		rv = rv.Elem()
 	}
-	if rv.Kind() != reflect.Struct {
+	if rv.Kind() != hostbridge.KindStruct {
 		f.trap("cannot initialize host type %s with fields", td.Name)
 	}
 	for i := 0; i < len(raw); i += 2 {
@@ -246,14 +245,14 @@ func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtim
 // Go requires exactly NumField values, each assignable to the field in
 // declaration order (unicode.RangeTable entries arrive this way).
 func (v *VM) initHostPositional(f *frame, td *runtime.TypeDef, hv any, raw []runtime.Value) {
-	rv := reflect.ValueOf(hv)
-	for rv.Kind() == reflect.Pointer {
+	rv := hostbridge.RVOf(hv)
+	for rv.Kind() == hostbridge.KindPointer {
 		if rv.IsNil() {
 			f.trap("cannot initialize host type %s: nil struct", td.Name)
 		}
 		rv = rv.Elem()
 	}
-	if rv.Kind() != reflect.Struct {
+	if rv.Kind() != hostbridge.KindStruct {
 		f.trap("cannot initialize host type %s with fields", td.Name)
 	}
 	if len(raw) != rv.NumField() {
@@ -274,12 +273,12 @@ func (v *VM) initHostPositional(f *frame, td *runtime.TypeDef, hv any, raw []run
 
 // hostConstKindNames names the basic type an untyped constant converts
 // to for a host parameter of each integer or float kind.
-var hostConstKindNames = map[reflect.Kind]string{
-	reflect.Int: "int", reflect.Int8: "int8", reflect.Int16: "int16",
-	reflect.Int32: "int32", reflect.Int64: "int64",
-	reflect.Uint: "uint", reflect.Uint8: "uint8", reflect.Uint16: "uint16",
-	reflect.Uint32: "uint32", reflect.Uint64: "uint64", reflect.Uintptr: "uintptr",
-	reflect.Float32: "float32", reflect.Float64: "float64",
+var hostConstKindNames = map[hostbridge.Kind]string{
+	hostbridge.KindInt: "int", hostbridge.KindInt8: "int8", hostbridge.KindInt16: "int16",
+	hostbridge.KindInt32: "int32", hostbridge.KindInt64: "int64",
+	hostbridge.KindUint: "uint", hostbridge.KindUint8: "uint8", hostbridge.KindUint16: "uint16",
+	hostbridge.KindUint32: "uint32", hostbridge.KindUint64: "uint64", hostbridge.KindUintptr: "uintptr",
+	hostbridge.KindFloat32: "float32", hostbridge.KindFloat64: "float64",
 }
 
 // vmOf reports the VM behind a caller (nil for a foreign caller).
@@ -296,7 +295,7 @@ func vmOf(vc runtime.CallerRef) *VM {
 // data, and its false return stops the script producer. A failure inside
 // the seq propagates as a panic, as a callback's would. ok is false for a
 var (
-	anyType = reflect.TypeFor[any]()
+	anyType = hostbridge.TypeForOf[any]()
 )
 
 // templateCallableNout reports whether a method matches the shape
@@ -337,7 +336,7 @@ func templateCallableNout(m *runtime.Function) int {
 }
 
 // scriptBytes reads a script slice's elements as bytes in one pass —
-// marshaling element-wise would box a reflect.Value per byte. Elements
+// marshaling element-wise would box a hostbridge.Value per byte. Elements
 // must all unwrap to an in-range int64; anything else reports false so
 // the caller falls back to the generic loop (issue #362).
 func scriptBytes(x *runtime.Slice) ([]byte, bool) {
@@ -356,12 +355,12 @@ func scriptBytes(x *runtime.Slice) ([]byte, bool) {
 // requires to be real funcs — text/template's and html/template's
 // FuncMap, which Template.Funcs checks with reflect. Registered at init
 // by the engine's bindings ([RegisterFuncMapType]); read-only after.
-var funcMapTypes = map[reflect.Type]bool{}
+var funcMapTypes = map[hostbridge.Type]bool{}
 
 // RegisterFuncMapType marks t (a map with `any` values) as a FuncMap:
 // converting a script map to t adapts each script func value to a host
 // func of its own signature. Call it from an init func only.
-func RegisterFuncMapType(t reflect.Type) { funcMapTypes[t] = true }
+func RegisterFuncMapType(t hostbridge.Type) { funcMapTypes[t] = true }
 
 // funcMapElem converts one FuncMap value. A bound host func hands over
 // its Target; a script func adapts to a host func whose signature comes
@@ -372,10 +371,10 @@ func RegisterFuncMapType(t reflect.Type) { funcMapTypes[t] = true }
 // funcMapArgs). A value that is no func at all crosses as an ordinary
 // `any`, so Template.Funcs itself rejects it with gc's recoverable
 // `value for NAME not a function` panic.
-func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
+func funcMapElem(x runtime.Value, vc runtime.VMCaller) (hostbridge.Value, error) {
 	vc = bindCaller(vc)
-	wrap := func(fv reflect.Value) reflect.Value {
-		out := reflect.New(anyType).Elem()
+	wrap := func(fv hostbridge.Value) hostbridge.Value {
+		out := hostbridge.NewRV(anyType).Elem()
 		out.Set(fv)
 		return out
 	}
@@ -387,48 +386,48 @@ func funcMapElem(x runtime.Value, vc runtime.VMCaller) (reflect.Value, error) {
 	}
 	switch fx := x.(type) {
 	case *runtime.BuiltinFunc:
-		if rv := reflect.ValueOf(fx.Target); rv.Kind() == reflect.Func {
+		if rv := hostbridge.RVOf(fx.Target); rv.Kind() == hostbridge.KindFunc {
 			return wrap(rv), nil
 		}
 		// an intrinsic without a host Target (strings.Split): a
 		// func(...any) (any, error) that calls it on the VM.
-		return wrap(reflect.MakeFunc(builtinFuncMapType, func(in []reflect.Value) []reflect.Value {
+		return wrap(hostbridge.MakeFunc(builtinFuncMapType, func(in []hostbridge.Value) []hostbridge.Value {
 			return callBuiltinFuncMap(fx, in[0], vc)
 		})), nil
 	case *runtime.GoValue:
-		if rv := reflect.ValueOf(fx.V); rv.Kind() == reflect.Func {
+		if rv := hostbridge.RVOf(fx.V); rv.Kind() == hostbridge.KindFunc {
 			return wrap(rv), nil
 		}
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
 		sig, pkg, file, binds := runtime.FuncSigOf(x)
 		if sig == nil {
-			return reflect.Value{}, fmt.Errorf("FuncMap value %T has no declared signature", x)
+			return hostbridge.Value{}, fmt.Errorf("FuncMap value %T has no declared signature", x)
 		}
 		fv, err := marshalHost.AdaptFuncWith(x, sigHostType(sig), vc, hostbridge.AdaptOpts{
 			FuncMap: funcMapArgs(vmOf(vc), sig, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds}),
 		})
 		if err != nil {
-			return reflect.Value{}, err
+			return hostbridge.Value{}, err
 		}
 		return wrap(fv), nil
 	}
 	return marshalHost.ToReflect(x, anyType, vc)
 }
 
-var builtinFuncMapType = reflect.TypeFor[func(...any) (any, error)]()
+var builtinFuncMapType = hostbridge.TypeForOf[func(...any) (any, error)]()
 
 // callBuiltinFuncMap runs a Target-less intrinsic for a FuncMap call:
 // the args arrive packed in one []any, a (value, error) tuple result
 // splits into the template's value and error, a single value has a nil
 // error.
-func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed reflect.Value, vc runtime.VMCaller) []reflect.Value {
+func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed hostbridge.Value, vc runtime.VMCaller) []hostbridge.Value {
 	vc = callbackContext(vc)
 	sargs := make([]runtime.Value, packed.Len())
 	for i := range sargs {
 		sargs[i] = hostbridge.GoSlotValueOf(packed.Index(i))
 	}
-	fail := func(err error) []reflect.Value {
-		return []reflect.Value{reflect.Zero(anyType), reflect.ValueOf(&err).Elem()}
+	fail := func(err error) []hostbridge.Value {
+		return []hostbridge.Value{hostbridge.ZeroOf(anyType), hostbridge.RVOf(&err).Elem()}
 	}
 	r, err := vc.Call(fx, sargs)
 	if err != nil {
@@ -445,20 +444,20 @@ func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed reflect.Value, vc runtim
 	if err != nil {
 		return fail(err)
 	}
-	errv := reflect.Zero(hostbridge.ErrorType)
+	errv := hostbridge.ZeroOf(hostbridge.ErrorType)
 	if len(rs) == 2 {
 		if errv, err = marshalHost.ToReflect(rs[1], hostbridge.ErrorType, vc); err != nil {
 			return fail(fmt.Errorf("%s: second result is not an error: %w", fx.Name, err))
 		}
 	}
-	return []reflect.Value{val, errv}
+	return []hostbridge.Value{val, errv}
 }
 
 // sigHostType builds a host func type for a script signature: each
 // predeclared basic and `error` keeps its Go type, everything else is
 // `any`. A trailing ...T parameter stays variadic.
-func sigHostType(sig *ast.FuncType) reflect.Type {
-	slot := func(e ast.Expr) reflect.Type {
+func sigHostType(sig *ast.FuncType) hostbridge.Type {
+	slot := func(e ast.Expr) hostbridge.Type {
 		if id, ok := e.(*ast.Ident); ok {
 			if id.Name == "error" {
 				return hostbridge.ErrorType
@@ -469,15 +468,15 @@ func sigHostType(sig *ast.FuncType) reflect.Type {
 		}
 		return anyType
 	}
-	var in, out []reflect.Type
+	var in, out []hostbridge.Type
 	variadic := false
 	if sig.Params != nil {
 		for _, fl := range sig.Params.List {
 			e := fl.Type
-			var rt reflect.Type
+			var rt hostbridge.Type
 			if el, ok := e.(*ast.Ellipsis); ok {
 				variadic = true
-				rt = reflect.SliceOf(slot(el.Elt))
+				rt = hostbridge.SliceOf(slot(el.Elt))
 			} else {
 				rt = slot(e)
 			}
@@ -493,7 +492,7 @@ func sigHostType(sig *ast.FuncType) reflect.Type {
 			}
 		}
 	}
-	return reflect.FuncOf(in, out, variadic)
+	return hostbridge.FuncOf(in, out, variadic)
 }
 
 // funcMapSig is what a FuncMap func needs besides its host signature
@@ -594,7 +593,7 @@ func (fs *funcMapSig) Guard(callee runtime.Value) runtime.Value {
 }
 
 // hostNamedInt reports whether x is a host value of a defined integer
-// type — a reflect.Kind or parse.NodeType, not a bare int or int64.
+// type — a hostbridge.Kind or parse.NodeType, not a bare int or int64.
 // hostStringOperand is what eqlValue compares for a host-boxed string:
 // its string contents. Any other box compares as itself.
 
@@ -621,11 +620,11 @@ func callHooksOf(vc runtime.CallerRef) *hostbridge.CallHooks {
 // callReflectFunc / callOpaqueStore delegate to the hostbridge call
 // path (internal/hostbridge/callhost.go); they exist so vm callers keep
 // their (name, m, vc, args) spelling.
-func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func callReflectFunc(name string, m hostbridge.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	return marshalHost.CallReflectFunc(callHooksOf(vc), name, m, vc, args)
 }
 
-func callOpaqueStore(recv, name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func callOpaqueStore(recv, name string, m hostbridge.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	return marshalHost.CallOpaqueStore(callHooksOf(vc), recv, name, m, vc, args)
 }
 
