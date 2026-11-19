@@ -556,6 +556,21 @@ func ShadowMe(strings string) string {
 	return strings.TrimSpace(" x ")
 }
 
+// ShadowBlock binds strings only inside its first block; the sibling
+// block's strings.TrimSpace still resolves to the strings import — a
+// func-wide "possibly local" model would refuse it too.
+func ShadowBlock() string {
+	out := ""
+	{
+		strings := " shadowed "
+		out = strings + "!"
+	}
+	{
+		out += strings.TrimSpace(" x ")
+	}
+	return out
+}
+
 // LocalDecls declares types, vars and a const inside its body; Expr-fed
 // SymbolID must not attribute them to the package (#920), while the
 // package type User still resolves.

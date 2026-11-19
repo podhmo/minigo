@@ -550,6 +550,32 @@ func TestBodyScope(t *testing.T) {
 	if !ok || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
 		t.Errorf("unshadowed select = %v, %v", sid, ok)
 	}
+
+	// ShadowBlock: the sibling block's strings.TrimSpace resolves to
+	// the import — a func-wide local-name set refused it too.
+	bd := p.Index.Funcs["ShadowBlock"]
+	broot, err := xinspect.BodyOf(xinspect.NewDecl(p, bd))
+	if err != nil {
+		t.Fatalf("BodyOf ShadowBlock: %v", err)
+	}
+	var hit bool
+	var walkSel func(n *xinspect.Node)
+	walkSel = func(n *xinspect.Node) {
+		for _, c := range xinspect.NodesOf(n) {
+			if c.Kind == "SelectorExpr" && c.Text == "strings.TrimSpace" {
+				hit = true
+				sid, ok := xinspect.ExprOf(c).SymbolID()
+				if !ok || sid.PackagePath != "strings" || sid.Name != "TrimSpace" {
+					t.Errorf("sibling-block select = %v, %v", sid, ok)
+				}
+			}
+			walkSel(c)
+		}
+	}
+	walkSel(broot)
+	if !hit {
+		t.Error("no strings.TrimSpace in ShadowBlock")
+	}
 }
 
 // TestDotImportSymbolID pins the under-resolution a dot import forces:
@@ -732,6 +758,7 @@ func TestLitKeySymbolIDs(t *testing.T) {
 		"LocalShadow":       {"KeyA=nil"},
 		"SiblingScopes":     {"KeyA=" + pkg + ".KeyA", "KeyA=nil"},
 		"LocalElidedStruct": {"KeyA=nil"},
+		"SiblingVarShadow":  {"KeyA=" + pkg + ".KeyA"},
 	}
 	got := map[string][]string{}
 	for name := range want {

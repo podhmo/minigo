@@ -124,6 +124,21 @@ func SiblingScopes() int {
 	return n
 }
 
+// SiblingVarShadow: a var bound in the first block no longer hides the
+// package-level map type used in the sibling block — the scoped local
+// check still treats an in-scope local type decl as shadowing.
+func SiblingVarShadow() int {
+	n := 0
+	{
+		Lookup := 9
+		n += Lookup
+	}
+	{
+		n += len(Lookup{KeyA: 1})
+	}
+	return n
+}
+
 // LocalElidedStruct: an elided struct element of a local named slice.
 func LocalElidedStruct() int {
 	type LS []struct{ KeyA int }
