@@ -6,7 +6,6 @@ package archcheck
 // base's revision, so bumping an existing entry fails — split the file,
 // or record a justified raise in FileBudgetExceptions.
 var FileBudgets = map[string]int{
-	"asmimpl.go":                                   279,
 	"bindenv.go":                                   40,
 	"boundreads.go":                                70,
 	"builtin/builtins.go":                          1119,
@@ -120,7 +119,11 @@ var FileBudgets = map[string]int{
 	"internal/typedef/dispatch.go":             1458,
 	"internal/typedef/dispatch_deferred.go":     687,
 	"internal/typedef/dispatch_deferred_typ.go": 93,
+	"internal/typedef/iface_reqs.go":               169,
+	"internal/vet/vet.go":                       223,
+	"internal/typedef/iterseq.go":                  104,
 	"internal/stdlib/fmt/fmt.go":                   1658,
+	"internal/stdlib/asmimpl.go":                   279,
 	"internal/stdlib/typshape.go":                  221,
 	"iterseq.go":                                   104,
 	"minigo.go": 1741,

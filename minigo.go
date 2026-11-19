@@ -48,7 +48,9 @@ import (
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/internal/spike"
+	stdlib "github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/internal/typedef"
+	internalvet "github.com/podhmo/minigo/internal/vet"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -156,7 +158,6 @@ type sessionState struct {
 
 	// iterSeqTds caches the iter.Seq / iter.Seq2 instantiations intrinsic
 	// seqs are tagged with (see iterSeqTd).
-	iterSeqTds sync.Map
 }
 
 // Option configures an Engine.
@@ -366,11 +367,26 @@ func (e *Engine) initTypedefResolver() {
 	e.td = typedef.New(typedef.Deps{
 		Materialize:   func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) { return e.materialize(pkg, d) },
 		InternTypedef: e.internTypedef,
-		IfaceReqSet:   e.ifaceReqSet,
-		IfaceSigFuncs: e.ifaceSigFuncs,
 		HostTwin:      e.hostTwin,
 		Builtins:      e.builtins,
 		LoadPath:      e.loadPath,
+	})
+}
+
+// VetResult is one [Engine.Vet] finding.
+type VetResult = internalvet.Result
+
+// Vet loads ref without initializing it and reports calls that would
+// fail at run time because nothing handles them (internal/vet).
+func (e *Engine) Vet(ctx context.Context, ref string) ([]VetResult, error) {
+	p, err := e.Package(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return internalvet.Scan(ctx, p, internalvet.Deps{
+		Package:    e.Package,
+		Position:   e.fset.Position,
+		Registered: e.registeredVetSymbol,
 	})
 }
 
@@ -389,8 +405,8 @@ func (e *Engine) newVM() *vm.VM {
 		},
 		MethodsOf:        e.td.MethodsOfValue,
 		MethodSetOf:      e.td.MethodSetOfValue,
-		IfaceReqs:        e.ifaceReqs,
-		IfaceSigs:        e.ifaceSigReqs,
+		IfaceReqs:        e.td.IfaceReqs,
+		IfaceSigs:        e.td.IfaceSigReqs,
 		MethodFuncsOf:    e.td.MethodFuncsOfValue,
 		MethodInfoOf:     e.td.MethodInfoOfValue,
 		TypeMethodFuncs:  e.td.MethodSet,
@@ -1681,7 +1697,7 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 		// registered host impl materializes as the impl itself — the
 		// zero-return shim would silently drop every result.
 		if d.Func.Body == nil {
-			if v, ok := asmImpl(pkg, d.Name); ok {
+			if v, ok := stdlib.AsmImpl(pkg, d.Name); ok {
 				return v, nil
 			}
 			if pkg.Path == "runtime/debug" && d.Name == "modinfo" {
