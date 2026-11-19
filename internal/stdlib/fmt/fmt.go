@@ -13,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 
-	"sync/atomic"
-
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
@@ -25,22 +23,7 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// The %T speller and env-writer slots are installed once per engine —
-// the values are identical across engines, but they still go through
-// atomic.Value so concurrent installs stay race-clean.
-var typeStrSlot, outSlot atomic.Value
-
-func typeStrOf(x runtime.Value) string {
-	return typeStrSlot.Load().(func(runtime.Value) string)(x)
-}
-
-func outOf() io.Writer {
-	return outSlot.Load().(func() io.Writer)()
-}
-
-func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() io.Writer, typeStr func(runtime.Value) string) {
-	typeStrSlot.Store(typeStr)
-	outSlot.Store(out)
+func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() io.Writer) {
 	bind("fmt", map[string]runtime.Value{
 		// fmt's interfaces are needed as types by interpreted sources that
 		// reflect on them or assert (e.g. template's fmt.Stringer probes,
@@ -77,11 +60,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 		// (json.Number) suppresses the space — the host-shaped args hide
 		// that inside fmtValue.
 		"Print": pffn("fmt.Print", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
-			return stdlib.RetErr(fprintOperands(outOf(), a, flat))
+			return stdlib.RetErr(fprintOperands(out(), a, flat))
 		}, fmt.Print),
-		"Println": ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return stdlib.RetErr(fmt.Fprintln(outOf(), a...)) }, fmt.Println),
+		"Println": ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return stdlib.RetErr(fmt.Fprintln(out(), a...)) }, fmt.Println),
 		"Printf": ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
-			return stdlib.RetErr(fmt.Fprintf(outOf(), stdlib.Str(a[0]), a[1:]...))
+			return stdlib.RetErr(fmt.Fprintf(out(), stdlib.Str(a[0]), a[1:]...))
 		}),
 		// Fprint* take an explicit writer — os.Stdout/os.Stderr arrive as
 		// GoValue (unwrapped by fmtArg to the native *os.File).
@@ -528,7 +511,7 @@ func scriptScalarName(x runtime.Value) string {
 	case *runtime.Named:
 		return stdlib.TypedefSpelling(t.Typ)
 	case *runtime.GoValue:
-		return typeStrOf(t)
+		return ScriptTypeString(t)
 	}
 	return fmt.Sprintf("%T", x)
 }
@@ -792,7 +775,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		switch d.verb {
 		case 'T':
 			sb.WriteByte('s')
-			na = append(na, typeStrOf(vals[d.pos]))
+			na = append(na, ScriptTypeString(vals[d.pos]))
 		case 'p':
 			sb.WriteByte('s')
 			na = append(na, ptrSpelling(c, vals[d.pos]))
@@ -1197,7 +1180,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		// scalar pointer: Go prints the address — a host pointer repr
 		// is the closest readable stand-in; %#v wraps it as (*T)(0xADDR).
 		if verb == 'v' && f.Flag('#') {
-			return fmt.Sprintf("(*%s)(%p)", typeStrOf(dv), v)
+			return fmt.Sprintf("(*%s)(%p)", ScriptTypeString(dv), v)
 		}
 		return fmt.Sprintf("%p", v)
 	case *runtime.Struct:

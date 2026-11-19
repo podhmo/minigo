@@ -53,7 +53,7 @@ import (
 // them: bound packages build on first use through the install entry.
 func (e *Engine) registerStdlib() {
 	h := &hostHelpers{env: bindEnv{e}}
-	e.pending.Register("fmt", func() { stdfmt.Install(e.bindBound, h, h.ioAdapters(), h.out, stdfmt.ScriptTypeString) })
+	e.pending.Register("fmt", func() { stdfmt.Install(e.bindBound, h, h.ioAdapters(), h.out) })
 	e.pending.Register("errors", func() { stdliberrors.Install(e.bindBound, h, e.ifaceReqSet) })
 	e.pending.Register("strings", func() { stdlibstrings.Install(e.bindBound, h, e.typedSeq) })
 	e.pending.Register("strconv", func() { stdlibstrconv.Install(e.bindBound) })
