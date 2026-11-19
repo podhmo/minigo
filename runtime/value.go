@@ -1737,6 +1737,13 @@ type mapStore struct {
 	// dead counts tombstoned slots. Order stays sparse until the share
 	// of dead slots crosses the compaction threshold.
 	dead int
+	// mu serializes compaction: reads like At, BeginWalk, Clone and
+	// SnapshotKeys rebuild the shared Order/Keys/pos slices, so two
+	// racing readers must not interleave their slice-header writes.
+	// Mutating paths take it only around the compact itself — a
+	// concurrent write and read is unsupported either way, like on a
+	// Go map.
+	mu sync.Mutex
 	// dels counts removals (Delete, Clear) through any header, so a
 	// walker can tell that every slot it walks is still present without
 	// a lookup.
@@ -1782,6 +1789,14 @@ func (s *mapStore) compact() {
 		keys = append(keys, ck)
 	}
 	s.Order, s.Keys, s.pos, s.dead = order, keys, pos, 0
+}
+
+// compactLocked compacts under s.mu — every compaction goes through it
+// so the slice-header writes publish whole to concurrent readers.
+func (s *mapStore) compactLocked() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.compact()
 }
 
 // mapBox is a [Map] and its first store in one allocation: the common
@@ -1837,7 +1852,7 @@ func (m *Map) Header() *Map {
 func (m *Map) Clone() *Map {
 	c := NewMap(m.Typ, m.IfaceKey)
 	if s := m.mapStore; s != nil {
-		s.compact()
+		s.compactLocked()
 		cs := c.mapStore
 		maps.Copy(cs.Pairs, s.Pairs)
 		cs.Order = slices.Clone(s.Order)
@@ -1852,7 +1867,7 @@ func (m *Map) BeginWalk() *MapWalk {
 	s := m.store()
 	// compact first: slots deleted before the walk should not occupy it
 	// — only entries deleted after this point skip as the walk goes.
-	s.compact()
+	s.compactLocked()
 	return &MapWalk{s: s, display: s.Order, canonical: s.Keys, dels: s.dels}
 }
 
@@ -1906,7 +1921,7 @@ func (m *Map) Len() int {
 // entries.
 func (m *Map) At(i int) (Value, Value) {
 	s := m.mapStore
-	s.compact()
+	s.compactLocked()
 	return s.Order[i], s.Pairs[s.Keys[i]]
 }
 
@@ -1930,19 +1945,10 @@ func (m *Map) SnapshotKeys() (display, canonical []Value) {
 	if s == nil {
 		return nil, nil
 	}
-	if s.dead == 0 {
-		return append([]Value(nil), s.Order...), append([]Value(nil), s.Keys...)
+	if s.dead > 0 {
+		s.compactLocked()
 	}
-	display = make([]Value, 0, len(s.Pairs))
-	canonical = make([]Value, 0, len(s.Pairs))
-	for i, ck := range s.Keys {
-		if ck == nil {
-			continue
-		}
-		display = append(display, s.Order[i])
-		canonical = append(canonical, ck)
-	}
-	return display, canonical
+	return append([]Value(nil), s.Order...), append([]Value(nil), s.Keys...)
 }
 
 // LookupCanonical looks up a canonical key taken from Pairs or
@@ -2018,7 +2024,7 @@ func (m *Map) Delete(k Value) bool {
 		s.Keys[i] = nil
 		s.dead++
 		if s.dead >= 32 && s.dead*2 >= len(s.Order) {
-			s.compact()
+			s.compactLocked()
 		}
 	}
 	return true

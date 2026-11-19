@@ -69,7 +69,7 @@ func TestMapWalkMutation(t *testing.T) {
 				})
 				return seen
 			},
-			want: result{Seen: []Value{int64(0), int64(1), int64(2), int64(3), int64(4)}, Left: []Value{}},
+			want: result{Seen: []Value{int64(0), int64(1), int64(2), int64(3), int64(4)}, Left: nil},
 		},
 		{
 			name: "delete next",

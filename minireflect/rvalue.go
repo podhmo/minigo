@@ -1613,10 +1613,8 @@ func (v *RValue) MapKeys() []*RValue {
 		ktd = v.e.keyTdOf(v.td)
 	}
 	out := make([]*RValue, 0, m.Len())
-	for _, k := range m.Order {
-		if k == nil {
-			continue // tombstoned slot — deleted before it was reached
-		}
+	display, _ := m.SnapshotKeys()
+	for _, k := range display {
 		out = append(out, v.e.wrap(v.vc, k, nil, ktd))
 	}
 	return out
@@ -3674,10 +3672,8 @@ func valueEqual(a, b any, depth int) bool {
 			if x.Len() != y.Len() {
 				return false
 			}
-			for _, k := range x.Order {
-				if k == nil {
-					continue // tombstoned slot
-				}
+			display, _ := x.SnapshotKeys()
+			for _, k := range display {
 				xv, _ := x.Get(k)
 				yv, ok := y.Get(k)
 				if !ok || !valueEqual(xv, yv, depth+1) {
