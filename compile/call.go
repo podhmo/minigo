@@ -902,25 +902,10 @@ func (c *compiler) lenDerefStaticTyp(e ast.Expr) {
 	}
 }
 
-// argStatics pushes each argument's declared typedef (or nil) so generic
-// calls unify type arguments against the argument's static type — Go's
-// inference binds T to the declared type, not the value's dynamic one:
-// `Describe(v)` with `var v Shape` binds T=Shape even while v holds a
-// *Tri, and `id(e)` with `var e error` binds T=error. One typedef is
-// pushed per source argument, above the argument values, so OpCall's
-// popArgs pops them alongside the args; a trailing `xs...` source's
-// static is the slice type and is dropped in favour of the element
-// typedef popArgs already carries as spreadTd.
-func (c *compiler) argStatics(args []ast.Expr) {
-	for _, a := range args {
-		c.staticTyp(a)
-	}
-}
-
 // callSiteArgs records one call site's arg-hint record (P4-4a) and
-// returns its CallSites index for OpCall's C operand — the per-arg
-// recipes OpCall resolves lazily in place of the static-typedef
-// operand tier argStatics pushes for defer/go.
+// returns its CallSites index for the call op's C operand — the
+// per-arg recipes generic inference resolves in place of the
+// static-typedef operand tier calls used to push.
 func (c *compiler) callSiteArgs(hints []bytecode.ArgHint, pos token.Pos) int {
 	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
 		Pos: pos, Args: hints,
