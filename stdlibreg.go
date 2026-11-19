@@ -20,6 +20,7 @@ import (
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
+	stdlibmaps "github.com/podhmo/minigo/internal/stdlib/maps"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
 	stdlibnet "github.com/podhmo/minigo/internal/stdlib/net"
 	stdlibnetip "github.com/podhmo/minigo/internal/stdlib/netip"
@@ -29,6 +30,8 @@ import (
 	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
 	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
 	stdlibsha256 "github.com/podhmo/minigo/internal/stdlib/sha256"
+	stdlibslices "github.com/podhmo/minigo/internal/stdlib/slices"
+	stdlibsort "github.com/podhmo/minigo/internal/stdlib/sort"
 	stdlibstrconv "github.com/podhmo/minigo/internal/stdlib/strconv"
 	stdlibstrings "github.com/podhmo/minigo/internal/stdlib/strings"
 	stdlibstringslite "github.com/podhmo/minigo/internal/stdlib/stringslite"
@@ -66,9 +69,9 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("html", func() { stdlibhtml.Install(e.bindBound) })
 	e.pending.Register("path", func() { stdlibpath.Install(e.bindBound) })
 	e.pending.Register("reflect", func() { e.installReflect() })
-	e.pending.Register("sort", func() { e.installSort(h) })
-	e.pending.Register("slices", func() { e.installSlices(h) })
-	e.pending.Register("maps", func() { e.installMaps(h) })
+	e.pending.Register("sort", func() { stdlibsort.Install(e.bindBound, h) })
+	e.pending.Register("slices", func() { stdlibslices.Install(e.bindBound, h, e.typedSeq) })
+	e.pending.Register("maps", func() { stdlibmaps.Install(e.bindBound, h, e.typedSeq) })
 	e.pending.Register("os", func() { stdlibos.Install(e.bindBound, h, h.env) })
 	e.pending.Register("path/filepath", func() { stdlibfilepath.Install(e.bindBound, h, h.env) })
 	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })
