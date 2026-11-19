@@ -33,7 +33,7 @@ func (c *compiler) selMember(ref *runtime.ImportRef, name string) semantics.Resu
 		// Missing, Failed — and Deferred without a materialized
 		// package — all mean the oracle cannot answer here; the
 		// classification defers rather than answering false.
-		return semantics.Result[*memberFact]{Kind: res.Kind}
+		return semantics.Result[*memberFact]{Kind: res.Kind, Err: res.Err}
 	}
 	p := res.Val
 	answer := func(f *memberFact) semantics.Result[*memberFact] {
@@ -141,6 +141,14 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
 			return true, true
 		}
+	}
+	// a declared type's spec still spells its shape — `type List []T`
+	// materializes with the declared kind, not the slice's, and the
+	// Kind switch above reports it non-nilable. Read the spec expr,
+	// unfolded under the decl's own file scope.
+	if f.td.Anon != nil {
+		n, _ := c.nilableTypExpr(c.unfoldScopedTypExpr(f.td.Anon, f.td.File, 4))
+		return n, true
 	}
 	return false, true
 }
