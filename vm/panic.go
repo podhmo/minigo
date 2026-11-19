@@ -285,7 +285,8 @@ func (v *VM) unwind(f *frame, r any) {
 		// finalResult reads f.results/locals — never f.stack — so
 		// truncating first cannot corrupt the returned value.
 		r := v.finalResult(f)
-		f.stack = append(f.stack[:0], r)
+		f.setSp(0)
+		f.push(r)
 	}
 }
 
@@ -528,7 +529,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 // a real frame: no chunk, no locals — it occupies the deferred call's
 // slot without counting as a frame between.
 func (v *VM) pushDeferredSentinel(name string) {
-	v.frames = append(v.frames, &frame{fn: &runtime.Function{Name: name}, sentinel: true})
+	v.frames = append(v.frames, &frame{fn: &runtime.Function{Name: name}, sentinel: true, v: v, base: len(v.vals)})
 }
 
 // gopanicCallSite is the fabricated frame Callers interposes between a

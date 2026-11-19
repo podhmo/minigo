@@ -21,6 +21,7 @@ package vm
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"unicode/utf8"
 
@@ -277,7 +278,7 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 	}
 	it.Started = true
 	bodyStart := top + 1
-	stackMark := len(f.stack)
+	stackMark := f.sp
 	// loopDone marks the whole loop as over once the producer returns
 	// (or panics out). An escaped yield called after that must not touch
 	// f: the frame may already be recycled for an unrelated call. After
@@ -288,7 +289,7 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 		loopDone = true
 		// A panic recovered inside the producer can leave the body's
 		// operand pushes behind — restore the pre-loop depth.
-		f.stack = f.stack[:stackMark]
+		f.setSp(stackMark)
 	}()
 	yield := &runtime.BuiltinFunc{
 		Name: "yield",
@@ -310,6 +311,44 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 			}
 			// a producer may yield more values than the loop binds —
 			// `for m := range seq2` keeps only the first, like Go.
+			// Park the suspended tail first: the frames waiting on this
+			// yield (the producer and its callers) own the arena region
+			// right above f's window, and the body's pushes into f's
+			// stack would overwrite their operands. Copy the region
+			// out, run the body on a free tail, then re-append it and
+			// shift the suspended bases by how much f's window grew.
+			savedTop := f.base + f.sp
+			parked := slices.Clone(v.vals[savedTop:])
+			fIdx := -1
+			for i, fr := range v.frames {
+				if fr == f {
+					fIdx = i
+					break
+				}
+			}
+			// susp is exactly the frames this park detaches — a frame
+			// already tailParked by an enclosing yield keeps its own
+			// copy and its own shift, so nested producers never
+			// double-shift each other's windows.
+			var susp []*frame
+			if fIdx >= 0 {
+				for _, fr := range v.frames[fIdx+1:] {
+					if fr.base >= savedTop && !fr.tailParked {
+						fr.tailParked = true
+						susp = append(susp, fr)
+					}
+				}
+			}
+			v.vals = v.vals[:savedTop]
+			defer func() {
+				shift := len(v.vals) - savedTop
+				v.vals = append(v.vals, parked...)
+				for _, fr := range susp {
+					fr.base += shift
+					fr.tailParked = false
+					fr.refresh()
+				}
+			}()
 			for i := 0; i < nvars && i < len(args); i++ {
 				f.push(args[i])
 			}

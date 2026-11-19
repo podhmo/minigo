@@ -285,8 +285,8 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 	}
 	v.exec(fr)
 	var r runtime.Value = runtime.NIL
-	if n := len(fr.stack); n > 0 {
-		r = fr.stack[n-1]
+	if fr.sp > 0 {
+		r = fr.stack[fr.sp-1]
 	}
 	freeFrame(fr)
 	return r, nil
@@ -480,13 +480,19 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 	ch := fn.Chunk
 	fr := framePool.Get().(*frame)
 	fr.fn, fr.ch, fr.upvals = fn, ch, upvals
-	if cap(fr.stack) < 16 {
-		// a first-use frame gets a stack deep enough to skip the 2→4→8
-		// append growth most expression evaluation would otherwise pay.
-		fr.stack = make([]runtime.Value, 0, 16)
-	} else {
-		fr.stack = fr.stack[:0]
+	// The window starts at the arena's live top: for a nested call
+	// that is the caller's operand end; for a root call the arena is
+	// reset. Dead tails from unwound frames are already reclaimed by
+	// the unwinding frame's own stack reset, so nothing trims here —
+	// trimming to a suspended top frame's end would wrongly cut into
+	// the running frame's operands during a parked yield body.
+	fr.v = v
+	if len(v.frames) == 0 {
+		v.vals = v.vals[:0]
 	}
+	fr.base = len(v.vals)
+	fr.sp = 0
+	fr.stack = v.vals[fr.base:]
 	// locals is a value array: only slots the compiler marked boxed
 	// (P4-2a) — or every slot on an unclassified chunk — get a cell;
 	// plain slots hold their value in place and allocate nothing.
