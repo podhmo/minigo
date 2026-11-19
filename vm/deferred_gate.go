@@ -85,7 +85,7 @@ func (v *VM) typGate(f *frame, siteA, siteB *bytecode.CallSite, mask int) {
 				other = tdb
 			}
 			if other != nil && other.Name != "" && !v.nilableTypedef(other) {
-				f.trap("invalid operation: mismatched types %s and untyped nil", tdName(other))
+				f.trap("invalid operation: mismatched types %s and untyped nil", tdNameIn(f.fn.Pkg, other))
 			}
 		}
 	}
@@ -99,7 +99,7 @@ func (v *VM) typGate(f *frame, siteA, siteB *bytecode.CallSite, mask int) {
 		return
 	}
 	if !sameTypeDef(tda, tdb) {
-		f.trap("invalid operation: mismatched types %s and %s", tdName(tda), tdName(tdb))
+		f.trap("invalid operation: mismatched types %s and %s", tdNameIn(f.fn.Pkg, tda), tdNameIn(f.fn.Pkg, tdb))
 	}
 }
 
