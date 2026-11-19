@@ -115,7 +115,7 @@ func builtins(e *Engine) *runtime.Env {
 					}
 					a = cv
 				} else {
-					nv, err := uconstNative(u)
+					nv, err := runtime.UConstNative(u)
 					if err != nil {
 						return nil, err
 					}
@@ -268,7 +268,7 @@ func builtins(e *Engine) *runtime.Env {
 			// copy(dst, "str"): a string source copies into []byte. A
 			// declared untyped const arrives as a *UConst — materialize
 			// it like the literal Go folds at compile time.
-			if s, ok := constNative(runtime.Unwrap(args[1])).(string); ok {
+			if s, ok := hostbridge.ConstNative(runtime.Unwrap(args[1])).(string); ok {
 				src = &runtime.Slice{Elems: make([]runtime.Value, len(s))}
 				if dst != nil {
 					// a nil-slice dst copies 0 elements — keep Typ
@@ -343,7 +343,7 @@ func builtins(e *Engine) *runtime.Env {
 			if u, ok := kv.(*runtime.UConst); ok {
 				// no declared key type to materialize against — keep the
 				// raw native shape (complex keys box into GoValue).
-				nv, err := uconstNative(u)
+				nv, err := runtime.UConstNative(u)
 				if err != nil {
 					return nil, err
 				}
@@ -403,7 +403,7 @@ func builtins(e *Engine) *runtime.Env {
 		if !ok {
 			return nil, fmt.Errorf("make of non-type %T", args[0])
 		}
-		if r, ok := makeHostType(td, args); ok {
+		if r, ok := hostbridge.MakeHostType(td, args); ok {
 			return r, nil // a bound host slice or map type (net.IP)
 		}
 		switch td.Kind {
@@ -669,7 +669,7 @@ func lenOf(v runtime.Value) (runtime.Value, error) {
 	case *runtime.UConst:
 		// len("lit")/len(NamedConstStr) — Go folds the call on a
 		// constant operand; materialize before measuring.
-		nv, err := uconstNative(x)
+		nv, err := runtime.UConstNative(x)
 		if err != nil {
 			return nil, err
 		}
@@ -942,8 +942,8 @@ func orderedLess(a, b runtime.Value) bool {
 	// const operands compare by their default-type value — min/max
 	// of constants is itself a constant expression in Go, so the
 	// winning (still-UConst) argument is what gets returned.
-	a = constNative(a)
-	b = constNative(b)
+	a = hostbridge.ConstNative(a)
+	b = hostbridge.ConstNative(b)
 	// a raw host integer scalar (time.Duration) compares by its int64
 	// nanoseconds — the same reading the VM's equality path uses.
 	if iv, ok := runtime.SmallIntOf(a); ok {
@@ -977,22 +977,6 @@ func orderedLess(a, b runtime.Value) bool {
 
 // constNative materializes an untyped constant reaching a builtin
 // argument — the call Go would fold at compile time runs at runtime
-// instead, so the constant must land as its default-type value.
-// (Declared consts keep the UConst box past the call boundary: each
-// builtin materializes it at the position a concrete value is needed.)
-func constNative(v runtime.Value) runtime.Value {
-	if u, ok := v.(*runtime.UConst); ok {
-		nv, err := uconstNative(u)
-		if err != nil {
-			// a builtin arg position materializes the constant — an
-			// unmaterializable one is a program failure, like intOf.
-			panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
-		}
-		return nv
-	}
-	return v
-}
-
 // constPart implements real/imag on a constant operand: an untyped
 // complex constant gives an untyped FLOAT constant (`real(1+2i)/2` is
 // 0.5), a typed one — `complex64(c)`, Tag{complex64, UConst} — the
@@ -1134,7 +1118,7 @@ func display(vc runtime.CallerRef, v runtime.Value) any {
 		}
 		return nil
 	case *runtime.UConst:
-		nv, err := uconstNative(x)
+		nv, err := runtime.UConstNative(x)
 		if err != nil {
 			return err.Error()
 		}
@@ -1143,7 +1127,7 @@ func display(vc runtime.CallerRef, v runtime.Value) any {
 		// a typed constant materializes through its declared type, not
 		// the default one: `uint64(1<<64 - 1)` is max-uint where the
 		// untyped reading would overflow int.
-		if mv, ok := constAtWidth(vc, x); ok {
+		if mv, ok := hostbridge.ConstAtWidth(vc, x); ok {
 			x = runtime.Tag(x.Typ, mv)
 		}
 		// a declared unsigned-int tag means the int64 payload holds
