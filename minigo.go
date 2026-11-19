@@ -401,11 +401,25 @@ func (e *Engine) newVM() *vm.VM {
 // policy; compileFunc is the per-function compile hook materialization
 // stamps onto Function.Compile.
 func (e *Engine) compileExpr(pkg *runtime.Package, file *syntax.File, x ast.Expr) (*bytecode.Chunk, error) {
-	return compile.ExprStrict(pkg, file, x, e.strictLazy)
+	ch, err := compile.ExprStrict(pkg, file, x, e.strictLazy)
+	if err != nil || !e.verifyChunks || ch == nil {
+		return ch, err
+	}
+	if verr := e.verifyChunk(ch); verr != nil {
+		return nil, fmt.Errorf("eval fragment in %s: %w", pkg.Path, verr)
+	}
+	return ch, nil
 }
 
 func (e *Engine) compileScopedExpr(pkg *runtime.Package, file *syntax.File, x ast.Expr, locals, upvals map[string]int) (*bytecode.Chunk, error) {
-	return compile.ExprScopedStrict(pkg, file, x, locals, upvals, e.strictLazy)
+	ch, err := compile.ExprScopedStrict(pkg, file, x, locals, upvals, e.strictLazy)
+	if err != nil || !e.verifyChunks || ch == nil {
+		return ch, err
+	}
+	if verr := e.verifyChunk(ch); verr != nil {
+		return nil, fmt.Errorf("scoped expression in %s: %w", pkg.Path, verr)
+	}
+	return ch, nil
 }
 
 func (e *Engine) compileFunc(fn *runtime.Function) error {
@@ -433,10 +447,7 @@ func (e *Engine) compileFunc(fn *runtime.Function) error {
 		return err
 	}
 	if e.verifyChunks && fn.Chunk != nil {
-		if _, verr := bytecode.Verify(fn.Chunk); verr != nil {
-			return fmt.Errorf("%s: %w", fn.Name, verr)
-		}
-		if _, verr := bytecode.VerifyKinds(fn.Chunk); verr != nil {
+		if verr := e.verifyChunk(fn.Chunk); verr != nil {
 			return fmt.Errorf("%s: %w", fn.Name, verr)
 		}
 	}
@@ -444,6 +455,27 @@ func (e *Engine) compileFunc(fn *runtime.Function) error {
 	// must not satisfy a later instantiation's lookup.
 	if key != "" {
 		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
+	}
+	return nil
+}
+
+// verifyChunk runs the verifiers over a compiled chunk and every nested
+// function reachable through its constants (P4-1b): function-literal
+// protos and lazy member functions land there as *runtime.Function
+// values, so one walk covers every chunk a compile produced.
+func (e *Engine) verifyChunk(ch *bytecode.Chunk) error {
+	if _, err := bytecode.Verify(ch); err != nil {
+		return err
+	}
+	if _, err := bytecode.VerifyKinds(ch); err != nil {
+		return err
+	}
+	for _, cv := range ch.Consts {
+		if fn, ok := cv.(*runtime.Function); ok && fn.Chunk != nil && fn.Chunk != ch {
+			if err := e.verifyChunk(fn.Chunk); err != nil {
+				return fmt.Errorf("%s: %w", fn.Name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -1571,6 +1603,11 @@ func (e *Engine) bootstrap(p *runtime.Package, run func(*runtime.Function) error
 	if err != nil {
 		return err
 	}
+	if e.verifyChunks {
+		if verr := e.verifyChunk(ch); verr != nil {
+			return fmt.Errorf("%s.__init__: %w", p.Name, verr)
+		}
+	}
 	e.bindCompiles(p, ch)
 	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__init__", Chunk: ch}
 	return run(fn)
@@ -1588,6 +1625,11 @@ func (e *Engine) bootstrapConsts(p *runtime.Package, run func(*runtime.Function)
 	}
 	if ch == nil {
 		return fmt.Errorf("package %s: const specs need the full initializer", p.Name)
+	}
+	if e.verifyChunks {
+		if verr := e.verifyChunk(ch); verr != nil {
+			return fmt.Errorf("%s.__consts__: %w", p.Name, verr)
+		}
 	}
 	e.bindCompiles(p, ch)
 	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch}

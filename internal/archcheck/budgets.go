@@ -234,6 +234,6 @@ var FileBudgetExceptions = map[string]string{
 	"internal/cmd/archcheck/main.go":  "M1-4: -budget-base flag wiring",
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
-	"minigo.go": "M4-6b: compileFunc owns the instM cache check/store",
+	"minigo.go": "M4-6b instM cache check/store + P4-1b verifyChunk",
 	"typeid.go": "M4-6b: e.instKey computes the TypeID instantiation key",
 }
