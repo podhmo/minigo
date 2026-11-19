@@ -2298,7 +2298,31 @@ func refersByRole(n *Node) bool {
 	switch n.Role {
 	case "Sel", "Label", "Name", "Names":
 		return false
+	case "Lhs":
+		// `x := ...` declares x — its LHS names a new local, it does
+		// not refer to one. `x = ...` and compound targets still do.
+		if a, ok := n.parent.node.(*ast.AssignStmt); ok && a.Tok == token.DEFINE {
+			if _, ok := n.node.(*ast.Ident); ok {
+				return false
+			}
+		}
+		return true
+	case "Value":
+		// `for k, v := range` declares both bound names.
+		if r, ok := n.parent.node.(*ast.RangeStmt); ok && r.Tok == token.DEFINE {
+			if _, ok := n.node.(*ast.Ident); ok {
+				return false
+			}
+		}
+		return true
 	case "Key":
+		// `for k := range` declares k — a KeyValueExpr key is handled
+		// below (field name or map/array key).
+		if r, ok := n.parent.node.(*ast.RangeStmt); ok && r.Tok == token.DEFINE {
+			if _, ok := n.node.(*ast.Ident); ok {
+				return false
+			}
+		}
 		kv := n.parent
 		if kv == nil || kv.parent == nil {
 			return true
@@ -2480,7 +2504,7 @@ func (n *Node) litUnderlying(lt litType) (litType, bool) {
 			if n.tparams[id.Name] {
 				return litType{}, false
 			}
-			if n.scopes != nil && n.scopes.At(id.Name, lt.pos) {
+			if n.scopes != nil && n.scopes.AtLocal(id.Name, lt.pos) {
 				ts := n.localTypeSpec(id.Name, lt.pos)
 				if ts == nil {
 					return litType{}, false
@@ -2570,7 +2594,7 @@ func (n *Node) foreignTypeSpec(impName, sel string) *ast.TypeSpec {
 
 // localAt reports whether a local binding of name is in scope at pos.
 func (te *TypeExpr) localAt(name string, pos token.Pos) bool {
-	return te.scopes != nil && te.scopes.At(name, pos)
+	return te.scopes != nil && te.scopes.AtLocal(name, pos)
 }
 
 // localTypeSpec finds the `type name` decl in scope at pos, walking the

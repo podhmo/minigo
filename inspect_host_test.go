@@ -576,6 +576,32 @@ func TestBodyScope(t *testing.T) {
 	if !hit {
 		t.Error("no strings.TrimSpace in ShadowBlock")
 	}
+
+	// DeclSites: idents bound by := and range-:= report no SymbolID at
+	// their own declaring position; their later uses are plain locals.
+	dd := p.Index.Funcs["DeclSites"]
+	droot, err := xinspect.BodyOf(xinspect.NewDecl(p, dd))
+	if err != nil {
+		t.Fatalf("BodyOf DeclSites: %v", err)
+	}
+	var decl int
+	var walkDecl func(n *xinspect.Node)
+	walkDecl = func(n *xinspect.Node) {
+		for _, c := range xinspect.NodesOf(n) {
+			declaring := n.Detail == ":=" && (c.Role == "Lhs" || c.Role == "Key" || c.Role == "Value")
+			if declaring && c.Kind == "Ident" {
+				decl++
+				if sid, ok := xinspect.ExprOf(c).SymbolID(); ok {
+					t.Errorf("declared name %s resolved to %v", c.Text, sid)
+				}
+			}
+			walkDecl(c)
+		}
+	}
+	walkDecl(droot)
+	if decl != 3 {
+		t.Errorf("declaring idents = %d, want 3 (x, k, v)", decl)
+	}
 }
 
 // TestDotImportSymbolID pins the under-resolution a dot import forces:
@@ -693,6 +719,31 @@ func TestTypeParamSymbolID(t *testing.T) {
 	}
 	if sid, _ := def.Children()[0].SymbolID(); sid.PackagePath != p.Path || sid.Name != "Pair" {
 		t.Errorf("IPair def base SymbolID = %v", sid)
+	}
+	// a generic func body's use of its own parameter is marked too —
+	// LocalScopes binds params as locals, which used to win the race.
+	ud := p.Index.Funcs["UseT"]
+	uroot, err := xinspect.BodyOf(xinspect.NewDecl(p, ud))
+	if err != nil {
+		t.Fatalf("BodyOf UseT: %v", err)
+	}
+	var tused int
+	var walkT func(n *xinspect.Node)
+	walkT = func(n *xinspect.Node) {
+		for _, c := range xinspect.NodesOf(n) {
+			if c.Kind == "Ident" && c.Text == "T" {
+				tused++
+				sid, ok := xinspect.ExprOf(c).SymbolID()
+				if !ok || sid.PackagePath != xinspect.TypeParamPackagePath || sid.Name != "T" {
+					t.Errorf("body T use SymbolID = %v, %v", sid, ok)
+				}
+			}
+			walkT(c)
+		}
+	}
+	walkT(uroot)
+	if tused == 0 {
+		t.Error("no T use found in UseT")
 	}
 	// a method binds its receiver's parameter names.
 	ms, err := xinspect.MethodsOf(lookupType(t, p, "Pair"))
