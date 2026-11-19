@@ -2329,6 +2329,13 @@ type SeqSource struct {
 	// Collect, when set, returns all elements of a single-value seq at
 	// once — a fast path for consumers like slices.Collect.
 	Collect func(vc ScriptCaller) []Value
+	// Materialized, when non-nil, holds a single-value seq's elements
+	// already realized — Each just yields them in order, so a
+	// range-over-func loop may iterate this slice directly instead of
+	// driving the producer through yield. Sources that produce lazily
+	// (a live map iterator) leave it nil: snapshotting them would
+	// change which entries a loop sees.
+	Materialized []Value
 }
 
 // SmallIntOf converts a host value of any integer kind, including named

@@ -121,6 +121,12 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		// iter.Seq/Seq2-style producer: the whole loop runs inside the
 		// first OpRangeNext via yield — see driveFuncIter.
+		if b, ok := coll.(*runtime.BuiltinFunc); ok && b.Seq != nil && b.Seq.Materialized != nil {
+			// a seq whose elements exist already iterates them
+			// directly — 'q' yields each element as the sole value,
+			// like a single-value iter.Seq.
+			return mkIter(runtime.Iterator{Kind: 'q', Elems: b.Seq.Materialized})
+		}
 		return mkIter(runtime.Iterator{Kind: 'f', Fn: c})
 	case int64:
 		return mkIter(runtime.Iterator{Kind: 'i', Limit: int(c)})
@@ -179,6 +185,16 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 			return false
 		}
 		push(int64(it.Idx), it.Elems[it.Idx])
+		it.Idx++
+		return true
+	case 'q':
+		// a materialized single-value seq: the element is the only
+		// yielded value — `for x := range seq` binds x to it (push
+		// duplicates like 'c' so a two-var spelling keeps the first).
+		if it.Idx >= len(it.Elems) {
+			return false
+		}
+		push(it.Elems[it.Idx], it.Elems[it.Idx])
 		it.Idx++
 		return true
 	case 'm':
