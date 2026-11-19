@@ -4046,3 +4046,11 @@ func TestBoundStarStarAssert(t *testing.T) {
 
 type starPtrT struct{ X int }
 type starPtrU struct{ Y int }
+
+func TestSeqTwoVarEmpty(t *testing.T) {
+	e := newEngine(t)
+	got := run(t, e, "./testdata/seqtwovar", "Empty")
+	if diff := cmp.Diff(runtime.Value("done"), got); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+}

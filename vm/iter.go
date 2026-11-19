@@ -192,13 +192,13 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 	case 'q':
 		// a materialized single-value seq: the element is the only
 		// yielded value — `for x := range seq` binds x to it. A two-var
-		// spelling rejects the short yield like driveFuncIter's
-		// missing-value detection.
-		if nvars == 2 {
-			f.trap("yield must be called with %d argument(s), got %d", nvars, 1)
+		if it.Idx >= len(it.Elems) {
 			return false
 		}
-		if it.Idx >= len(it.Elems) {
+		// spelling rejects the short yield like driveFuncIter's
+		// missing-value detection — only once a value exists.
+		if nvars == 2 {
+			f.trap("yield must be called with %d argument(s), got %d", nvars, 1)
 			return false
 		}
 		push(it.Elems[it.Idx], it.Elems[it.Idx])
