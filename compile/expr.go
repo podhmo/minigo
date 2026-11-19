@@ -168,7 +168,7 @@ func (c *compiler) expr(e ast.Expr) {
 		}
 	case *ast.SelectorExpr:
 		c.boxReceiver(x.X, x.Sel.Name)
-		c.selectorBase(x.X)
+		c.selectorBase(x.X, x.Sel.Name)
 		// the member's own position — Go reports a select failure at the
 		// .Sel token, which matters when the callee wraps to the next
 		// line (`v.\n\t\tA()` reports A's line, not v's).
