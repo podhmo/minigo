@@ -161,6 +161,9 @@ func freeFrame(f *frame) {
 	f.stack = nil
 	f.base, f.sp = 0, 0
 	f.tailParked = false
+	// drop the VM link — a pooled frame must not pin its goroutine's
+	// arena, hooks, or the session behind them.
+	f.v = nil
 	f.ip = 0
 	for i := range f.defers {
 		f.defers[i] = deferredCall{}
@@ -308,6 +311,10 @@ func (f *frame) push(x runtime.Value) {
 
 func (f *frame) pop() runtime.Value {
 	x := f.stack[f.sp-1]
+	// nil the slot before dropping it — the backing arena keeps the
+	// region past len, and a dead script value pinned there outlives
+	// the pop by a whole session otherwise.
+	f.stack[f.sp-1] = nil
 	f.sp--
 	f.stack = f.stack[:f.sp]
 	// at the tail the arena shrinks with the pop; below a suspended
@@ -320,6 +327,9 @@ func (f *frame) pop() runtime.Value {
 
 // setSp resizes the window — the in-loop form of a multi-pop.
 func (f *frame) setSp(n int) {
+	// clear the dropped slots first — like pop, the arena keeps the
+	// region past len and would pin dead operands in it.
+	clear(f.stack[n:f.sp])
 	f.sp = n
 	f.stack = f.v.vals[f.base : f.base+n]
 	if f.base+n < len(f.v.vals) {
