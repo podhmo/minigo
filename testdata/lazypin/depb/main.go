@@ -8,4 +8,6 @@ func boom() int { panic("BOOM: depb initialized") }
 
 type T struct{ X int }
 
+func (T) M() int { return 1 }
+
 func Get() int { return Touched }

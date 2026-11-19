@@ -576,6 +576,21 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 		}
 		fn = inferred
 	}
+	// a method call is a value touch of the method's declaring package:
+	// under GoCompatibleInit its vars and init() must have run before
+	// the body executes. Method calls reach code the member query never
+	// touched — embed.FS.Open reads dotFile, and an init() writing into
+	// an import expects the import live (go/parser→scannerhooks). A
+	// package mid-init (State == Initializing) keeps running, so an init
+	// cycle cannot deadlock; plain Functions already initialized through
+	// the member touch that served them.
+	if _, isMethod := callee.(*runtime.BoundMethod); isMethod {
+		if p := fn.Pkg; p != nil && p.Index != nil && !p.LazyInit && p.State() < runtime.Initializing {
+			if err := p.EnsureReadyRun(v.runInit); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err := fn.EnsureCompiled(); err != nil {
 		// attribute the failure to the callee: name its declaration so the
 		// trap (recorded at the caller's OpCall site) still says where the

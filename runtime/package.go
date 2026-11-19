@@ -457,9 +457,21 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 		return v, nil
 	}
 	if p.Index != nil && p.LazyInit {
-		// functions and type decls are queryable without running
-		// initializers; var/const values require the package to be Ready
-		if d, ok := p.Index.Lookup(name); ok && (d.Kind == index.FuncDecl || d.Kind == index.TypeDecl) {
+		// functions are queryable without running initializers; var/const
+		// values require the package to be Ready
+		if d, ok := p.Index.Lookup(name); ok && d.Kind == index.FuncDecl {
+			if materialize == nil {
+				return nil, fmt.Errorf("no materializer for %s.%s", p.Name, name)
+			}
+			return materialize(p, d)
+		}
+	}
+	// A type member is a declaration, not a value: it materializes from
+	// the index in either init mode — the package initializes on a value
+	// read (a var/const touch or a call), not on a type-only query such
+	// as `var t depb.T`.
+	if p.Index != nil {
+		if d, ok := p.Index.Lookup(name); ok && d.Kind == index.TypeDecl {
 			if materialize == nil {
 				return nil, fmt.Errorf("no materializer for %s.%s", p.Name, name)
 			}

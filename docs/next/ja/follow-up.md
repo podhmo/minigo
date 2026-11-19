@@ -15,7 +15,7 @@
 
 ## 完了条件まで残っている実装
 
-- [ ] **M0-4 / M4-8 — 型だけの問い合わせで init が走る経路を直す**。index の問い合わせと未実行分岐は遅延性を確認済み。`pkg.Member("T")` とスクリプト内の `var t depb.T` は、現在の pin テストが init の panic を期待している。型の解決には宣言の materialize だけを使い、値の読み出しで初期化する。通常・strict 両方で `Indexed` のままになり、値に触れた時点で初期化されることをパス単位で固定する。[pin テスト](../../../lazypin_test.go)・[既存のバグ票](../../../TODO.md)
+- [x] **M0-4 / M4-8 — 型だけの問い合わせで init が走る経路を直す**。index の問い合わせと未実行分岐は遅延性を確認済み。`pkg.Member("T")` とスクリプト内の `var t depb.T` は、現在の pin テストが init の panic を期待している。型の解決には宣言の materialize だけを使い、値の読み出しで初期化する。通常・strict 両方で `Indexed` のままになり、値に触れた時点で初期化されることをパス単位で固定する。[pin テスト](../../../lazypin_test.go)・[既存のバグ票](../../../TODO.md)
 - [x] **M1-3 / M5-1 — 同じパッケージの実行状態型も検査する**。フィールド検査は修飾型名だけを禁止リストと照合する。合成した `runtime` パッケージで `PackageImage` に `Leaked *Cell` を置くと、違反が 0 件になることを再現した。同一パッケージの識別子も完全修飾名に正規化して照合し、無修飾の型・エイリアスの負例を足す。[名前の検査](../../../internal/archcheck/archcheck.go#L326-L355)
 - [ ] **M1-4 — ファイルサイズの上限をベースブランチから単調にする**。`CheckSizes` は現在の行数と同じブランチ上の表を突き合わせ、両方を増やすと通過する。実際に `b5642958` で既存ファイルの予算が増加した。CI で PR のマージベースにある表と比較し、既存パスの増額を検出する。ファイル分割や明示的な例外の扱いも同時に記録する。[サイズ検査](../../../internal/archcheck/archcheck.go#L202-L226)・[予算の増額](https://github.com/podhmo/minigo/commit/b5642958b428a6f482629a28856da5adadf21626)
 - [x] **M2-2 / M2-4 / M5-1 — アーキテクチャ検査の実行入口と禁止境界をそろえる**。`go test` は `compile` の禁止呼び出しと `PackageImage` の共有フィールドを検査する。`make archcheck` の CLI は両方を省き、`internal/source` が `EnsureReady` 系を呼ぶ経路も禁止されていない。semantics の `Source.Load` はこのアダプターへ到達する。CI のテストと CLI で検査を共有し、source 側に初期化呼び出しを加えた負例が落ちるようにする。[CLI](../../../internal/cmd/archcheck/main.go#L59-L78)・[禁止規則](../../../internal/archcheck/rules.go#L56-L71)・[テスト](../../../internal/archcheck/archcheck_test.go#L100-L146)
