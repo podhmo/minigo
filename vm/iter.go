@@ -167,7 +167,9 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 			f.push(val)
 			return
 		}
-		f.push(key) // single-var range yields index/key
+		if nvars == 1 {
+			f.push(key) // single-var range yields index/key
+		}
 	}
 	switch it.Kind {
 	case 's':
@@ -189,8 +191,12 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		return true
 	case 'q':
 		// a materialized single-value seq: the element is the only
-		// yielded value — `for x := range seq` binds x to it (push
-		// duplicates like 'c' so a two-var spelling keeps the first).
+		// yielded value — `for x := range seq` binds x to it. A two-var
+		// spelling stops at the first element like driveFuncIter's
+		// missing-value detection.
+		if nvars == 2 {
+			return false
+		}
 		if it.Idx >= len(it.Elems) {
 			return false
 		}

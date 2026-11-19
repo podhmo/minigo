@@ -189,7 +189,7 @@ var FileBudgets = map[string]int{
 	"vm/goroutine_id_asm.go":                       17,
 	"vm/iface_reqs.go":                             69,
 	"vm/hostslice.go":                              66,
-	"vm/iter.go":                                   392,
+	"vm/iter.go":                                   398,
 	"vm/loop.go":                                   1115,
 	"vm/panic.go":                                  543,
 	"vm/processcaller.go":                          179,
