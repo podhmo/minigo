@@ -51,6 +51,11 @@ func ChunksBoxedAny() int64   { return 0 }
 func SlotsLocal() int64       { return 0 }
 func SlotsBoxed() int64       { return 0 }
 
+// NoteSlotPromoted/SlotsPromoted: the run-time promotion counter;
+// no-op and 0 without the tag.
+func NoteSlotPromoted()    {}
+func SlotsPromoted() int64 { return 0 }
+
 // NoteBoxReason is a no-op without the spike tag.
 func NoteBoxReason(why string) {}
 

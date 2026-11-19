@@ -93,8 +93,8 @@ var FileBudgets = map[string]int{
 	"internal/source/parse.go":                     127,
 	"internal/source/parsecache.go":                189,
 	"internal/source/source.go":                    105,
-	"internal/spike/spike_off.go":                  62,
-	"internal/spike/spike_on.go":                   106,
+	"internal/spike/spike_off.go":                  67,
+	"internal/spike/spike_on.go":                   113,
 	"intrinsics.go":                                1333,
 	"intrinsics_bufio.go":                          106,
 	"intrinsics_bytes.go":                          6,
@@ -197,7 +197,7 @@ var FileBudgets = map[string]int{
 	"vm/deferred_gate.go":                          111,
 	"vm/deferred_lit.go":                           57,
 	"vm/ffi_marshal.go":                            633,
-	"vm/frame.go":                                  362,
+	"vm/frame.go":                                  363,
 	"vm/generic.go":                                1538,
 	"vm/goroutine_id.go":                           36,
 	"vm/goroutine_id_asm.go":                       17,
@@ -236,4 +236,7 @@ var FileBudgetExceptions = map[string]string{
 	// typeid.go gained the instKey TypeID keyer.
 	"minigo.go": "M4-6b instM cache check/store + P4-1b verifyChunk",
 	"typeid.go": "M4-6b: e.instKey computes the TypeID instantiation key",
+	// P4-2c: run-time counters for plain-slot promotions.
+	"internal/spike/spike_on.go": "P4-2c: plain-slot promotion counters",
+	"vm/frame.go":                "P4-2c: promotion metric hook on slot promote",
 }
