@@ -3,6 +3,7 @@
 package minigo
 
 import (
+	stdatomic "github.com/podhmo/minigo/internal/stdlib/atomic"
 	stdlibbase64 "github.com/podhmo/minigo/internal/stdlib/base64"
 	stdlibbufio "github.com/podhmo/minigo/internal/stdlib/bufio"
 	stdlibbytealg "github.com/podhmo/minigo/internal/stdlib/bytealg"
@@ -13,6 +14,7 @@ import (
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
 	stdlibfilepath "github.com/podhmo/minigo/internal/stdlib/filepath"
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
+	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
 	stdlibhex "github.com/podhmo/minigo/internal/stdlib/hex"
 	stdlibhost "github.com/podhmo/minigo/internal/stdlib/host"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
@@ -75,10 +77,10 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("minigo.dev/inspect", func() { e.installInspect() })
 	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
 	e.pending.Register("unsafe", func() { e.installUnsafe(h) })
-	e.pending.Register("runtime", func() { e.installRuntime(h) })
+	e.pending.Register("runtime", func() { stdruntime.Install(e.bindBound, h) })
 	e.pending.Register("time", func() { stdlibtime.Install(e.bindBound, h) })
 	e.pending.Register("sync", func() { stdlibsync.Install(e.bindBound, h) })
-	e.pending.Register("sync/atomic", func() { e.installSyncAtomic(h) })
+	e.pending.Register("sync/atomic", func() { stdatomic.Install(e.bindBound, h) })
 	e.pending.Register("context", func() { stdlibcontext.Install(e.bindBound, h) })
 	e.pending.Register("net", func() { stdlibnet.Install(e.bindBound, h, engineFileOf) })
 	e.pending.Register("net/netip", func() { stdlibnetip.Install(e.bindBound) })
