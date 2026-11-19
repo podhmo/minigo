@@ -49,8 +49,8 @@ var FileBudgets = map[string]int{
 	"inspect/stub.go":                              382,
 	"installbound.go": 120,
 	"internal/archcheck/all.go":                    57,
-	"internal/archcheck/archcheck.go": 569,
-	"internal/archcheck/budgets.go": 222,
+	"internal/archcheck/archcheck.go":              642,
+	"internal/archcheck/budgets.go":                234,
 	"internal/archcheck/rules.go":                  100,
 	"internal/assetaudit/assetaudit.go":            112,
 	"internal/bind/env.go":                         48,
@@ -226,4 +226,10 @@ var FileBudgets = map[string]int{
 // FileBudgetExceptions records paths whose budget may grow vs the merge
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
-var FileBudgetExceptions = map[string]string{}
+var FileBudgetExceptions = map[string]string{
+	// M1-4 itself: the merge-base growth check, its CLI flag, and the
+	// budgets table entry are the feature — these raises land once.
+	"internal/archcheck/archcheck.go": "M1-4: ParseFileBudgetsFile + CheckBudgetGrowth",
+	"internal/archcheck/budgets.go":   "M1-4: FileBudgetExceptions + doc comments",
+	"internal/cmd/archcheck/main.go":  "M1-4: -budget-base flag wiring",
+}
