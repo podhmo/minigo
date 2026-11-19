@@ -119,6 +119,11 @@ type frame struct {
 	// no longer be ruled out, so freeFrame drops the block.
 	cells       []runtime.Cell
 	cellsShared bool
+	// cellsAligned marks the pooled block laid out one cell per slot
+	// (non-escaping chunks): a promoted plain slot takes cells[i]
+	// instead of allocating. Escaping chunks pack only boxed cells and
+	// leave this false.
+	cellsAligned bool
 }
 
 // framePool recycles frames after a normal return. The frame object
@@ -183,6 +188,7 @@ func freeFrame(f *frame) {
 	} else {
 		clear(f.cells)
 	}
+	f.cellsAligned = false
 	framePool.Put(f)
 }
 
@@ -264,6 +270,20 @@ func (f *frame) localVal(i int) runtime.Value {
 // addressability the compiler's classification missed.
 func (f *frame) localCell(i int) *runtime.Cell {
 	if c, ok := f.boxedCell(i); ok {
+		return c
+	}
+	if f.cellsAligned && i < len(f.cells) && i < len(f.slotRefs) {
+		// a transient ref on a non-escaping chunk promotes the slot
+		// onto its pooled backing cell — the block and its wrapper
+		// recycle with the frame, so a promotion allocates nothing.
+		c := &f.cells[i]
+		c.Elem = f.locals[i]
+		if i < len(f.ltyps) {
+			c.Typ = f.ltyps[i]
+		}
+		f.slotRefs[i].c = c
+		f.locals[i] = &f.slotRefs[i]
+		spike.NoteSlotPromoted()
 		return c
 	}
 	c := &runtime.Cell{Elem: f.locals[i]}
