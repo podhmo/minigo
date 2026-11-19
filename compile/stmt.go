@@ -897,45 +897,38 @@ func selectRecv(comm ast.Stmt) (recv *ast.UnaryExpr, lhs []ast.Expr, define bool
 // A `:=` name also learns its static type for the operand gate — the
 // channel's element for v, bool for ok.
 func (c *compiler) bindRecv(lhs []ast.Expr, define bool, chExpr ast.Expr) {
+	if len(lhs) == 0 {
+		c.emit(bytecode.OpPop, 0, 0, 0)
+		return
+	}
 	var elem ast.Expr
 	var elemFile *syntax.File
-	var deferred bool
-	if define && len(lhs) > 0 && chExpr != nil {
-		if t := c.staticOpTyp(chExpr); t.te != nil {
+	var deferred ast.Expr
+	if define {
+		chExpr = ast.Unparen(chExpr)
+		t := c.staticOpTyp(chExpr)
+		if t.te != nil {
 			elem = c.chanElemTypExpr(t.te, t.teFile, 4)
 			elemFile = t.teFile
-		} else if t.deferred {
-			deferred = true
+		} else if src := c.deferOperandOf(chExpr); src != nil {
+			// An imported var may have an inferred type. Ask about
+			// its element in the declaring package at run time.
+			_, _, imported := c.selTypRef(src)
+			if t.deferred || imported && !c.deferExprHasLocal(src) {
+				deferred = &ast.IndexExpr{X: src}
+			}
 		}
 	}
-	switch len(lhs) {
-	case 0:
-		c.emit(bytecode.OpPop, 0, 0, 0)
-	case 1:
-		c.storeTarget(lhs[0], define)
-		c.noteBindVar(lhs[0], elem, elemFile, define)
-		if deferred {
-			if src := c.deferOperandOf(chExpr); src != nil {
-				c.noteDeferBindVar(lhs[0], define, &ast.IndexExpr{X: src})
-			}
-		}
-	default:
+	if len(lhs) > 1 {
 		c.emit3(bytecode.OpUnpack, len(lhs), 0, 0, 0)
-		for i := len(lhs) - 1; i >= 0; i-- {
-			c.storeTarget(lhs[i], define)
-		}
-		for i, l := range lhs {
-			if i == 0 {
-				c.noteBindVar(l, elem, elemFile, define)
-				if deferred {
-					if src := c.deferOperandOf(chExpr); src != nil {
-						c.noteDeferBindVar(l, define, &ast.IndexExpr{X: src})
-					}
-				}
-			} else {
-				c.noteBindVar(l, &ast.Ident{Name: "bool"}, nil, define)
-			}
-		}
+	}
+	for i := len(lhs) - 1; i >= 0; i-- {
+		c.storeTarget(lhs[i], define)
+	}
+	c.noteBindVar(lhs[0], elem, elemFile, define)
+	c.noteDeferBindVar(lhs[0], define, deferred)
+	for _, l := range lhs[1:] {
+		c.noteBindVar(l, &ast.Ident{Name: "bool"}, nil, define)
 	}
 }
 
