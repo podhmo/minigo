@@ -11,13 +11,22 @@ import (
 // type's AST lives nowhere minigo can reach. ptr selects the pointer
 // method set, matching the value/pointer promotion rule source decls
 // follow. The returned methods have no Decl (no source decl stands
-// behind them); callers set Via to the promotion origin.
+// behind them); callers set Via to the promotion origin. Each method
+// carries hdepth, the count of embedded-field hops inside the host
+// type that promoted it — a method promoted inside the host (Read
+// through bufio.ReadWriter's *bufio.Reader) must sit deeper than a
+// same-named member declared on a sibling embed.
 func hostMethodSpecs(d *Decl, ptr bool) []*Method {
 	var rt reflect.Type
-	if d.htd != nil && d.htd.HostNew != nil {
-		rt = d.htd.HostType()
-	}
-	if rt == nil {
+	if d.htd != nil {
+		if d.htd.HostNew != nil {
+			rt = d.htd.HostType()
+		}
+		// a TypeDef-bound decl's htype is the TypeDef's own reflect
+		// type — reading its methods would enumerate
+		// runtime.TypeDef's API (ResetCaches, ...), so a binding
+		// without HostNew contributes nothing.
+	} else {
 		// a decl built without a TypeDef binding still carries its
 		// Go type on htype.
 		rt = d.htype
@@ -26,7 +35,7 @@ func hostMethodSpecs(d *Decl, ptr bool) []*Method {
 		return nil
 	}
 	if ptr && rt.Kind() != reflect.Ptr {
-		rt = reflect.PtrTo(rt)
+		rt = reflect.PointerTo(rt)
 	} else if !ptr && rt.Kind() == reflect.Ptr {
 		rt = rt.Elem()
 	}
@@ -42,6 +51,7 @@ func hostMethodSpecs(d *Decl, ptr bool) []*Method {
 				Params:  reflectFields(mt.NumIn()-1, func(j int) reflect.Type { return mt.In(j + 1) }),
 				Results: reflectFields(mt.NumOut(), mt.Out),
 			},
+			hdepth: hostPromoDepth(rt, m.Name),
 		})
 	}
 	return out

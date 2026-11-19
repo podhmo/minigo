@@ -1000,6 +1000,33 @@ func PromotedWalk() string {
 	if len(bw.Sig.ParamFields()) != 1 || len(bw.Sig.ResultFields()) != 2 {
 		return "bad host promoted sig"
 	}
+	// a host embed's internally-promoted members sit deeper than a
+	// sibling embed's own declaration — A.Read wins over
+	// bufio.ReadWriter's promoted Read.
+	r := find(inspect.MethodSet(inspect.Symbol(ep, "RWWrap")), "Read")
+	if r == nil || r.Decl == nil || r.Via == nil || r.Via.Name != "A" {
+		return "host-internal promotion beat the shallower decl"
+	}
+	// an interface binding carrying only method names under-resolves
+	// instead of surfacing the binding type's own methods.
+	rms := inspect.MethodSet(inspect.Symbol(ep, "Rdr"))
+	for _, m := range rms {
+		if m.Name == "ResetCaches" || m.Name == "HostType" {
+			return "typedef methods leaked into the method set"
+		}
+	}
+	if find(rms, "Read") != nil {
+		return "unreadable host interface gained a method"
+	}
+	// Implementers matches a promoted host method by shape: the spec's
+	// []byte parameter is the reflected []uint8.
+	im := map[string]bool{}
+	for _, d := range inspect.Implementers(ep, inspect.Symbol(ep, "Reader")) {
+		im[d.Name] = true
+	}
+	if !im["Reader"] || !im["A"] || !im["BufWrap"] || !im["RWWrap"] || len(im) != 4 {
+		return "bad reader implementers"
+	}
 	// composite aliases borrow nothing; the pointer alias borrows *T's set.
 	if len(inspect.MethodSet(inspect.Symbol(p, "SliceAlias"))) != 0 {
 		return "slice alias borrowed a method set"
