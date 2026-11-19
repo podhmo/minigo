@@ -1,30 +1,22 @@
-// Package vm is the minigo stack-machine interpreter: it runs the
-// [bytecode.Chunk] code produced by [github.com/podhmo/minigo/compile].
-//
-// The host creates a [VM] with its [Hooks] filled in — the engine services
-// the VM needs, such as builtins and lazy materialization of package
-// members. [VM.Call] invokes a function-like value and is the error
-// boundary: script panics and traps come back as errors. A *VM implements
-// [runtime.VMCaller], through which host builtins call back into the script.
-//
-// Each Call runs inside a script process that the `go` statement's
-// goroutines share. By default the outermost Call opens the process and
-// ends it on return, stopping goroutines still running; to keep one
-// process across several Calls, hold it with [VM.EnsureProc] instead.
-//
-// The process reports a deadlock when all its goroutines are parked with
-// nothing left to wake them. Host intrinsics that will call into the
-// script later, such as timers, must report the pending callback, or the
-// waiting process may be reported as deadlocked.
-//go:generate go run ../internal/cmd/genifaces
+// iface.go adapts script values to host interfaces: scriptIface is the
+// io surface proxy (Write/Read/Seek/Flush and friends dispatched to
+// script methods), scriptFS/scriptFile/scriptFileInfo/scriptDirEntry
+// the io/fs family beside it, and errOut/hostErr the error-slot
+// conversion every method result goes through. The optional-surface
+// variants (scriptIfaceWT and friends) are generated into
+// scriptiface_gen.go by internal/cmd/genifaces.
 
-package vm
+//go:generate go run ../../internal/cmd/genifaces
+
+package hostbridge
 
 import (
 	"fmt"
 	"io"
 	"io/fs"
 	"time"
+
+	"go/ast"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -43,6 +35,8 @@ import (
 type scriptIface struct {
 	vc   runtime.MemberCaller
 	recv runtime.Value
+	// m resolves the error-boxing hook and byte fast path.
+	m *Marshal
 }
 
 // ScriptValue reports the script receiver the proxy forwards to: when
@@ -51,7 +45,7 @@ type scriptIface struct {
 func (s *scriptIface) ScriptValue() runtime.Value { return s.recv }
 
 func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value, error) {
-	vc := callbackMemberContext(s.vc)
+	vc := s.m.AnchorMember(s.vc)
 	m, ok := vc.Member(s.recv, name)
 	if !ok || m == nil || m == runtime.NIL {
 		return nil, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
@@ -74,7 +68,7 @@ func (s *scriptIface) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return n, errOut(s.vc, rs, 1)
+	return n, s.m.errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) Read(p []byte) (int, error) {
@@ -85,7 +79,7 @@ func (s *scriptIface) Read(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return n, errOut(s.vc, rs, 1)
+	return n, s.m.errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) Close() error {
@@ -93,7 +87,7 @@ func (s *scriptIface) Close() error {
 	if err != nil {
 		return err
 	}
-	return errOut(s.vc, rs, 0)
+	return s.m.errOut(s.vc, rs, 0)
 }
 
 func (s *scriptIface) WriteString(str string) (int, error) {
@@ -101,7 +95,7 @@ func (s *scriptIface) WriteString(str string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(intOut(rs, 0)), errOut(s.vc, rs, 1)
+	return int(intOut(rs, 0)), s.m.errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) ReadByte() (byte, error) {
@@ -109,7 +103,7 @@ func (s *scriptIface) ReadByte() (byte, error) {
 	if err != nil {
 		return 0, err
 	}
-	return byte(intOut(rs, 0)), errOut(s.vc, rs, 1)
+	return byte(intOut(rs, 0)), s.m.errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) WriteByte(b byte) error {
@@ -117,7 +111,7 @@ func (s *scriptIface) WriteByte(b byte) error {
 	if err != nil {
 		return err
 	}
-	return errOut(s.vc, rs, 0)
+	return s.m.errOut(s.vc, rs, 0)
 }
 
 func (s *scriptIface) ReadRune() (rune, int, error) {
@@ -125,7 +119,7 @@ func (s *scriptIface) ReadRune() (rune, int, error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	return rune(intOut(rs, 0)), int(intOut(rs, 1)), errOut(s.vc, rs, 2)
+	return rune(intOut(rs, 0)), int(intOut(rs, 1)), s.m.errOut(s.vc, rs, 2)
 }
 
 func (s *scriptIface) Seek(offset int64, whence int) (int64, error) {
@@ -133,7 +127,7 @@ func (s *scriptIface) Seek(offset int64, whence int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return intOut(rs, 0), errOut(s.vc, rs, 1)
+	return intOut(rs, 0), s.m.errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) Flush() error {
@@ -141,7 +135,7 @@ func (s *scriptIface) Flush() error {
 	if err != nil {
 		return err
 	}
-	return errOut(s.vc, rs, 0)
+	return s.m.errOut(s.vc, rs, 0)
 }
 
 func (s *scriptIface) Error() string {
@@ -196,7 +190,7 @@ func (s *scriptIface) writeTo(w io.Writer) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return intOut(rs, 0), errOut(s.vc, rs, 1)
+	return intOut(rs, 0), s.m.errOut(s.vc, rs, 1)
 }
 
 func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
@@ -204,7 +198,7 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return intOut(rs, 0), errOut(s.vc, rs, 1)
+	return intOut(rs, 0), s.m.errOut(s.vc, rs, 1)
 }
 
 // scriptFSFor reports the fs.FS adapter for v when v declares Open —
@@ -215,11 +209,11 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 // surface only when the script declares them, like the io extension
 // probes: fs.GlobFS/fs.StatFS stay unadopted, so host helpers asserting
 // them fall back through Open.
-func scriptFSFor(vc runtime.MemberCaller, v runtime.Value) any {
+func (m *Marshal) scriptFSFor(vc runtime.MemberCaller, v runtime.Value) any {
 	if _, ok := runtime.IfaceMember(vc, v, "Open"); !ok {
 		return nil
 	}
-	sfs := &scriptFS{scriptIface: &scriptIface{vc: vc, recv: v}}
+	sfs := &scriptFS{scriptIface: &scriptIface{vc: vc, recv: v, m: m}}
 	_, hasDir := runtime.IfaceMember(vc, v, "ReadDir")
 	_, hasFile := runtime.IfaceMember(vc, v, "ReadFile")
 	switch {
@@ -237,11 +231,11 @@ func scriptFSFor(vc runtime.MemberCaller, v runtime.Value) any {
 // Stat — the fs.File contract's discriminator beside Read/Close — nil
 // otherwise, so a non-file value keeps the generic error. fileOf does
 // the per-file variant probing.
-func scriptFileFor(vc runtime.MemberCaller, v runtime.Value) any {
-	if _, ok := runtime.IfaceMember(callbackMemberContext(vc), v, "Stat"); !ok {
+func (m *Marshal) scriptFileFor(vc runtime.MemberCaller, v runtime.Value) any {
+	if _, ok := runtime.IfaceMember(m.AnchorMember(vc), v, "Stat"); !ok {
 		return nil
 	}
-	return (&scriptFS{scriptIface: &scriptIface{vc: vc, recv: v}}).fileOf(v)
+	return (&scriptFS{scriptIface: &scriptIface{vc: vc, recv: v, m: m}}).fileOf(v)
 }
 
 // scriptFS/scriptFSRD/scriptFSRF/scriptFSRDRF adapt a script fs.FS: the
@@ -256,7 +250,7 @@ func (s *scriptFS) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.vc, rs, 1); err != nil {
+	if err := s.m.errOut(s.vc, rs, 1); err != nil {
 		return nil, err
 	}
 	if len(rs) == 0 {
@@ -284,9 +278,9 @@ func (s *scriptFS) fileOf(v runtime.Value) fs.File {
 			return f
 		}
 	}
-	si := &scriptIface{vc: s.vc, recv: v}
+	si := &scriptIface{vc: s.vc, recv: v, m: s.m}
 	f := &scriptFile{inner: si}
-	ctx := callbackMemberContext(s.vc)
+	ctx := s.m.AnchorMember(s.vc)
 	_, seek := runtime.IfaceMember(ctx, v, "Seek")
 	_, wt := runtime.IfaceMember(ctx, v, "WriteTo")
 	if _, ok := runtime.IfaceMember(ctx, v, "ReadDir"); ok {
@@ -322,14 +316,14 @@ func (s *scriptFS) readDir(name string) ([]fs.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dirEntriesOf(s.vc, rs, errOut(s.vc, rs, 1))
+	return s.m.dirEntriesOf(s.vc, rs, s.m.errOut(s.vc, rs, 1))
 }
 
 // dirEntriesOf wraps each element of a script []fs.DirEntry result as a
 // host DirEntry proxy. A nil script slice means an empty directory, and
 // the script's own error rides along so partial results survive — e.g.
 // entries plus io.EOF, which fs.ReadDirFile permits.
-func dirEntriesOf(vc runtime.MemberCaller, rs []runtime.Value, serr error) ([]fs.DirEntry, error) {
+func (m *Marshal) dirEntriesOf(vc runtime.MemberCaller, rs []runtime.Value, serr error) ([]fs.DirEntry, error) {
 	if len(rs) == 0 {
 		return nil, serr
 	}
@@ -347,7 +341,7 @@ func dirEntriesOf(vc runtime.MemberCaller, rs []runtime.Value, serr error) ([]fs
 	case *runtime.Slice:
 		out := make([]fs.DirEntry, 0, len(v.Elems))
 		for _, e := range v.Elems {
-			out = append(out, &scriptDirEntry{scriptIface: &scriptIface{vc: vc, recv: e}})
+			out = append(out, &scriptDirEntry{scriptIface: &scriptIface{vc: vc, recv: e, m: m}})
 		}
 		return out, serr
 	}
@@ -362,7 +356,7 @@ func (s *scriptFS) readFile(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	serr := errOut(s.vc, rs, 1)
+	serr := s.m.errOut(s.vc, rs, 1)
 	if len(rs) == 0 {
 		return nil, serr
 	}
@@ -374,7 +368,7 @@ func (s *scriptFS) readFile(name string) ([]byte, error) {
 			return bs, serr
 		}
 	case *runtime.Slice:
-		if bs, ok := scriptBytes(v); ok {
+		if bs, ok := s.m.ScriptBytes(v); ok {
 			return bs, serr
 		}
 	}
@@ -406,13 +400,13 @@ func (s *scriptFile) Stat() (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.inner.vc, rs, 1); err != nil {
+	if err := s.inner.m.errOut(s.inner.vc, rs, 1); err != nil {
 		return nil, err
 	}
 	if len(rs) == 0 {
 		return nil, fmt.Errorf("script Stat returned no FileInfo")
 	}
-	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.inner.vc, recv: rs[0]}}, nil
+	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.inner.vc, recv: rs[0], m: s.inner.m}}, nil
 }
 
 // scriptDirFile layers fs.ReadDirFile's ReadDir onto whichever file
@@ -427,7 +421,7 @@ func (s scriptDirFile) ReadDir(count int) ([]fs.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dirEntriesOf(s.inner.vc, rs, errOut(s.inner.vc, rs, 1))
+	return s.inner.m.dirEntriesOf(s.inner.vc, rs, s.inner.m.errOut(s.inner.vc, rs, 1))
 }
 
 // ScriptValue: see scriptFile.ScriptValue — the embedded fs.File
@@ -454,7 +448,7 @@ func (s *scriptFileInfo) Size() int64 {
 
 func (s *scriptFileInfo) Mode() fs.FileMode {
 	rs, _ := s.call("Mode")
-	return fileModeOut(rs, 0)
+	return s.m.fileModeOut(rs, 0)
 }
 
 func (s *scriptFileInfo) ModTime() time.Time {
@@ -505,7 +499,7 @@ func (s *scriptDirEntry) IsDir() bool {
 
 func (s *scriptDirEntry) Type() fs.FileMode {
 	rs, _ := s.call("Type")
-	return fileModeOut(rs, 0)
+	return s.m.fileModeOut(rs, 0)
 }
 
 func (s *scriptDirEntry) Info() (fs.FileInfo, error) {
@@ -513,11 +507,127 @@ func (s *scriptDirEntry) Info() (fs.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := errOut(s.vc, rs, 1); err != nil {
+	if err := s.m.errOut(s.vc, rs, 1); err != nil {
 		return nil, err
 	}
 	if len(rs) == 0 {
 		return nil, fmt.Errorf("script DirEntry.Info returned no FileInfo")
 	}
-	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.vc, recv: rs[0]}}, nil
+	return &scriptFileInfo{scriptIface: &scriptIface{vc: s.vc, recv: rs[0], m: s.m}}, nil
+}
+
+// errOut extracts the error slot of a script (x, err) pair: host error
+// sentinels (io.EOF) arrive as GoValues and pass through verbatim so
+// identity comparisons host-side still hold; a script error value (a
+// boxed typed nil included — it is a non-nil error) goes through
+// hostErr so it reads back as itself once the host returns it.
+func (m *Marshal) errOut(vc runtime.MemberCaller, rs []runtime.Value, i int) error {
+	if i >= len(rs) {
+		return nil
+	}
+	switch e := runtime.Unwrap(rs[i]).(type) {
+	case nil, runtime.Nil, *runtime.TypedNil:
+		return nil
+	case *runtime.IfaceNil:
+		if runtime.BoxedNilTyp(e) == nil {
+			return nil
+		}
+		return m.hostErr(vc, rs[i])
+	case *runtime.GoValue:
+		if err, ok := e.V.(error); ok {
+			return err
+		}
+		return fmt.Errorf("%v", e.V)
+	default:
+		return m.hostErr(vc, rs[i])
+	}
+}
+
+// hostErr boxes a script error value for host code through the
+// engine's HostErr hook, falling back to the scriptIface proxy (whose
+// Error forwards to the script method).
+func (m *Marshal) hostErr(vc runtime.MemberCaller, v runtime.Value) error {
+	vc = m.AnchorMember(vc)
+	if he := m.HostErr(vc); he != nil {
+		return he(vc, v)
+	}
+	return &scriptIface{vc: vc, recv: v, m: m}
+}
+
+func intOut(rs []runtime.Value, i int) int64 {
+	if i >= len(rs) {
+		return 0
+	}
+	switch n := runtime.Unwrap(rs[i]).(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	}
+	return 0
+}
+
+// strOut/boolOut/fileModeOut extract scalar slots of a script method's
+// results — intOut's siblings for the fs proxies' non-int returns. A
+// constant-domain or host-boxed FileMode still reads correctly.
+func strOut(rs []runtime.Value, i int) string {
+	if i >= len(rs) {
+		return ""
+	}
+	str, _ := runtime.Unwrap(rs[i]).(string)
+	return str
+}
+
+func boolOut(rs []runtime.Value, i int) bool {
+	if i >= len(rs) {
+		return false
+	}
+	b, _ := runtime.Unwrap(rs[i]).(bool)
+	return b
+}
+
+func (m *Marshal) fileModeOut(rs []runtime.Value, i int) fs.FileMode {
+	if i >= len(rs) {
+		return 0
+	}
+	v := runtime.Unwrap(rs[i])
+	if u, ok := v.(*runtime.UConst); ok {
+		if mv, err := m.Materialize(u); err == nil {
+			v = runtime.Unwrap(mv)
+		}
+	}
+	switch m := v.(type) {
+	case int64:
+		return fs.FileMode(uint32(m))
+	case *runtime.GoValue:
+		if fm, ok := m.V.(fs.FileMode); ok {
+			return fm
+		}
+	}
+	return 0
+}
+
+// byteSliceArg boxes a host []byte as a script slice of byte-tagged
+// elements — the shape a script `[]byte` parameter receives.
+func byteSliceArg(p []byte) *runtime.Slice {
+	el := make([]runtime.Value, len(p))
+	for i, b := range p {
+		el[i] = runtime.ByteValue(b)
+	}
+	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+}
+
+// backBytes mirrors a script callee's writes to the boxed slice back
+// into the host buffer — the []byte crossing is element-copied, so
+// fills the callee performed would otherwise be invisible to the host.
+func backBytes(dst []byte, src runtime.Value, n int) {
+	sl, ok := src.(*runtime.Slice)
+	if !ok {
+		return
+	}
+	for i := 0; i < n && i < len(sl.Elems) && i < len(dst); i++ {
+		if b, ok := runtime.Unwrap(sl.Elems[i]).(int64); ok {
+			dst[i] = byte(b)
+		}
+	}
 }
