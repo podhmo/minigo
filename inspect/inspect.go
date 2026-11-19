@@ -351,10 +351,10 @@ type TypeExpr struct {
 	expr    ast.Expr
 	file    *syntax.File
 	pkg     *runtime.Package
-	locals  map[string]bool // names bound inside the enclosing func, when the expr was anchored via Expr — a hit means "possibly local", so SymbolID refuses package attribution rather than misattributing a method call to an import
-	tparams map[string]bool // names the enclosing generic decl binds as type parameters — a hit reports the TypeParamPackagePath SymbolID instead of attributing the name to the package
-	nonRef  bool            // an identifier in a position that names no declaration (selector Sel, label, declared name, struct-literal key), so SymbolID reports nil
-	ht      reflect.Type    // host-backed alternative (BuiltinFunc.Target sigs)
+	scopes  *syntax.LocalScopes // the file's local bindings, when the expr was anchored via Expr — a hit at the ident's own position means "local here", so SymbolID refuses package attribution rather than misattributing a method call to an import
+	tparams map[string]bool     // names the enclosing generic decl binds as type parameters — a hit reports the TypeParamPackagePath SymbolID instead of attributing the name to the package
+	nonRef  bool                // an identifier in a position that names no declaration (selector Sel, label, declared name, struct-literal key), so SymbolID reports nil
+	ht      reflect.Type        // host-backed alternative (BuiltinFunc.Target sigs)
 }
 
 // NewTypeExpr returns the [TypeExpr] view of e, an expression in file f
@@ -1400,7 +1400,7 @@ func (te *TypeExpr) Expr() ast.Expr { return te.expr }
 // body.
 func (te *TypeExpr) wrap(e ast.Expr) *TypeExpr {
 	nt := NewTypeExpr(e, te.file, te.pkg)
-	nt.locals = te.locals
+	nt.scopes = te.scopes
 	nt.tparams = te.tparams
 	return nt
 }
@@ -1653,7 +1653,7 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 	}
 	switch e := te.expr.(type) {
 	case *ast.Ident:
-		if te.nonRef || e.Name == "_" || te.locals[e.Name] {
+		if te.nonRef || e.Name == "_" || te.localAt(e.Name, e.Pos()) {
 			return runtime.SymbolID{}, false
 		}
 		if te.tparams[e.Name] {
@@ -1692,7 +1692,7 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		return runtime.SymbolID{PackagePath: BuiltinPackagePath, Name: e.Name}, true
 	case *ast.SelectorExpr:
 		x, ok := e.X.(*ast.Ident)
-		if !ok || te.file == nil || te.locals[x.Name] || te.tparams[x.Name] {
+		if !ok || te.file == nil || te.localAt(x.Name, x.Pos()) || te.tparams[x.Name] {
 			return runtime.SymbolID{}, false
 		}
 		if imp, ok := te.importOf(x.Name); ok {
@@ -1831,8 +1831,7 @@ func (a *TypeExpr) SameType(b *TypeExpr, res Resolver) bool {
 		// is the same type, anything else is unknown and reported as
 		// different rather than matched by its empty shape.
 		eb, ok := b.expr.(*ast.Ident)
-		return ok && ea.Name == eb.Name && a.locals != nil &&
-			reflect.ValueOf(a.locals).Pointer() == reflect.ValueOf(b.locals).Pointer()
+		return ok && ea.Name == eb.Name && a.scopes != nil && a.scopes == b.scopes
 	case *ast.SelectorExpr:
 		return false // a member of a local value, not a resolvable type
 	}
@@ -2113,9 +2112,9 @@ type Node struct {
 	node    ast.Node
 	file    *syntax.File
 	pkg     *runtime.Package
-	locals  map[string]bool // names the enclosing func binds — shared by every node under the same Body root
-	tparams map[string]bool // type parameter names the enclosing generic func binds — same Body-root sharing
-	parent  *Node           // the enclosing node, nil on a root
+	scopes  *syntax.LocalScopes // the file's local bindings — shared by every node under the same Body root
+	tparams map[string]bool     // type parameter names the enclosing generic func binds — same Body-root sharing
+	parent  *Node               // the enclosing node, nil on a root
 }
 
 // NewNode returns the [Node] view of n in file f of package p. role is
@@ -2195,87 +2194,16 @@ func BodyOf(s *Decl) (*Node, error) {
 	if s.decl.Func.Body == nil {
 		return nil, nil
 	}
-	// The root records the names the func binds, which Expr hands to
+	// The root records the file's local scopes, which Expr hands to
 	// TypeExpr so a local shadowing an import cannot be misattributed
-	// to the package.
+	// to the package — scoped, so a same-named local in a sibling
+	// block no longer hides a real binding.
 	n := NewNode(s.decl.Func.Body, "", s.file, s.Package)
-	n.locals = localNames(s.decl.Func)
+	if s.file != nil {
+		n.scopes = syntax.NewLocalScopes(s.file.AST)
+	}
 	n.tparams = declTypeParams(s)
 	return n, nil
-}
-
-// localNames collects every identifier a func decl binds in its own
-// scopes — receiver, params, named results, := names, range and
-// type-switch bindings, local var/const/type declarations, and funclit
-// params — anywhere in the body.
-// The model is deliberately shallow: a name from a sibling or outer
-// scope counts too, so membership means "possibly local", never the
-// other way. Expr-fed SymbolID refuses package attribution on those
-// names, trading under-resolution for never mistaking a method call
-// for an import member.
-func localNames(fn *ast.FuncDecl) map[string]bool {
-	if fn == nil {
-		return nil
-	}
-	names := map[string]bool{}
-	add := func(fl *ast.FieldList) {
-		if fl == nil {
-			return
-		}
-		for _, f := range fl.List {
-			for _, n := range f.Names {
-				names[n.Name] = true
-			}
-		}
-	}
-	add(fn.Recv)
-	if fn.Type != nil {
-		add(fn.Type.Params)
-		add(fn.Type.Results)
-	}
-	ast.Inspect(fn.Body, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.AssignStmt:
-			if x.Tok == token.DEFINE {
-				for _, lhs := range x.Lhs {
-					if id, ok := lhs.(*ast.Ident); ok {
-						names[id.Name] = true
-					}
-				}
-			}
-		case *ast.RangeStmt:
-			if x.Tok == token.DEFINE {
-				if id, ok := x.Key.(*ast.Ident); ok {
-					names[id.Name] = true
-				}
-				if id, ok := x.Value.(*ast.Ident); ok {
-					names[id.Name] = true
-				}
-			}
-		case *ast.DeclStmt:
-			gd, ok := x.Decl.(*ast.GenDecl)
-			if !ok {
-				break
-			}
-			for _, spec := range gd.Specs {
-				switch sp := spec.(type) {
-				case *ast.ValueSpec:
-					for _, id := range sp.Names {
-						names[id.Name] = true
-					}
-				case *ast.TypeSpec:
-					names[sp.Name.Name] = true
-				}
-			}
-		case *ast.FuncLit:
-			if x.Type != nil {
-				add(x.Type.Params)
-				add(x.Type.Results)
-			}
-		}
-		return true
-	})
-	return names
 }
 
 // NodesOf is [Nodes] for Go code.
@@ -2325,7 +2253,7 @@ func NodesOf(n *Node) []*Node {
 // package, and the enclosing func's local-name set.
 func (n *Node) child(cn ast.Node, role string) *Node {
 	c := NewNode(cn, role, n.file, n.pkg)
-	c.locals = n.locals
+	c.scopes = n.scopes
 	c.tparams = n.tparams
 	c.parent = n
 	return c
@@ -2352,7 +2280,7 @@ func ExprOf(n *Node) *TypeExpr {
 		return nil
 	}
 	te := NewTypeExpr(e, n.file, n.pkg)
-	te.locals = n.locals
+	te.scopes = n.scopes
 	te.tparams = n.tparams
 	if _, ok := e.(*ast.Ident); ok {
 		te.nonRef = !refersByRole(n)
@@ -2552,7 +2480,7 @@ func (n *Node) litUnderlying(lt litType) (litType, bool) {
 			if n.tparams[id.Name] {
 				return litType{}, false
 			}
-			if n.locals[id.Name] {
+			if n.scopes != nil && n.scopes.At(id.Name, lt.pos) {
 				ts := n.localTypeSpec(id.Name, lt.pos)
 				if ts == nil {
 					return litType{}, false
@@ -2638,6 +2566,11 @@ func (n *Node) foreignTypeSpec(impName, sel string) *ast.TypeSpec {
 		return ts
 	}
 	return nil
+}
+
+// localAt reports whether a local binding of name is in scope at pos.
+func (te *TypeExpr) localAt(name string, pos token.Pos) bool {
+	return te.scopes != nil && te.scopes.At(name, pos)
 }
 
 // localTypeSpec finds the `type name` decl in scope at pos, walking the

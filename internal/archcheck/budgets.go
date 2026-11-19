@@ -268,7 +268,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/execution/intern.go":    "intern-widen: Replace for the canonical-descriptor carrier upgrade",
 	"compile/call.go":                 "shadowed make/new: the builtin-type check consults resolveName",
 	"compile/compile.go":              "method funclit symbol names carry the Go receiver form",
-	"inspect/inspect.go":              "Import.Name and SymbolID dot-import + lit-keys foreign/tparam resolution",
+	"inspect/inspect.go":              "Import.Name and SymbolID dot-import + lit-keys foreign/tparam + scoped locals",
 	"internal/vet/vet.go":             "stub-call imports resolve the declared package name",
 	"vm/assert.go":                    "pkg-qualified names in gate diagnostics",
 	"vm/profile.go":                   "exact call counts + allocs sample types; stackKey shared by the maps",
