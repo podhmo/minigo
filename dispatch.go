@@ -550,11 +550,15 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 	// promoted: embeds cannot contest it (the declared member always
 	// wins, so its smin entry would only poison Depths).
 	promoted := func(m string) bool {
-		// shadowing and the declared-methods check run on the plain
-		// name: a field or method `m` declared here shadows a promoted
-		// `a/b.m` just the same — Go never promotes a shadowed name.
 		p := plainReqName(m)
-		return !shadowed[p] && td.Methods[p] == nil
+		if !shadowed[p] && td.Methods[p] == nil {
+			return true
+		}
+		// a member `p` declared at this depth shadows the candidate —
+		// for a pkg-qualified unexported key only when this type is in
+		// the same package: gc keeps `struct{ a.T; m int }` satisfying
+		// a's interface{ m() } (m in main is a different identifier).
+		return m != p && reqKey(td.Pkg, p) != m
 	}
 	// A member promoted through more than one source survives only
 	// when its shallowest promotion is unique — gc's selector is
