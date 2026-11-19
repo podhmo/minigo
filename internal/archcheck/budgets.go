@@ -260,6 +260,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/cmd/genbind/table.go":   "P2-12: generated rows for the moved installers",
 	"internal/cmd/genifaces/main.go":  "P2-7c: moved interface adapters and func wrappers",
 	"internal/spike/spike_off.go":     "P4-2c: plain-slot promotion counters",
+	"builtin/builtins.go":            "append resolves the element typedef lazily — only when an arg can need converting",
 	"internal/spike/spike_on.go":      "P4-2c: plain-slot promotion counters",
 	"internal/hostbridge/scalars.go":  "intern-widen: HostNamedIs/HostTwinOf residual helpers moved here from runtime/value.go",
 	"internal/typedef/dispatch.go":    "ifacekey: *E over an interface has an empty method set; plain-name promotion for qualified reqs",
