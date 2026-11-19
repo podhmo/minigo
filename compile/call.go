@@ -395,21 +395,6 @@ func (c *compiler) undecidableCalls(e ast.Expr) []*ast.CallExpr {
 	return out
 }
 
-// emitDeferredTypOperand pushes the resolved typedef of a deferred
-// operand for unsafe.Sizeof/Alignof: nil for the value slot, then the
-// typedef the OpDeferredValueTyp hook resolves at run time — a member
-// conversion's target, a member function's declared result, an
-// untyped const's default.
-func (c *compiler) emitDeferredTypOperand(operand ast.Expr, pos token.Pos) {
-	// a nil value + the operand's typedef, resolved at run time from
-	// the site — the DeferredValueTyp hook reads a member's declared
-	// signature for `p.F(v)`, so the call itself never evaluates
-	// (unsafe.Sizeof folds statically under gc; running p.F's args
-	// would invent side effects gc never has).
-	c.emit(bytecode.OpNil, 0, 0, pos)
-	c.emit(bytecode.OpDeferredValueTyp, c.exprSite(operand, pos), 0, pos)
-}
-
 // deferredCallTemp ties a hoist scratch name to an undecidable member
 // call: the callee slot holds the loaded member, res holds the phase-1
 // call result when the member was not a TypeDef.
@@ -729,10 +714,17 @@ unwrapped:
 						c.pkgScopeTyp = nil
 					}
 				} else if ot.deferred {
-					// the operand's type is a deferred fact
-					// (`p.T(v)` under IndexedOnly): Sizeof answers
-					// from the resolved typedef at run time.
-					c.emitDeferredTypOperand(deferredOperand, x.Pos())
+					// A deferred local's stored value is safe to read
+					// and can supply its layout if type lookup fails
+					// to find a typedef (e.g. a host channel receive).
+					// Other operands can have side effects; only ask
+					// for their type.
+					if id, ok := operand.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) != nil {
+						c.expr(id)
+					} else {
+						c.emit(bytecode.OpNil, 0, 0, x.Pos())
+					}
+					c.emit(bytecode.OpDeferredValueTyp, c.exprSite(deferredOperand, x.Pos()), 0, x.Pos())
 				} else {
 					// the operand's type is statically opaque (a host
 					// func's result, a reflect value) — evaluate it
