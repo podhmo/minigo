@@ -192,6 +192,11 @@ type VM struct {
 	ifaceMemo  map[ifaceKey]bool
 	ifaceEpoch uint64
 
+	// keyCtx is the scratch resolve ctx for instTypeKey's constraint
+	// lookups — a TypeDef is ~1 KB, so the specialization key reuses
+	// this one instead of minting a throwaway per instantiate.
+	keyCtx *runtime.TypeDef
+
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
 	// vals is the goroutine's contiguous operand stack: each frame's
