@@ -732,6 +732,8 @@ func TestLitKeySymbolIDs(t *testing.T) {
 		"LocalShadow":       {"KeyA=nil"},
 		"SiblingScopes":     {"KeyA=" + pkg + ".KeyA", "KeyA=nil"},
 		"LocalElidedStruct": {"KeyA=nil"},
+		"SpecArgShadow":     {"K=" + pkg + ".K", "KeyA=nil"},
+		"AliasLocalShadow":  {"KeyA=" + pkg + ".KeyA"},
 	}
 	got := map[string][]string{}
 	for name := range want {

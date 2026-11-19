@@ -2411,16 +2411,18 @@ func litKeysRefer(cl *Node) bool {
 // litType is a type expression together with the scope its names
 // resolve in: the literal's func body at pos (local), or the package
 // scope of a package-level spec, whose own type parameters are tparams.
-// subst maps a resolved generic spec's parameter names to the call
-// site's argument expressions (which themselves resolve in the local
-// scope); foreign marks a type expr read from an imported package's
-// index, whose inner names this file's scopes cannot resolve.
+// subst maps a resolved generic spec's parameter names to the
+// argument's own litType — the argument expression plus the scope it
+// was spelled in (the literal's local scope at the call site, the
+// package scope inside a spec); foreign marks a type expr read from an
+// imported package's index, whose inner names this file's scopes
+// cannot resolve.
 type litType struct {
 	t       ast.Expr
 	local   bool
 	pos     token.Pos
 	tparams map[string]bool
-	subst   map[string]ast.Expr
+	subst   map[string]litType
 	foreign bool
 }
 
@@ -2474,16 +2476,14 @@ func (n *Node) litTypeOf() (litType, bool) {
 	default:
 		return litType{}, false
 	}
-	if id, ok := ast.Unparen(u.t).(*ast.Ident); ok && u.subst[id.Name] != nil {
-		// an element or key typed by a generic spec's parameter:
-		// substitute the call site's argument, spelled in this file —
-		// its names resolve in the literal's local scope.
-		u.local = true
-		u.pos = u.subst[id.Name].Pos()
-		u.t = u.subst[id.Name]
-		u.subst = nil
-		u.tparams = nil
-		u.foreign = false
+	if id, ok := ast.Unparen(u.t).(*ast.Ident); ok {
+		if sub, ok := u.subst[id.Name]; ok {
+			// an element or key typed by a generic spec's parameter:
+			// substitute the argument — it carries the scope it was
+			// spelled in, so a call-site arg resolves locally and a
+			// spec-level arg stays at package scope.
+			u = sub
+		}
 	}
 	if st, ok := ast.Unparen(u.t).(*ast.StarExpr); ok {
 		u.t = st.X
@@ -2525,8 +2525,13 @@ func (n *Node) litUnderlying(lt litType) (litType, bool) {
 			// load here. Its inner names resolve in that package's
 			// scope, not this file's (foreign).
 			if pid, ok := ast.Unparen(x.X).(*ast.Ident); ok {
+				if lt.local && n.locals[pid.Name] {
+					// a local binding named like the import makes
+					// `imp.Sel` a field or method select — under-resolve.
+					return litType{}, false
+				}
 				if ts := n.foreignTypeSpec(pid.Name, x.Sel.Name); ts != nil {
-					lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams), subst: litSubst(ts.TypeParams, args, lt.subst), foreign: true}
+					lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams), subst: litSubst(ts.TypeParams, args, lt), foreign: true}
 					continue
 				}
 			}
@@ -2561,19 +2566,18 @@ func (n *Node) litUnderlying(lt litType) (litType, bool) {
 			lt.t = id
 			return lt, true
 		}
-		lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams), subst: litSubst(ts.TypeParams, args, lt.subst)}
+		lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams), subst: litSubst(ts.TypeParams, args, lt)}
 	}
 	return litType{}, false
 }
 
 // litSubst maps a generic spec's parameter names to the instantiation's
 // argument expressions, or nil when the spelling is not a matching
-// instantiation. prev carries the enclosing instantiation's map, so an
-// argument spelled with an outer parameter (Outer[K] = Inner[K])
-// resolves through to the call site's expression — chained generics do
-// not lose the substitution. Call-site arguments resolve in the file's
-// scope.
-func litSubst(pl *ast.FieldList, args []ast.Expr, prev map[string]ast.Expr) map[string]ast.Expr {
+// instantiation. Each entry keeps the scope the argument was spelled
+// in — the enclosing litType's — and an argument spelled with an outer
+// parameter (Outer[K] = Inner[K]) resolves through the enclosing
+// substitution, so chained generics keep the call site's answer.
+func litSubst(pl *ast.FieldList, args []ast.Expr, prev litType) map[string]litType {
 	if pl == nil {
 		return nil
 	}
@@ -2584,14 +2588,17 @@ func litSubst(pl *ast.FieldList, args []ast.Expr, prev map[string]ast.Expr) map[
 	if len(args) != n {
 		return nil
 	}
-	m := make(map[string]ast.Expr, n)
+	m := make(map[string]litType, n)
 	for _, f := range pl.List {
 		for _, nm := range f.Names {
 			a := args[0]
-			if id, ok := ast.Unparen(a).(*ast.Ident); ok && prev[id.Name] != nil {
-				a = prev[id.Name]
+			lt := litType{t: a, local: prev.local, pos: prev.pos, tparams: prev.tparams}
+			if id, ok := ast.Unparen(a).(*ast.Ident); ok {
+				if sub, ok := prev.subst[id.Name]; ok {
+					lt = sub
+				}
 			}
-			m[nm.Name] = a
+			m[nm.Name] = lt
 			args = args[1:]
 		}
 	}
@@ -2618,11 +2625,7 @@ func (n *Node) foreignTypeSpec(impName, sel string) *ast.TypeSpec {
 		if name != impName {
 			continue
 		}
-		if n.locals[impName] {
-			// a local binding named like the import makes `imp.Sel`
-			// a field or method select, not a package member.
-			return nil
-		}
+
 		pk, ok := refs[i].Peek()
 		if !ok || pk.Index == nil {
 			return nil
