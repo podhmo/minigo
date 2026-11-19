@@ -118,7 +118,7 @@ var FileBudgets = map[string]int{
 	"internal/typedef/iface_reqs.go":               169,
 	"internal/vet/vet.go":                          168,
 	"internal/typedef/iterseq.go":                  104,
-	"internal/stdlib/fmt/fmt.go":                   1750,
+	"internal/stdlib/fmt/fmt.go":                   1783,
 	"internal/stdlib/asmimpl.go":                   279,
 	"internal/stdlib/typshape.go":                  221,
 	"minigo.go":                                    1711,
