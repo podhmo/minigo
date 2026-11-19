@@ -23,9 +23,12 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/podhmo/minigo/bytecode"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
@@ -142,8 +145,11 @@ func builtinTypeName(name string) bool {
 
 // instantiate implements F[T, U] / T[Args] on generic functions and types;
 // a non-generic base falls back to index lookup so `a[i]` and `F[T]` share
-// one encoding.
-func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, pos token.Pos) runtime.Value {
+// one encoding. The site memo pins the (base, type-args) identity per
+// instruction: a hit replays the result and skips instFuncKey/instTypeKey
+// spelling plus the package-cache probe. The memo holds pointers only —
+// it stores nothing when the base or an arg cannot compare by identity.
+func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, pos token.Pos, site *bytecode.GlobalSite) runtime.Value {
 	if dv, ok := runtime.Deref(base); ok {
 		base = dv
 	}
@@ -157,6 +163,24 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 			}
 		}
 	}
+	var slot *instSiteSlot
+	if site != nil {
+		if s, ok := site.Cache.Load().(*instSiteSlot); ok && s.match(base, targs) {
+			return s.out
+		}
+		if instSiteCacheable(base, targs) {
+			slot = &instSiteSlot{base: base, targs: targs}
+		}
+	}
+	r := v.instantiateDispatch(f, base, targs, pos)
+	if slot != nil {
+		slot.out = r
+		site.Cache.Store(slot)
+	}
+	return r
+}
+
+func (v *VM) instantiateDispatch(f *frame, base runtime.Value, targs []runtime.Value, pos token.Pos) runtime.Value {
 	switch g := base.(type) {
 	case *runtime.Function:
 		if len(g.TParams) == 0 {
@@ -579,7 +603,7 @@ func (s *specialCtx) instantiateType(e ast.Expr, x ast.Expr, argExprs []ast.Expr
 		}
 		targs[i] = td
 	}
-	iv := s.v.instantiate(s.f, base, targs, e.Pos())
+	iv := s.v.instantiate(s.f, base, targs, e.Pos(), nil)
 	td, ok := iv.(*runtime.TypeDef)
 	if !ok {
 		return nil, s.Errorf(e, "%s is not a type", s.Format(e))
@@ -619,72 +643,6 @@ func (v *VM) inferCached(fn *runtime.Function, args []runtime.Value, statics []*
 		fn.Pkg.SetInferred(key, r)
 	}
 	return r, err
-}
-
-// genCallSlot memoizes one OpCall site's inferred instance: on a hit
-// — same callee, same spread, and every argument pinned on what
-// inferKey would read — the inferKey spelling and the package-cache
-// probe are skipped. Pinning is identity, not spelling: a const arg
-// pins its value pointer (one site re-pushes the same UConst/Named
-// object, which carries both payload and tag), a static-covered arg
-// the resolved typedef, any other arg the value's own typedef.
-type genCallSlot struct {
-	fn     *runtime.Function
-	spread *runtime.TypeDef
-	tds    []*runtime.TypeDef
-	consts []runtime.Value // per-arg pinned const values; nil elsewhere
-	inst   *runtime.Function
-}
-
-func (g *genCallSlot) match(v *VM, fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) bool {
-	if g.fn != fn || g.spread != spreadTd || len(g.tds) != len(args) {
-		return false
-	}
-	for i, a := range args {
-		if _, isC := constPayload(a); isC {
-			if g.consts[i] != a {
-				return false
-			}
-			continue
-		}
-		if st := staticAt(statics, i); st != nil {
-			// statics resolve fresh each call — a REPL redeclared
-			// global or upval typedef shows up here.
-			if st != g.tds[i] {
-				return false
-			}
-			continue
-		}
-		if v.argTypedef(a) != g.tds[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// newGenCallSlot records the instance inference produced for this
-// site's argument shape. An arg inferKey cannot pin — one that is
-// neither const nor static nor typedef-able — leaves no slot: those
-// calls always spell a key.
-func newGenCallSlot(v *VM, fn, inst *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) *genCallSlot {
-	g := &genCallSlot{fn: fn, spread: spreadTd, inst: inst,
-		tds: make([]*runtime.TypeDef, len(args)), consts: make([]runtime.Value, len(args))}
-	for i, a := range args {
-		if _, isC := constPayload(a); isC {
-			g.consts[i] = a
-			continue
-		}
-		if st := staticAt(statics, i); st != nil {
-			g.tds[i] = st
-			continue
-		}
-		td := v.argTypedef(a)
-		if td == nil {
-			return nil
-		}
-		g.tds[i] = td
-	}
-	return g
 }
 
 // inferKey spells what inferBinds reads as TypeID segments: the callee's

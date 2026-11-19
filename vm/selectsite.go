@@ -247,3 +247,108 @@ func (v *VM) applyNamedSlot(f *frame, n *runtime.Named, name string, recv runtim
 	}
 	return nil, false
 }
+
+// instSiteSlot is one OpInstantiate site's memo: the result of the last
+// (base, targs) pair it saw. Bases and args are pointer values, so ==
+// compares identity — a redeclared generic or a changed arg type misses
+// and falls back to the full key spell, never stale-hits.
+type instSiteSlot struct {
+	base  runtime.Value
+	targs []runtime.Value
+	out   runtime.Value
+}
+
+func (s *instSiteSlot) match(base runtime.Value, targs []runtime.Value) bool {
+	if s.base != base || len(s.targs) != len(targs) {
+		return false
+	}
+	for i, a := range targs {
+		if s.targs[i] != a {
+			return false
+		}
+	}
+	return true
+}
+
+// instSiteCacheable reports whether (base, targs) can memoize safely:
+// every element must be a comparable pointer — a non-pointer arg (the
+// index fallback's `a[i]` value args) may hold an uncomparable payload.
+func instSiteCacheable(base runtime.Value, targs []runtime.Value) bool {
+	switch base.(type) {
+	case *runtime.Function, *runtime.TypeDef:
+	default:
+		return false
+	}
+	for _, a := range targs {
+		if _, ok := a.(*runtime.TypeDef); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// genCallSlot memoizes one OpCall site's inferred instance: on a hit
+// — same callee, same spread, and every argument pinned on what
+// inferKey would read — the inferKey spelling and the package-cache
+// probe are skipped. Pinning is identity, not spelling: a const arg
+// pins its value pointer (one site re-pushes the same UConst/Named
+// object, which carries both payload and tag), a static-covered arg
+// the resolved typedef, any other arg the value's own typedef.
+type genCallSlot struct {
+	fn     *runtime.Function
+	spread *runtime.TypeDef
+	tds    []*runtime.TypeDef
+	consts []runtime.Value // per-arg pinned const values; nil elsewhere
+	inst   *runtime.Function
+}
+
+func (g *genCallSlot) match(v *VM, fn *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) bool {
+	if g.fn != fn || g.spread != spreadTd || len(g.tds) != len(args) {
+		return false
+	}
+	for i, a := range args {
+		if _, isC := constPayload(a); isC {
+			if g.consts[i] != a {
+				return false
+			}
+			continue
+		}
+		if st := staticAt(statics, i); st != nil {
+			// statics resolve fresh each call — a REPL redeclared
+			// global or upval typedef shows up here.
+			if st != g.tds[i] {
+				return false
+			}
+			continue
+		}
+		if v.argTypedef(a) != g.tds[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// newGenCallSlot records the instance inference produced for this
+// site's argument shape. An arg inferKey cannot pin — one that is
+// neither const nor static nor typedef-able — leaves no slot: those
+// calls always spell a key.
+func newGenCallSlot(v *VM, fn, inst *runtime.Function, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) *genCallSlot {
+	g := &genCallSlot{fn: fn, spread: spreadTd, inst: inst,
+		tds: make([]*runtime.TypeDef, len(args)), consts: make([]runtime.Value, len(args))}
+	for i, a := range args {
+		if _, isC := constPayload(a); isC {
+			g.consts[i] = a
+			continue
+		}
+		if st := staticAt(statics, i); st != nil {
+			g.tds[i] = st
+			continue
+		}
+		td := v.argTypedef(a)
+		if td == nil {
+			return nil
+		}
+		g.tds[i] = td
+	}
+	return g
+}
