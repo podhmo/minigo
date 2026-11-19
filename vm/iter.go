@@ -88,8 +88,9 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 		// Snapshot the key ORDER only — Elems carries the display keys
 		// and Keys their canonical forms — while pairs resolve live in
 		// iterNext. Deleting the current or a reached key must not skip
-		// the next (Delete shifts m.Order in place), and an entry
-		// removed before its turn is not produced, like Go.
+		// the next (Delete tombstones its slot, never shifts the
+		// snapshot), and an entry removed before its turn is not
+		// produced, like Go.
 		display, canonical := c.SnapshotKeys()
 		return mkIter(runtime.Iterator{Kind: 'm', M: c, Elems: display, Keys: canonical})
 	case *runtime.Chan:

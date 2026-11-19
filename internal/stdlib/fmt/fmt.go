@@ -1270,7 +1270,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		// Go's fmt prints maps in sorted-key order (fmtsort), not
 		// insertion order — sort a copy of Order the same way.
-		order := append([]runtime.Value{}, v.Order...)
+		order, _ := v.SnapshotKeys()
 		sort.SliceStable(order, func(i, j int) bool {
 			a, b := order[i], order[j]
 			// Mixed-type keys (map[any]) compare by the concrete

@@ -1614,6 +1614,9 @@ func (v *RValue) MapKeys() []*RValue {
 	}
 	out := make([]*RValue, 0, m.Len())
 	for _, k := range m.Order {
+		if k == nil {
+			continue // tombstoned slot — deleted before it was reached
+		}
 		out = append(out, v.e.wrap(v.vc, k, nil, ktd))
 	}
 	return out
@@ -3672,6 +3675,9 @@ func valueEqual(a, b any, depth int) bool {
 				return false
 			}
 			for _, k := range x.Order {
+				if k == nil {
+					continue // tombstoned slot
+				}
 				xv, _ := x.Get(k)
 				yv, ok := y.Get(k)
 				if !ok || !valueEqual(xv, yv, depth+1) {

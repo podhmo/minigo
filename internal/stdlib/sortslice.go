@@ -1698,7 +1698,8 @@ func MapKeys(v any) *runtime.Slice {
 		return MapKeys(n.V)
 	}
 	if m, ok := v.(*runtime.Map); ok {
-		return &runtime.Slice{Elems: append([]runtime.Value{}, m.Order...)}
+		display, _ := m.SnapshotKeys()
+		return &runtime.Slice{Elems: display}
 	}
 	if m, ok := v.(map[any]any); ok {
 		return &runtime.Slice{Elems: slices.Collect(maps.Keys(m))}
@@ -1827,7 +1828,7 @@ func MapSource(m *runtime.Map, kind MapSeqKind, conv func(runtime.Value) runtime
 			if m == nil {
 				return nil
 			}
-			out := slices.Clone(m.Order)
+			out, _ := m.SnapshotKeys()
 			if conv != nil {
 				for i, k := range out {
 					out[i] = conv(k)
@@ -1840,8 +1841,9 @@ func MapSource(m *runtime.Map, kind MapSeqKind, conv func(runtime.Value) runtime
 			if m == nil {
 				return nil
 			}
-			out := make([]runtime.Value, len(m.Keys))
-			for i, ck := range m.Keys {
+			_, cks := m.SnapshotKeys()
+			out := make([]runtime.Value, len(cks))
+			for i, ck := range cks {
 				out[i] = m.Pairs[ck]
 			}
 			return out
