@@ -53,6 +53,19 @@ func (r *Resolver) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]b
 			set[m] = true
 		}
 	}
+	if td.IfaceBase && td.Spec != nil {
+		// a declared-over-interface type (`type E error`) carries no
+		// MReqs of its own — its requirements are the underlying
+		// interface's, spelled by the spec's type expression.
+		sub, err := r.ResolveTypeRef(td, td.Spec.Type)
+		if err != nil || sub == nil {
+			*complete = false
+		} else {
+			for m := range r.ifaceReqsRec(sub, seen, complete) {
+				set[m] = true
+			}
+		}
+	}
 	return set
 }
 
