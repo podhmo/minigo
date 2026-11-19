@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"reflect"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -24,7 +25,7 @@ func (e *Engine) installErrors(h *hostHelpers) {
 			}
 			return errVal(errors.Join(errs...)), nil
 		}},
-		// Is/Unwrap/As take raw runtime args: h.fn's goNative would flatten
+		// Is/Unwrap/As take raw runtime args: h.fn's hostbridge.GoNative would flatten
 		// a script error value to its printed string, losing the type the
 		// chain walk needs. hostErrOf keeps the script value inside a
 		// scriptError wrapper instead.
@@ -233,8 +234,8 @@ var hostErrTwins = []struct {
 }{
 	{reflect.TypeFor[fs.PathError](), func(c runtime.MemberCaller, s *runtime.Struct) error {
 		return &fs.PathError{
-			Op:   str(goNative(structField(s, "Op"))),
-			Path: str(goNative(structField(s, "Path"))),
+			Op:   str(hostbridge.GoNative(structField(s, "Op"))),
+			Path: str(hostbridge.GoNative(structField(s, "Path"))),
 			Err:  hostErrOf(c, structField(s, "Err")),
 		}
 	}},
@@ -594,7 +595,7 @@ func (e *scriptError) ScriptValue() runtime.Value {
 func (e *scriptError) Error() string {
 	s, ok := runtime.IfaceCallString(e.c, e.v, "Error")
 	if !ok {
-		return fmt.Sprintf("%v", goNative(e.v))
+		return fmt.Sprintf("%v", hostbridge.GoNative(e.v))
 	}
 	return s
 }

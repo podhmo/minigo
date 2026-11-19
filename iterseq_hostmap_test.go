@@ -13,7 +13,7 @@ import (
 
 // maps.Insert over a host-bound map converts yielded script containers
 // element-wise to the host map's declared types (review: a []string
-// element arrives through goNative as []any and used to be rejected).
+// element arrives through hostbridge.GoNative as []any and used to be rejected).
 func TestHostMapInsert(t *testing.T) {
 	e := minigo.NewEngine(".")
 	dst := url.Values{}

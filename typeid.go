@@ -189,8 +189,8 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 		rt := td.HostIdent
 		if rt.Kind() == reflect.Pointer {
 			if ert := rt.Elem(); ert.Name() != "" && ert.PkgPath() != "" {
-				// an unnamed host *T stamp ([hostPkgElemTypedef] via
-				// [HostNilPtrTypedef]) — the descriptor stands for *T, so
+				// an unnamed host *T stamp ([hostbridge.HostPkgElemTypedef] via
+				// [hostbridge.HostNilPtrTypedef]) — the descriptor stands for *T, so
 				// canonical is a pointer over T's twin, keyed like a source
 				// *T descriptor.
 				if et := e.hostTwin(ert); et != nil {

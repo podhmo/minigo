@@ -1,7 +1,7 @@
 // Stdlib intrinsics: a small native surface bound into every engine so
 // interpreted code doesn't have to parse GOROOT sources for the common
 // cases. Script values are marshalled to Go natives at the boundary
-// (goNative) so the real fmt/strconv/... implementations do the work.
+// (hostbridge.GoNative) so the real fmt/strconv/... implementations do the work.
 // Errors return Go-style (value, err) tuples where the real API has one.
 //
 // Deliberately small — anything absent falls through to lazy GOROOT source
@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/podhmo/minigo/internal/bind"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
-	"github.com/podhmo/minigo/vm"
 )
 
 var (
@@ -60,7 +60,7 @@ func hostSplitFunc(name string, f bufio.SplitFunc) *runtime.BuiltinFunc {
 			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
 		}
 		atEOF, _ := runtime.Unwrap(args[1]).(bool)
-		adv, tok, err := f(byteSlice(goNative(args[0])), atEOF)
+		adv, tok, err := f(byteSlice(hostbridge.GoNative(args[0])), atEOF)
 		return &runtime.Tuple{Elems: []runtime.Value{int64(adv), scriptVal(tok), errVal(err)}}, nil
 	}}
 }
@@ -117,7 +117,7 @@ func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, er
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		a := make([]any, len(args))
 		for i, v := range args {
-			a[i] = goNative(v)
+			a[i] = hostbridge.GoNative(v)
 		}
 		r, err := f(vc, a)
 		if err != nil {
@@ -133,7 +133,7 @@ func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, er
 
 // fnvcRaw is an arity-checked fnvc that also hands f the raw script
 // args — an error argument must reach hostErrOf unflattened so a script
-// error keeps its identity through the host (goNative would format it).
+// error keeps its identity through the host (hostbridge.GoNative would format it).
 func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != arity {
@@ -141,7 +141,7 @@ func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 		}
 		a := make([]any, len(args))
 		for i, v := range args {
-			a[i] = goNative(v)
+			a[i] = hostbridge.GoNative(v)
 		}
 		r, err := f(vc, a, args)
 		if err != nil {
@@ -175,7 +175,7 @@ func (h *hostHelpers) arity(name string, n int, f func([]any) (any, error), targ
 		}
 		a := make([]any, len(args))
 		for i, v := range args {
-			a[i] = goNative(v)
+			a[i] = hostbridge.GoNative(v)
 		}
 		r, err := f(a)
 		if err != nil {
@@ -209,7 +209,7 @@ func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.MemberC
 			}
 		}
 		for i := len(head); i < heads; i++ {
-			head = append(head, goNative(args[i]))
+			head = append(head, hostbridge.GoNative(args[i]))
 		}
 		ptrs := make([]any, len(args)-heads)
 		tds := make([]*runtime.TypeDef, len(args)-heads)
@@ -222,14 +222,14 @@ func (h *hostHelpers) scanFn(name string, heads int, headFn func(runtime.MemberC
 			// `var m MyInt; Sscan("5", &m)` — so capture it for the
 			// write-back below.
 			tds[i] = runtime.TagOf(cur)
-			t := reflect.TypeOf(goNative(cur))
+			t := reflect.TypeOf(hostbridge.GoNative(cur))
 			if t == nil {
 				return retErr(0, fmt.Errorf("%s: cannot infer scan target type: argument %d", name, i+heads+1))
 			}
 			rv := reflect.New(t)
 			// Seed with the current pointee: gc leaves args the scan
 			// never reached (or failed to store) untouched.
-			rv.Elem().Set(reflect.ValueOf(goNative(cur)))
+			rv.Elem().Set(reflect.ValueOf(hostbridge.GoNative(cur)))
 			ptrs[i] = rv.Interface()
 		}
 		n, err := call(head, ptrs)
@@ -287,7 +287,6 @@ func bytealgMaxBruteForce() int {
 }
 
 // sortInPlace sorts a *runtime.Slice's elements directly — going through
-// goNative would sort a fresh copy and leave the script's slice untouched.
 func (h *hostHelpers) sortInPlace(name string) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
@@ -339,7 +338,7 @@ func (h *hostHelpers) sortInterface(vc runtime.VMCaller, args []runtime.Value) (
 	if len(args) != 1 {
 		return nil, fmt.Errorf("sort.Sort needs 1 arg, got %d", len(args))
 	}
-	if ifc, ok := goNative(args[0]).(sort.Interface); ok {
+	if ifc, ok := hostbridge.GoNative(args[0]).(sort.Interface); ok {
 		sort.Sort(ifc)
 		return runtime.NIL, nil
 	}
@@ -478,7 +477,7 @@ func scriptVal(v any) runtime.Value {
 		return runtime.Tag(runtime.BasicTypedef("float32"), float64(x))
 	case []byte:
 		if x == nil {
-			return &runtime.TypedNil{Typ: anonSliceTyp("byte")}
+			return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("byte")}
 		}
 		// a []byte result unmarshals to byte-tagged elements so
 		// `string(b)` and indexing behave like Go source suggests, and
@@ -487,7 +486,7 @@ func scriptVal(v any) runtime.Value {
 		for i, b := range x {
 			el[i] = runtime.ByteValue(b)
 		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
+		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("byte")}
 	case []string:
 		return strsSlice(x)
 	case []rune:
@@ -500,13 +499,13 @@ func scriptVal(v any) runtime.Value {
 		return x
 	case []any:
 		if x == nil {
-			return &runtime.TypedNil{Typ: anonSliceTyp("any")}
+			return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("any")}
 		}
 		el := make([]runtime.Value, len(x))
 		for i, e := range x {
 			el[i] = scriptVal(e)
 		}
-		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("any")}
+		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("any")}
 	case map[any]any:
 		if x == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -526,10 +525,10 @@ func scriptVal(v any) runtime.Value {
 	default:
 		// a nil *T of a named host type (os.Open's file on error), or a
 		// nil chan/func of a predeclared spelling, is a typed nil, as
-		// goValueOf reads it: equal to nil, typed once stored in an
+		// hostbridge.GoValueOf reads it: equal to nil, typed once stored in an
 		// interface. A box would make `f == nil` false.
 		if rv := reflect.ValueOf(x); (rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Chan || rv.Kind() == reflect.Func || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Map) && rv.IsNil() {
-			if tn := vm.HostNil(rv.Type()); tn != nil {
+			if tn := hostbridge.HostNil(rv.Type()); tn != nil {
 				return tn
 			}
 		}
@@ -545,131 +544,11 @@ func scriptVal(v any) runtime.Value {
 	}
 }
 
-// goNative converts a runtime value to its Go-native counterpart for host
-// calls: cells unwrap, slices/maps become []any / map[any]any, structs get a
-// Stringer view so fmt prints them sensibly.
-// float32Tag reports whether a Named tag's underlying type is float32 —
-// the one builtin where a float64 box and the declared width disagree in
-// formatting. `type F32 float32` tags count too (Anon names the builtin).
-func float32Tag(td *runtime.TypeDef) bool {
-	return runtime.BasicNameOf(td) == "float32"
-}
-
-// complex64Tag mirrors float32Tag for complex64 — the payload rides the
-// float64/complex128 domain but formats at complex64 width per part.
-func complex64Tag(td *runtime.TypeDef) bool {
-	return runtime.BasicNameOf(td) == "complex64"
-}
-
-// complex64Value reads a payload as complex64 — either a complex128 box
-// or the constant domain's complex literal.
-func complex64Value(v runtime.Value) (complex64, bool) {
-	switch pv := v.(type) {
-	case complex128:
-		return complex64(pv), true
-	case *runtime.UConst:
-		if nv, err := uconstNative(pv); err == nil {
-			if cv, ok := nv.(complex128); ok {
-				return complex64(cv), true
-			}
-		}
-	}
-	return 0, false
-}
-
 // uconstNative materializes an untyped constant to its host default —
 // the same rule the VM applies when the constant crosses a value
 // boundary. An overflowing constant reports like Go's compile error.
 func uconstNative(u *runtime.UConst) (any, error) {
 	return runtime.UConstNative(u)
-}
-
-// mustNativeConst is uconstNative for a builtin argument position that
-// cannot report the error: it panics with Go's compile-error wording.
-func mustNativeConst(u *runtime.UConst) any {
-	nv, err := uconstNative(u)
-	if err != nil {
-		panic(&runtime.Panic{Value: &runtime.RuntimeError{Msg: err.Error()}})
-	}
-	return nv
-}
-
-func goNative(v runtime.Value) any {
-	return goNativeWalk(v, runtime.NewWalk())
-}
-
-// goNativeWalk is goNative's worker. The Slice/Map arms run through
-// the shared runtime.Walk — which, besides the dedupe, gives the walk
-// cycle folding (a container holding itself through an any slot used
-// to recurse until the stack overflowed), the virtual-slice length
-// (a make([]struct{}, n) used to arrive empty), and comparable keys
-// (a script array key used to panic "hash of unhashable type").
-func goNativeWalk(v runtime.Value, w *runtime.Walk) any {
-	if n, ok := v.(*runtime.Named); ok {
-		// fast path for the common int-tagged element (every byte of a
-		// []byte argument): only a host-scalar tag changes an int64
-		// payload — the float32/complex64 narrowing never applies.
-		if iv, ok := n.V.(int64); ok && (n.Typ == nil || n.Typ.HostScalar == nil) {
-			return iv
-		}
-	}
-	if out, ok := w.Container(v, func(e runtime.Value) any { return goNativeWalk(e, w) }, runtime.UnwrapKey); ok {
-		return out
-	}
-	switch x := v.(type) {
-	case runtime.Nil:
-		return nil
-	case *runtime.IfaceNil:
-		// a nil interface value crosses to the host as nil (a typed
-		// nil stays a TypedNil — the host has no box for it).
-		return nil
-	case *runtime.UConst:
-		return mustNativeConst(x)
-	case *runtime.Named:
-		// a float32-tagged value crosses to fmt as a real float32 so
-		// %v applies float32 formatting (0.1, not 0.10000000149011612);
-		// %T is rewritten to scriptTypeString before this runs.
-		if float32Tag(x.Typ) {
-			if fv, ok := x.V.(float64); ok {
-				return float32(fv)
-			}
-			// the payload may still ride the constant domain — a
-			// `float32(c)` conversion keeps UConst so the value stays
-			// arbitrary-precision; read it at float32 width the same
-			// way the materialized float64 path above does.
-			if uc, ok := x.V.(*runtime.UConst); ok {
-				if nv, err := uconstNative(uc); err == nil {
-					if fv, ok := nv.(float64); ok {
-						return float32(fv)
-					}
-				}
-			}
-		}
-		// a complex64-tagged value narrows each part to float32 — the
-		// constant domain's widened digits must not reach the host.
-		if complex64Tag(x.Typ) {
-			if cv, ok := complex64Value(x.V); ok {
-				return cv
-			}
-		}
-		// a bound host scalar crossing to a host `any` parameter
-		// materializes to the host type — a host call sees a real
-		// time.Month, not the int64 or UConst the script shape keeps.
-		if x.Typ != nil && x.Typ.HostScalar != nil {
-			if hv, ok := runtime.HostScalarOf(x.Typ, x.V); ok {
-				return hv
-			}
-		}
-		return goNativeWalk(x.V, w)
-	case *runtime.Cell:
-		return goNativeWalk(x.Elem, w)
-	case *runtime.Struct:
-		return fmt.Sprintf("%s%+v", x.Def.Name, x.Fields)
-	case *runtime.GoValue:
-		return x.V
-	default:
-		return v
-	}
 }
 
 func str(v any) string {
@@ -679,7 +558,7 @@ func str(v any) string {
 	if u, ok := v.(*runtime.UConst); ok {
 		// a builtin argument position materializes an untyped
 		// constant at its default type — the same fold intOf does.
-		return str(mustNativeConst(u))
+		return str(hostbridge.MustNativeConst(u))
 	}
 	if s, ok := v.(string); ok {
 		return s
@@ -695,7 +574,7 @@ func intOf(v any) int {
 		// a named constant stays a UConst through declaration storage;
 		// a builtin argument position materializes it at its default
 		// type — Go folds these calls at compile time.
-		return intOf(mustNativeConst(x))
+		return intOf(hostbridge.MustNativeConst(x))
 	case int64:
 		return int(x)
 	case int:
@@ -729,7 +608,7 @@ func durOf(v any) time.Duration { return time.Duration(int64Of(v)) }
 
 // borrowBytes marshals a script value to []byte for a host call that
 // writes into the buffer: the returned commit writes the bytes back
-// into the script slice's elements. It must see the arg before goNative
+// into the script slice's elements. It must see the arg before hostbridge.GoNative
 // flattens it — an []any has lost the script slice it came from. Values
 // already sharing their backing (a host []byte inside a GoValue) need
 // no commit; read-only consumers keep using byteSlice.
@@ -802,7 +681,7 @@ func byteSlice(v any) []byte {
 		out := make([]byte, len(x.Elems))
 		for i, e := range x.Elems {
 			// byte elements are Named{byte, int64} or raw int64 — read
-			// them directly instead of a goNative walk per element.
+			// them directly instead of a hostbridge.GoNative walk per element.
 			if n, ok := e.(*runtime.Named); ok && (n.Typ == nil || n.Typ.HostScalar == nil) {
 				e = n.V
 			}
@@ -810,7 +689,7 @@ func byteSlice(v any) []byte {
 				out[i] = byte(iv)
 				continue
 			}
-			out[i] = byte(int64Of(goNative(e)))
+			out[i] = byte(int64Of(hostbridge.GoNative(e)))
 		}
 		return out
 	}
@@ -824,7 +703,7 @@ func strSlice(v any) []string {
 	if s, ok := v.(*runtime.Slice); ok {
 		out := make([]string, len(s.Elems))
 		for i, e := range s.Elems {
-			out[i] = str(goNative(e))
+			out[i] = str(hostbridge.GoNative(e))
 		}
 		return out
 	}
@@ -1002,7 +881,7 @@ func sliceIndexScript(vc runtime.IndexTyper, name string, args []runtime.Value) 
 	}
 	el, et, ok := scriptSliceArg(vc, args[0])
 	if !ok {
-		return slices.Index(anySlice(goNative(args[0])), goNative(args[1])), nil
+		return slices.Index(anySlice(hostbridge.GoNative(args[0])), hostbridge.GoNative(args[1])), nil
 	}
 	x := args[1]
 	switch x.(type) {
@@ -1033,7 +912,7 @@ func anySlice(v any) []any {
 	if s, ok := v.(*runtime.Slice); ok {
 		out := make([]any, len(s.Elems))
 		for i, e := range s.Elems {
-			out[i] = goNative(e)
+			out[i] = hostbridge.GoNative(e)
 		}
 		return out
 	}
@@ -1046,19 +925,13 @@ func anySlice(v any) []any {
 func strsSlice(ss []string) runtime.Value {
 	if ss == nil {
 		// a nil []string result stays nil — SplitN(s, sep, 0) == nil.
-		return &runtime.TypedNil{Typ: anonSliceTyp("string")}
+		return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("string")}
 	}
 	el := make([]runtime.Value, len(ss))
 	for i, s := range ss {
 		el[i] = s
 	}
-	return &runtime.Slice{Elems: el, Typ: anonSliceTyp("string")}
-}
-
-// anonSliceTyp builds the anonymous []name typedef used to tag slices
-// unboxed from host values (no package context — the name is a builtin).
-func anonSliceTyp(name string) *runtime.TypeDef {
-	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent(name)}}
+	return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("string")}
 }
 
 // bytesSliceOf lifts a [][]byte result into []any so scriptVal turns each
@@ -1066,7 +939,7 @@ func anonSliceTyp(name string) *runtime.TypeDef {
 // spelling so %T matches Go on a nil [][]byte.
 func bytesSliceOf(bb [][]byte) any {
 	if bb == nil {
-		return &runtime.TypedNil{Typ: anonSliceTyp("[]uint8")}
+		return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("[]uint8")}
 	}
 	out := make([]any, len(bb))
 	for i, b := range bb {
@@ -1089,13 +962,13 @@ func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
 // int64s — the same element representation a []rune{...} literal makes.
 func runeSlice(rs []rune) any {
 	if rs == nil {
-		return &runtime.TypedNil{Typ: anonSliceTyp("rune")}
+		return &runtime.TypedNil{Typ: hostbridge.AnonSliceTyp("rune")}
 	}
 	out := make([]runtime.Value, len(rs))
 	for i, r := range rs {
 		out[i] = runtime.Tag(runtime.BasicTypedef("rune"), int64(r))
 	}
-	return &runtime.Slice{Elems: out, Typ: anonSliceTyp("rune")}
+	return &runtime.Slice{Elems: out, Typ: hostbridge.AnonSliceTyp("rune")}
 }
 
 func floatOf(v any) float64 {
@@ -1207,7 +1080,7 @@ func sliceExtreme(vc runtime.ElemTyper, name string, args []runtime.Value, bette
 	}
 	el, _, ok := scriptSliceArg(vc, args[0])
 	if !ok {
-		el = scriptElems(goNative(args[0]))
+		el = scriptElems(hostbridge.GoNative(args[0]))
 	}
 	if len(el) == 0 {
 		panic(emptyListPanic(name))
@@ -1563,7 +1436,7 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool, twin func(a, b *runt
 		}
 		return true
 	}
-	return reflect.DeepEqual(goNative(a), goNative(b))
+	return reflect.DeepEqual(hostbridge.GoNative(a), hostbridge.GoNative(b))
 }
 
 // deepNilTyp is the dynamic type of a nil v: a typed nil's own type or

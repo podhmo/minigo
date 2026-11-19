@@ -7,6 +7,7 @@ import (
 	"go/constant"
 	"reflect"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -93,7 +94,7 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 			return string(byteSlice(&runtime.Slice{Elems: elems})), nil
 		}},
 		"Slice": &runtime.BuiltinFunc{Name: "unsafe.Slice", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			n := int(int64Of(goNative(args[1])))
+			n := int(int64Of(hostbridge.GoNative(args[1])))
 			// a nil pointer with len 0 is legal and reports the nil slice
 			// (Go panics only when len != 0) — typed nils keep their
 			// element type so the result is still a []T nil.
@@ -335,7 +336,7 @@ func unsafeBytes(str string) *runtime.Slice {
 }
 
 func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
-	n := int(int64Of(goNative(nv)))
+	n := int(int64Of(hostbridge.GoNative(nv)))
 	if p == nil || p == runtime.NIL {
 		if n == 0 {
 			return nil, nil

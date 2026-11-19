@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -154,11 +155,11 @@ func norm(v runtime.Value) string {
 	if t, ok := v.(*runtime.Tuple); ok {
 		out := make([]any, len(t.Elems))
 		for i, e := range t.Elems {
-			out[i] = goNative(e)
+			out[i] = hostbridge.GoNative(e)
 		}
 		return fmt.Sprint(out)
 	}
-	return hexPtr.ReplaceAllString(fmt.Sprint(goNative(v)), "0xPTR")
+	return hexPtr.ReplaceAllString(fmt.Sprint(hostbridge.GoNative(v)), "0xPTR")
 }
 
 // TestGeneratedBindCallParity runs the same call against the bound and
@@ -243,7 +244,7 @@ func TestGeneratedBindExtras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddrFrom4: %v", err)
 	}
-	got, _ := goNative(v).(netip.Addr)
+	got, _ := hostbridge.GoNative(v).(netip.Addr)
 	if diff := cmp.Diff("127.0.0.1", got.String()); diff != "" {
 		t.Errorf("AddrFrom4 (-want +got):\n%s", diff)
 	}
@@ -260,7 +261,7 @@ func TestGeneratedBindExtras(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	if diff := cmp.Diff(int64(4), goNative(n)); diff != "" {
+	if diff := cmp.Diff(int64(4), hostbridge.GoNative(n)); diff != "" {
 		t.Errorf("Encode n (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff([]byte("dead"), byteSlice(dst)); diff != "" {
@@ -289,7 +290,7 @@ func TestGeneratedBindExtras(t *testing.T) {
 	if !ok || len(tup.Elems) != 2 {
 		t.Fatalf("Decode result = %T, want (n, err) tuple", d)
 	}
-	if diff := cmp.Diff(int64(1), goNative(tup.Elems[0])); diff != "" {
+	if diff := cmp.Diff(int64(1), hostbridge.GoNative(tup.Elems[0])); diff != "" {
 		t.Errorf("Decode n (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff([]byte{'a', 0, 0xff}, byteSlice(ddst)); diff != "" {

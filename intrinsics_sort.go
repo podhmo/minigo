@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -48,7 +49,7 @@ func (e *Engine) installSort(h *hostHelpers) {
 			return true, nil
 		}},
 		"Search": &runtime.BuiltinFunc{Name: "sort.Search", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			n := int64Of(goNative(args[0]))
+			n := int64Of(hostbridge.GoNative(args[0]))
 			f := args[1]
 			i, j := int64(0), n
 			for i < j {
@@ -110,7 +111,7 @@ func sortScript(el []runtime.Value) {
 
 // sortSlice implements sort.Slice: the less function is a script callable.
 // scriptElems exposes a slice argument's raw elements to Go-side helpers
-// (the argument may arrive as a []any via goNative).
+// (the argument may arrive as a []any via hostbridge.GoNative).
 func scriptElems(v any) []runtime.Value {
 	switch s := v.(type) {
 	case *runtime.Slice:
