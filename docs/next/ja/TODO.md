@@ -155,7 +155,7 @@
   - [x] **P4-2c selector・レシーバと特殊形式**: P4-2b のあと、値の読み出しとアドレスが必要な経路を分ける。ポインタレシーバ、closure、Quoted Go が参照するローカルの同一性を確認し、escape 率を同じケース集合で測る。
 - [-] **P4-3 goroutine ごとの連続スタック**: frame を `(base, sp)` の窓にし、引数はその場で渡す。 frame の窓と通常呼び出しのその場渡しは実装済み。その他の引数経路の扱いを明記する。 [follow-up.md](./follow-up.md)
   - [x] **P4-3a frame を連続スタックの窓にする**: P4-1/2 のあと、goroutine ごとに `(base, sp)` を使う。ネストした呼び出し、スタックの拡張、panic/recover 前後の値をテストする。
-  - [-] **P4-3b 引数をスタック上で受け渡す**: P4-3a のあと、通常呼び出しから切り替える。可変長引数、defer、host callback を個別に移し、既存の結果と割り当て数を測る。
+  - [x] **P4-3b 引数をスタック上で受け渡す**: その場渡しは非 spread `OpCall` のみ（`8aee061` 済み）。spread/defer/go/host callback は窓形状または寿命の理由でスライス経路 — ケース別判定は [references/inplace-args.md](./references/inplace-args.md)。
 - [-] **P4-4 `CallSite` 記述子**: 引数のヒント、spread の型、quote インデックス、遅延された事実、ソース位置をまとめる。完了条件: `frame.argbuf/statbuf` と `deferredCall.statics/spreadTd` が消えている。 CallSite と frame バッファ撤去は実装済み。defer が保持する実行時型情報の完了条件を整理する。 [follow-up.md](./follow-up.md)
   - [x] **P4-4a 通常呼び出しの引数メタデータ**: M4-7a の `CallSite` に引数のヒント、spread の型、quote インデックスを載せる。通常・可変長・特殊形式で結果が一致することを確認する。
   - [-] **P4-4b defer とバッファの撤去**: P4-4a のあと、defer が同じ記述子を使うようにする。評価順、spread、panic 経由の呼び出しをテストし、既存のバッファと重複フィールドを削除する。
