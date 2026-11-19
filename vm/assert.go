@@ -469,7 +469,9 @@ func unboxAsserted(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 			return &runtime.TypedNil{Typ: in.Typ}
 		}
 	}
-	return x
+	// a declared-over-interface tag rides no concrete value: the
+	// asserted value is the payload itself, not the A wrapper.
+	return unwrapIfaceTag(x)
 }
 
 // typeMatches implements duck-typing: interfaces check the method set via
@@ -488,6 +490,12 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		}
 	}
 	if n, ok := x.(*runtime.Named); ok {
+		if n.Typ != nil && (n.Typ.IfaceBase || n.Typ.Kind == runtime.KindInterface) {
+			// a declared-over-interface tag is never the dynamic
+			// type — the payload's pair is what an assertion sees:
+			// `var a A = 42` (`type A any`) passes `a.(int)`.
+			return v.typeMatches(f, td, n.V)
+		}
 		// a Named value's dynamic type is its declared typedef —
 		// `x.(MyInt)` on MyInt matches, `x.(int)` does not.
 		return v.typeMatchesTD(f, td, n.Typ)
@@ -500,7 +508,10 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// fails, including .(any).
 		return false
 	}
-	if td.Kind == runtime.KindInterface {
+	if td.Kind == runtime.KindInterface || td.IfaceBase {
+		// a declared-over-interface target asserts like the interface:
+		// `var e E = v` (`type E error`) passes `e.(E)` when v's
+		// dynamic type satisfies it.
 		return v.satisfiesIface(f, td, x)
 	}
 	if td.Kind == runtime.KindPointer {
@@ -952,7 +963,7 @@ func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
 // the typedef the nil was declared with. Interfaces check the typedef's
 // method set; concrete types compare by type identity.
 func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
-	if td.Kind == runtime.KindInterface {
+	if td.Kind == runtime.KindInterface || td.IfaceBase {
 		if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 {
 			return true
 		}

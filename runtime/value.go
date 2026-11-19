@@ -1337,6 +1337,14 @@ func IfaceKeyOf(v Value) Value {
 		// peeling would collapse NS(st) onto st.
 		return tk
 	}
+	if n, ok := v.(*Named); ok && n.Typ != nil &&
+		(n.Typ.Kind == KindInterface || n.Typ.IfaceBase ||
+			(n.Typ.Spec == nil && ifaceUnderlyingSpell(TypUnderlyingSpelling(n.Typ)))) {
+		// a declared-over-interface tag is not a dynamic type:
+		// `E(err)` keys like err — the same peel typedScalarKeyOf
+		// declines to tag on.
+		return IfaceKeyOf(n.V)
+	}
 	return CanonicalKey(v)
 }
 

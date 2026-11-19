@@ -819,6 +819,12 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		}
 		return &runtime.BoundMethod{Recv: r, Fn: m}
 	}
+	if td != nil && (td.IfaceBase || td.Kind == runtime.KindInterface) {
+		// a declared-over-interface tag has no members of its own
+		// beyond declared overrides (checked above): `e.Error()` on
+		// `type E error` dispatches on the payload the interface holds.
+		return v.selectMember(f, n.V, name)
+	}
 	// fields live on the underlying struct value — promoted fields of the
 	// underlying type are stored as fields on it, but promoted METHODS of
 	// the underlying type are not part of the named type's method set. A
