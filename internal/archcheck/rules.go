@@ -13,7 +13,7 @@ package archcheck
 var Rules = map[string][]string{
 	".": {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "internal/stdlib", "internal/stdlib/context", "internal/stdlib/base64", "internal/stdlib/bufio", "internal/stdlib/bytes",
 		"internal/stdlib/bytealg", "internal/stdlib/crand", "internal/stdlib/atomic", "internal/stdlib/csv", "internal/stdlib/filepath", "internal/stdlib/goruntime", "internal/stdlib/host", "internal/stdlib/os", "internal/stdlib/osexec", "internal/stdlib/errors", "internal/stdlib/godebug",
-		"internal/stdlib/io", "internal/stdlib/maps", "internal/stdlib/reflect", "internal/stdlib/unsafe", "internal/stdlib/inspect",
+		"internal/stdlib/io", "internal/stdlib/maps", "internal/stdlib/reflect", "internal/stdlib/unsafe", "internal/stdlib/inspect", "internal/stdlib/json",
 		"internal/stdlib/slices", "internal/stdlib/sort",
 		"internal/stdlib/hex", "internal/stdlib/math", "internal/stdlib/net", "internal/stdlib/netip", "internal/stdlib/path", "internal/stdlib/race",
 		"internal/stdlib/regexp", "internal/stdlib/sha256", "internal/stdlib/strconv", "internal/stdlib/strings", "internal/stdlib/stringslite",
@@ -73,6 +73,7 @@ var Rules = map[string][]string{
 	"internal/stdlib/unsafe":       {"internal/hostbridge", "internal/stdlib", "minireflect", "runtime"},
 	"internal/stdlib/reflect":      {"internal/hostbridge", "internal/stdlib", "minireflect", "runtime"},
 	"internal/stdlib/inspect":      {"index", "inspect", "internal/stdlib", "resolve", "runtime"},
+	"internal/stdlib/json":         {"internal/hostbridge", "internal/stdlib", "internal/stdlib/io", "runtime"},
 	"internal/stdlib/maps":         {"internal/stdlib", "runtime"},
 	"internal/stdlib/slices":       {"internal/hostbridge", "internal/stdlib", "runtime"},
 	"internal/stdlib/sort":         {"internal/hostbridge", "internal/stdlib", "runtime", "vm"},

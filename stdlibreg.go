@@ -21,6 +21,7 @@ import (
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
 	stdinspect "github.com/podhmo/minigo/internal/stdlib/inspect"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
+	stdjson "github.com/podhmo/minigo/internal/stdlib/json"
 	stdlibmaps "github.com/podhmo/minigo/internal/stdlib/maps"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
 	stdlibnet "github.com/podhmo/minigo/internal/stdlib/net"
@@ -62,7 +63,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("regexp", func() { stdlibregexp.Install(e.bindBound, h) })
 	e.pending.Register("encoding/base64", func() { stdlibbase64.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("encoding/hex", func() { stdlibhex.Install(e.bindBound, h, h.ioAdapters()) })
-	e.pending.Register("encoding/json", func() { e.installEncodingJson(h) })
+	e.pending.Register("encoding/json", func() { stdjson.Install(e.bindBound, h, h.ioAdapters(), scriptTypeString) })
 	e.pending.Register("internal/godebug", func() { stdlibgodebug.Install(e.bindBound, h) })
 	e.pending.Register("internal/testenv", func() { stdlibtestenv.Install(e.bindBound, h) })
 	e.pending.Register("syscall", func() { stdlibsyscall.Install(e.bindBound, h) })
