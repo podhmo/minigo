@@ -136,7 +136,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			return &runtime.IfaceNil{Typ: tn.Typ}, nil
 		}
 	}
-	if r, ok := hostEnumConv(td, x); ok {
+	if r, ok := hostbridge.HostEnumConv(td, x); ok {
 		return r, nil
 	}
 	// an untyped constant converts by Go's representability rules —
@@ -197,7 +197,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	}
 	// a host value unboxes so its concrete value converts like a script
 	// value of the same shape (a []byte arriving boxed becomes a slice).
-	x = unboxGoValue(x)
+	x = hostbridge.UnboxGoValue(x)
 	if peeled {
 		// a tagged host named string (template.HTML("x")) holds its raw
 		// host payload; it converts as the plain string.
@@ -242,7 +242,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			// result) or raw (time.Duration) — converts by its host
 			// kind.
 			var ok bool
-			iv, uv, ok = hostScalarInts(x)
+			iv, uv, ok = hostbridge.HostScalarInts(x)
 			if !ok {
 				return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), td.Name)
 			}
@@ -281,7 +281,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		if iv, ok := x.(int64); ok && srcUnsigned {
 			return runtime.Tag(td, float64(float32(uint64(iv)))), nil
 		}
-		if f, ok := hostFloat(x); ok {
+		if f, ok := hostbridge.HostFloat(x); ok {
 			return runtime.Tag(td, float64(float32(f))), nil
 		}
 		switch x.(type) {
@@ -293,7 +293,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		if iv, ok := x.(int64); ok && srcUnsigned {
 			return float64(uint64(iv)), nil
 		}
-		if f, ok := hostFloat(x); ok {
+		if f, ok := hostbridge.HostFloat(x); ok {
 			return f, nil
 		}
 		switch x.(type) {
@@ -365,7 +365,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		default:
 			// a raw host scalar of integer kind (time.Duration)
 			// converts like int64: string(time.Duration(65)) is "A".
-			if sx, ok := hostInt64(x); ok {
+			if sx, ok := hostbridge.HostInt64(x); ok {
 				return stringFromInt(sx), nil
 			}
 			// a raw host scalar of string kind (reflect.StructTag)
@@ -466,104 +466,16 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 // int64/float64 pass through, and a boxed host number converts by its
 // own kind (uint64 reads unsigned — a wide literal keeps 2^63, not
 // the int64 reinterpretation).
-func hostFloat(x runtime.Value) (float64, bool) {
-	if gv, ok := x.(*runtime.GoValue); ok {
-		x = gv.V
-	}
-	rv := reflect.ValueOf(x)
-	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return float64(rv.Int()), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return float64(rv.Uint()), true
-	case reflect.Float32, reflect.Float64:
-		return rv.Float(), true
-	}
-	return 0, false
-}
-
 // hostEnumConv converts an integer to a bound host enum (reflect.Kind,
 // parse.NodeType) as the boxed host value its constants carry, so
 // `parse.NodeType(1) == parse.NodeAction`. A constant must be
 // representable; a variable wraps like Go's conversion.
-func hostEnumConv(td *runtime.TypeDef, x runtime.Value) (runtime.Value, bool) {
-	if td.HostNew == nil || td.Kind != runtime.KindNamedBasic {
-		return nil, false
-	}
-	hv := td.HostNew()
-	if !hostNamedInt(hv) {
-		return nil, false
-	}
-	rt := reflect.TypeOf(hv)
-	for {
-		n, ok := x.(*runtime.Named)
-		if !ok {
-			break
-		}
-		x = n.V
-	}
-	if u, ok := x.(*runtime.UConst); ok {
-		return constToHostInt(u, rt)
-	}
-	var iv int64
-	var uv uint64
-	switch n := x.(type) {
-	case int64:
-		iv, uv = n, uint64(n)
-	case *runtime.GoValue:
-		var ok bool
-		if iv, uv, ok = hostScalarInts(n); !ok {
-			return nil, false
-		}
-	default:
-		return nil, false
-	}
-	rv := reflect.New(rt).Elem()
-	switch rt.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		rv.SetInt(iv)
-	default:
-		rv.SetUint(uv)
-	}
-	return &runtime.GoValue{V: rv.Interface()}, true
-}
-
 // hostScalarInts reads a host scalar of integer or float kind into the
 // (int64, uint64) pair a numeric conversion needs — a boxed GoValue
 // (a wide uint64 literal, a reflect result) and a raw host scalar
 // (time.Duration) alike convert by their host kind.
-func hostScalarInts(x runtime.Value) (iv int64, uv uint64, ok bool) {
-	if gv, is := x.(*runtime.GoValue); is {
-		x = gv.V
-	}
-	rv := reflect.ValueOf(x)
-	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return rv.Int(), uint64(rv.Int()), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return int64(rv.Uint()), rv.Uint(), true
-	case reflect.Float32, reflect.Float64:
-		return int64(rv.Float()), uint64(rv.Float()), true
-	}
-	return 0, 0, false
-}
-
 // hostInt64 reads a host value of integer kind, signed or unsigned —
 // the integer source a string(i) conversion accepts (floats do not).
-func hostInt64(x runtime.Value) (int64, bool) {
-	if gv, ok := x.(*runtime.GoValue); ok {
-		x = gv.V
-	}
-	rv := reflect.ValueOf(x)
-	switch rv.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return rv.Int(), true
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return int64(rv.Uint()), true
-	}
-	return 0, false
-}
-
 // stringFromInt converts an integer code point to a one-rune string,
 // range-checked like string(int64) — rune(sx) would truncate before
 // string() could see the out-of-range value (issue15039).
@@ -578,44 +490,10 @@ func stringFromInt(sx int64) string {
 // shape where one exists, so `[]byte(x)` and `string(x)` see through a
 // GoValue carrying []byte, []rune or string — or a named type of those
 // kinds (net.IP, template.HTML). Other shapes stay boxed.
-func unboxGoValue(x runtime.Value) runtime.Value {
-	gv, ok := x.(*runtime.GoValue)
-	if !ok {
-		return x
-	}
-	if rv := reflect.ValueOf(gv.V); rv.Kind() == reflect.String && rv.Type() != reflect.TypeFor[string]() {
-		return rv.String()
-	}
-	if s, ok := UnboxHostSlice(gv); ok {
-		return s
-	}
-	switch h := gv.V.(type) {
-	case string:
-		return h
-	case []byte:
-		el := make([]runtime.Value, len(h))
-		for i, b := range h {
-			el[i] = runtime.ByteValue(b)
-		}
-		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("byte")}
-	case []rune:
-		el := make([]runtime.Value, len(h))
-		for i, r := range h {
-			el[i] = namedBasicElem("rune", int64(r))
-		}
-		return &runtime.Slice{Elems: el, Typ: hostbridge.AnonSliceTyp("rune")}
-	}
-	return x
-}
-
 // namedBasicElem tags a materialized element with its basic type — a
 // slice literal's elements coerce through the element typedef (byte
 // elements read as uint8s), so unboxed host slices carry the same tag
 // or deep equality / %T see a different element type.
-func namedBasicElem(name string, x runtime.Value) runtime.Value {
-	return runtime.Tag(runtime.BasicTypedef(name), x)
-}
-
 // convertArray implements `[N]T(s)` on array typedefs (Go 1.20): the
 // result is a fresh array copying the slice's first N elements — a
 // too-short or wrongly-shaped source panics/errors like Go.
@@ -1045,8 +923,8 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// a bound host enum (reflect.Kind, parse.NodeType) holds the
 		// boxed host value its constants and host results carry, so
 		// `var k reflect.Kind = 2` compares equal to reflect.Int.
-		if hv := td.HostNew(); hostNamedInt(hv) {
-			if r, ok := constToHostInt(u, reflect.TypeOf(hv)); ok {
+		if hv := td.HostNew(); hostbridge.HostNamedInt(hv) {
+			if r, ok := hostbridge.ConstToHostInt(u, reflect.TypeOf(hv)); ok {
 				return r
 			}
 		}
@@ -1130,7 +1008,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// magnitude instead of binding the GoValue raw. The narrowed
 		// float64 flows on through the same rounding and tagging a
 		// script float takes.
-		if fv, ok := hostFloat(gv); ok {
+		if fv, ok := hostbridge.HostFloat(gv); ok {
 			switch basicNameOf(v.peelNamed(td)) {
 			case "float32", "float64", "complex64", "complex128":
 				x = fv

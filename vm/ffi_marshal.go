@@ -1091,24 +1091,5 @@ func (fs *funcMapSig) Guard(callee runtime.Value) runtime.Value {
 
 // hostNamedInt reports whether x is a host value of a defined integer
 // type — a reflect.Kind or parse.NodeType, not a bare int or int64.
-func hostNamedInt(x any) bool {
-	t := reflect.TypeOf(x)
-	if t == nil || t.PkgPath() == "" {
-		return false
-	}
-	switch t.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return true
-	}
-	return false
-}
-
 // hostStringOperand is what eqlValue compares for a host-boxed string:
 // its string contents. Any other box compares as itself.
-func hostStringOperand(gv *runtime.GoValue) runtime.Value {
-	if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() == reflect.String {
-		return rv.String()
-	}
-	return gv
-}

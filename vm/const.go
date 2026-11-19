@@ -27,6 +27,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -1039,11 +1040,11 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 				}
 			}
 		}
-	} else if g, ok := other.(*runtime.GoValue); ok && hostNamedInt(g.V) {
+	} else if g, ok := other.(*runtime.GoValue); ok && hostbridge.HostNamedInt(g.V) {
 		// a named host int (reflect.Kind, parse.NodeType) adopts the
 		// constant into its own type — `k == 2` compares two boxed
 		// host values like Go converting 2 to the operand's type.
-		if r, ok := constToHostInt(u, reflect.TypeOf(g.V)); ok {
+		if r, ok := hostbridge.ConstToHostInt(u, reflect.TypeOf(g.V)); ok {
 			return r
 		}
 	} else if s, ok := scalarConst(u, other); ok {
@@ -1061,41 +1062,6 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 
 // constToHostInt converts an integer constant to the host type t, boxed;
 // false when the constant is not an integer t can represent.
-func constToHostInt(u *runtime.UConst, t reflect.Type) (runtime.Value, bool) {
-	c := constant.ToInt(u.V)
-	if c.Kind() != constant.Int {
-		return nil, false
-	}
-	rv := reflect.New(t).Elem()
-	if u.Wrap {
-		// a non-constant shift result truncates to t's width: the
-		// reflect setters store the low bits.
-		w := runtime.WrapInt64(c)
-		switch t.Kind() {
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			rv.SetInt(w)
-		default:
-			rv.SetUint(uint64(w))
-		}
-		return &runtime.GoValue{V: rv.Interface()}, true
-	}
-	switch t.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, exact := constant.Int64Val(c)
-		if !exact || rv.OverflowInt(i) {
-			return nil, false
-		}
-		rv.SetInt(i)
-	default:
-		n, exact := constant.Uint64Val(c)
-		if !exact || rv.OverflowUint(n) {
-			return nil, false
-		}
-		rv.SetUint(n)
-	}
-	return &runtime.GoValue{V: rv.Interface()}, true
-}
-
 // scalarOperandTypedef maps a bare scalar or GoValue operand to the
 // basic typedef an unconvertible numeric constant is checked against —
 // the operand-type adoption rule applies there too (`1.5 + intvar`
