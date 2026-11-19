@@ -1316,8 +1316,18 @@ func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	if v.internTypedef(a) == v.internTypedef(b) {
+	ca, cb := v.internTypedef(a), v.internTypedef(b)
+	if ca == cb {
 		return true
+	}
+	// A canonical-descriptor upgrade can swap the interned pointer
+	// between the two lookups; identity is the key, not the pointer
+	// generation, so compare the keys of the canonical answers.
+	if v.H.TypeIDOf != nil && ca != nil && cb != nil {
+		ka, kb := v.H.TypeIDOf(ca), v.H.TypeIDOf(cb)
+		if ka != "" && ka != "?" && ka == kb {
+			return true
+		}
 	}
 	// the spelled acceptance needs actual content on both sides — a
 	// fabricated bare {Kind: Slice} descriptor would equal every other
