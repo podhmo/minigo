@@ -41,7 +41,7 @@ func (v *VM) exec(f *frame) {
 	// between two checks always has the same innermost frame: the caller
 	// is charged up to the call, the callee up to its return.
 	if v.H.Prof != nil {
-		v.profCheckTick()
+		v.profCheck()
 	}
 	v.frames = append(v.frames, f)
 	if v.H.Prof != nil {
@@ -1046,7 +1046,9 @@ func (v *VM) loop(f *frame) {
 				f.retNamed = true
 			default:
 				f.results = make([]runtime.Value, n)
-				v.profAllocs++
+				if n > 0 { // a length-0 slice allocates no backing array
+					v.profAllocs++
+				}
 				for i := n - 1; i >= 0; i-- {
 					f.results[i] = f.pop()
 				}

@@ -110,13 +110,7 @@ func (p *Profiler) Stop() {
 // profCheck is the safepoint hook: cheap when the tick has not moved.
 func (v *VM) profCheck() {
 	v.profCheckFlushing(true)
-}
 
-// profCheckTick is profCheck without the allocation flush — exec uses
-// it before pushing the new frame so the callee's setup allocations
-// land on the callee's own stack, not the caller's call line.
-func (v *VM) profCheckTick() {
-	v.profCheckFlushing(false)
 }
 
 func (v *VM) profCheckFlushing(alloc bool) {
