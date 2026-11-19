@@ -196,13 +196,27 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		if len(targs) != len(g.TParams) {
 			f.trap("cannot instantiate %s: needs %d type arguments, got %d", g.Name, len(g.TParams), len(targs))
 		}
+		key, ok := v.instTypeKey(f, g, targs)
+		if ok {
+			// an instantiated generic function re-spells its receiver's
+			// type T[args] per call — the specialization depends only on
+			// g's spec, binds and the arguments, so a hit skips
+			// checkTArgs and specializeType (~KBs per call) alike.
+			if r, hit := g.Pkg.Specialized(key); hit {
+				return r
+			}
+		}
 		binds := map[string]runtime.Value{}
 		bindArgs(binds, g.TParams, targs)
 		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 			f.trap("%s", err)
 		}
-		return v.specializeType(f, g, targs)
+		td := v.specializeType(f, g, targs)
+		if ok {
+			g.Pkg.SetSpecialized(key, td)
+		}
+		return td
 	default:
 		return v.indexFallback(f, base, targs)
 	}
@@ -298,6 +312,50 @@ func (v *VM) instFuncKey(g *runtime.Function, targs []runtime.Value) (runtime.In
 		fmt.Fprintf(&b, "|o%s", n)
 	}
 	return runtime.InstCacheKey{Decl: g.Decl, Args: b.String()}, true
+}
+
+// instTypeKey spells what the TypeDef arm of instantiate reads: the
+// generic's spec identity, its existing binds, each type argument and —
+// for a function-local generic — the enclosing instantiation's args,
+// which specializeType folds into the type's identity. A typedef
+// without a package/spec cannot key: the uncached path runs.
+func (v *VM) instTypeKey(f *frame, g *runtime.TypeDef, targs []runtime.Value) (runtime.SpecKey, bool) {
+	if g.Pkg == nil || g.Spec == nil {
+		return runtime.SpecKey{}, false
+	}
+	bk, ok := v.instBindsKey(g.Binds)
+	if !ok {
+		return runtime.SpecKey{}, false
+	}
+	var b strings.Builder
+	b.WriteString("instt")
+	b.WriteString(bk)
+	for _, a := range targs {
+		td, ok := a.(*runtime.TypeDef)
+		if !ok {
+			return runtime.SpecKey{}, false
+		}
+		tid, ok := v.typeIDArg(td)
+		if !ok {
+			return runtime.SpecKey{}, false
+		}
+		fmt.Fprintf(&b, "|t%s", tid)
+	}
+	if g.Local {
+		names, args := v.outerTypeArgs(f)
+		for i, bv := range args {
+			td := typedefOf(bv)
+			if td == nil {
+				return runtime.SpecKey{}, false
+			}
+			tid, ok := v.typeIDArg(td)
+			if !ok {
+				return runtime.SpecKey{}, false
+			}
+			fmt.Fprintf(&b, "|o%s=%s", names[i], tid)
+		}
+	}
+	return runtime.SpecKey{Spec: g.Spec, Args: b.String()}, true
 }
 
 func (v *VM) instantiateFuncUncached(f *frame, g *runtime.Function, targs []runtime.Value) *runtime.Function {
