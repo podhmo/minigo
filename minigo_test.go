@@ -4055,3 +4055,25 @@ func TestSeqTwoVarEmpty(t *testing.T) {
 		t.Errorf("mismatch (-want +got):\n%s", diff)
 	}
 }
+
+type seqPoint struct{ X int }
+
+func TestHostSeqStructElemValues(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/lib", map[string]runtime.Value{
+		"P": &runtime.TypeDef{Name: "lib.P", Kind: runtime.KindStruct, HostNew: func() any { return &seqPoint{} }},
+		"Total": &runtime.GoValue{V: func(x any) string {
+			s, ok := x.(func(func(seqPoint) bool))
+			if !ok {
+				return "not a seq"
+			}
+			total := 0
+			s(func(p seqPoint) bool { total += p.X; return true })
+			return fmt.Sprint(total)
+		}},
+	})
+	got := run(t, e, "./testdata/hostseqstruct", "Total")
+	if diff := cmp.Diff(runtime.Value("3"), got); diff != "" {
+		t.Errorf("mismatch (-want +got):\n%s", diff)
+	}
+}

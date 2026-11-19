@@ -585,6 +585,12 @@ func (m *Marshal) hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool)
 						vals[i] = rv
 					} else if rv.Type().ConvertibleTo(et) {
 						vals[i] = rv.Convert(et)
+					} else if rv.Kind() == reflect.Pointer {
+						// a host struct element arrives as the
+						// allocator's *T while the seq spells T.
+						if ev := rv.Elem(); ev.IsValid() && ev.Type().AssignableTo(et) {
+							vals[i] = ev
+						}
 					}
 				}
 			}
