@@ -10,7 +10,6 @@
 package minigo
 
 import (
-	"context"
 	"fmt"
 	"go/ast"
 	"io"
@@ -419,11 +418,6 @@ type afterFuncTimer = stdtime.AfterFuncTimer
 // the type lives with the moved context installer (P2-12c).
 type scriptCoro = stdcontext.ScriptCoro
 
-// asCtx coerces a script value to a context.Context (P2-12c).
-func asCtx(v any) (context.Context, error) {
-	return stdcontext.AsCtx(v)
-}
-
 // proxyHostType resolves the public spelling of a host type — the
 // TypeAlias hook for the reflect facade (moved with the time
 // installer, P2-12c).
@@ -713,27 +707,6 @@ func strArgs(a []any) []string {
 		out[i] = str(v)
 	}
 	return out
-}
-
-// callOrPanic invokes a script callback from inside a host call and
-// re-raises any failure as a Go panic: v.Call delivers a script panic
-// (or trap) as an error across its boundary, but returning that as the
-// builtin's error would turn a recoverable panic into a runtime trap —
-// in Go a failure inside strings.Map's callback just propagates as a
-// panic, and a trap or process exit keeps its own kind through
-// asScriptPanic.
-// walkCallback runs a filepath.Walk/WalkDir script callback for host
-// path p: the walk ran from ap, the engine's resolution of the script's
-// root, so p maps back onto root as written (gc hands the root over
-// verbatim — "./a", "a/" — and joins descendants onto it), entry is the
-// boxed fs.DirEntry/fs.FileInfo (NIL when the host passed none), and
-// the result goes back through hostErrOf so the host walker compares
-// fs.SkipDir/SkipAll by identity and a script error keeps its identity
-// on the way out (errVal).
-func walkCallback(v runtime.MemberCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
-	sp := scriptPathOf(root, ap, p)
-	r := hostbridge.CallOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
-	return hostbridge.HostErrOf(v, r)
 }
 
 // derefTyp peels the pointer level off a value's typedef — json.Unmarshal

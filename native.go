@@ -30,12 +30,6 @@ func WrapFunc(name string, fn any) *runtime.BuiltinFunc {
 	return stdlib.WrapFuncWith(name, fn, ValueOf, false)
 }
 
-// wrapBind is WrapFunc whose results ride the host→script conversion the
-// handwritten intrinsics use (scriptVal).
-func wrapBind(name string, fn any) *runtime.BuiltinFunc {
-	return stdlib.WrapBind(name, fn)
-}
-
 // composite literal of the bound type (store.Issue{ID: 7}) then builds
 // a *T through reflection: keyed fields must name exported fields and
 // each value converts to the field's type, and the result is a genuine
