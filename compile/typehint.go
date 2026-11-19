@@ -206,7 +206,7 @@ type opTyp struct {
 	elPos []constant.Value
 	// elFile is the file a package-var literal was declared in —
 	// set only when the literal is re-derived at a use site. Keys
-	// that did not fold emit an OpEvalAST fragment over it so their
+	// that did not fold emit an OpEvalFragment fragment over it so their
 	// names resolve in the decl's package scope rather than in the
 	// use site's (a local shadow must not rebind them).
 	elFile *syntax.File

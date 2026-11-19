@@ -114,7 +114,7 @@ func effect(ch *Chunk, ip int, ins Instruction, d int, problems *[]string) (int,
 	case OpConst, OpNil, OpLocal, OpLocalTyp, OpLocalRef,
 		OpUpval, OpUpvalTyp, OpUpvalRef,
 		OpGlobal, OpGlobalTyp, OpGlobalRef,
-		OpEvalAST, OpMakeClosure, OpSpecialCall,
+		OpEvalFragment, OpMakeClosure, OpSpecialCall,
 		OpDeferredTyp, OpDeferredValueTyp:
 		return one(d + 1)
 	case OpDup:
@@ -231,7 +231,7 @@ func needed(ins Instruction) int {
 		OpLocal, OpLocalTyp, OpLocalRef,
 		OpUpval, OpUpvalTyp, OpUpvalRef,
 		OpGlobal, OpGlobalTyp, OpGlobalRef,
-		OpEvalAST, OpMakeClosure, OpSpecialCall,
+		OpEvalFragment, OpMakeClosure, OpSpecialCall,
 		OpDeferredTyp, OpDeferredValueTyp, OpConstExpr, OpTypGate,
 		OpRangeNext, OpLocalType:
 		return 0 // locals/upvals/globals and const-driven ops read no operand
