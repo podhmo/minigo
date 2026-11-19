@@ -115,7 +115,14 @@ func HostReflectType(td *TypeDef) reflect.Type {
 		return nil
 	}
 	if td.HostNew != nil {
-		return td.HostType()
+		// HostType is the allocator's type, *T when td spells T
+		// (HostNew is reflect.New(rt)); the typedef's own host
+		// type is the element.
+		rt := td.HostType()
+		if rt != nil && rt.Kind() == reflect.Pointer {
+			return rt.Elem()
+		}
+		return rt
 	}
 	if td.HostScalar != nil {
 		return reflect.TypeOf(td.HostScalar)
