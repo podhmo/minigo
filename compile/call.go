@@ -691,16 +691,13 @@ unwrapped:
 		len(x.Args) == 1 {
 		if id, ok2 := sel.X.(*ast.Ident); ok2 {
 			if ref, ok3 := c.importRef(id.Name); ok3 && ref.Path == "unsafe" {
-				operand := x.Args[0]
-				for {
-					if p, ok4 := operand.(*ast.ParenExpr); ok4 {
-						operand = p.X
-						continue
-					}
-					break
-				}
+				operand := ast.Unparen(x.Args[0])
 				c.calleeExpr(x.Fun)
 				ot := c.staticOpTyp(operand)
+				deferredOperand := ot.dexpr
+				if deferredOperand == nil {
+					deferredOperand = operand
+				}
 				var te ast.Expr
 				switch {
 				case ot.te != nil:
@@ -735,7 +732,7 @@ unwrapped:
 					// the operand's type is a deferred fact
 					// (`p.T(v)` under IndexedOnly): Sizeof answers
 					// from the resolved typedef at run time.
-					c.emitDeferredTypOperand(operand, x.Pos())
+					c.emitDeferredTypOperand(deferredOperand, x.Pos())
 				} else {
 					// the operand's type is statically opaque (a host
 					// func's result, a reflect value) — evaluate it
@@ -756,7 +753,7 @@ unwrapped:
 					h0 = bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(te, x.Pos()))}
 					c.pkgScopeTyp = nil
 				} else if ot.deferred {
-					h0 = bytecode.ArgHint{Kind: bytecode.HintDeferredValueTyp, A: int32(c.exprSite(operand, x.Pos()))}
+					h0 = bytecode.ArgHint{Kind: bytecode.HintDeferredValueTyp, A: int32(c.exprSite(deferredOperand, x.Pos()))}
 				} else {
 					h0 = c.argHint(operand)
 				}
