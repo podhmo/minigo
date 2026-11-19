@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/hostbridge"
@@ -43,15 +44,46 @@ func (h *hostHelpers) Fn(name string, f func([]any) (any, error), target ...any)
 	return h.Fnvc(name, func(_ runtime.VMCaller, a []any) (any, error) { return f(a) }, target...)
 }
 
+// argBufPool reuses the []any scratch that marshals script args for a
+// host binding. The slice is dead when the binding's f returns — a
+// binding may read elements and pass them (or subslices, as fmt's
+// `a[1:]...` does) into synchronous calls but must not retain the
+// slice itself; every binding here and under internal/stdlib honors
+// that.
+var argBufPool = sync.Pool{New: func() any {
+	a := make([]any, 0, 8)
+	return &a
+}}
+
+// hostArgs marshals args into a pooled []any; releaseHostArgs clears
+// and returns the buffer.
+func hostArgs(args []runtime.Value) ([]any, *[]any) {
+	ap := argBufPool.Get().(*[]any)
+	a := *ap
+	if cap(a) < len(args) {
+		a = make([]any, len(args))
+	} else {
+		a = a[:len(args)]
+	}
+	for i, v := range args {
+		a[i] = hostbridge.GoNative(v)
+	}
+	return a, ap
+}
+
+func releaseHostArgs(a []any, ap *[]any) {
+	clear(a[:cap(a)])
+	*ap = a
+	argBufPool.Put(ap)
+}
+
 // fnvc is fn for bindings that need the caller (e.g. deadlock-wait
 // bookkeeping through the channel a host call hands to the script).
 func (h *hostHelpers) Fnvc(name string, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc {
 	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		a := make([]any, len(args))
-		for i, v := range args {
-			a[i] = hostbridge.GoNative(v)
-		}
+		a, ap := hostArgs(args)
 		r, err := f(vc, a)
+		releaseHostArgs(a, ap)
 		if err != nil {
 			return nil, err
 		}
@@ -71,11 +103,9 @@ func (h *hostHelpers) FnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 		if len(args) != arity {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, arity, len(args))
 		}
-		a := make([]any, len(args))
-		for i, v := range args {
-			a[i] = hostbridge.GoNative(v)
-		}
+		a, ap := hostArgs(args)
 		r, err := f(vc, a, args)
+		releaseHostArgs(a, ap)
 		if err != nil {
 			return nil, err
 		}
@@ -107,11 +137,9 @@ func (h *hostHelpers) Arity(name string, n int, f func([]any) (any, error), targ
 		if len(args) < n {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, n, len(args))
 		}
-		a := make([]any, len(args))
-		for i, v := range args {
-			a[i] = hostbridge.GoNative(v)
-		}
+		a, ap := hostArgs(args)
 		r, err := f(a)
+		releaseHostArgs(a, ap)
 		if err != nil {
 			return nil, err
 		}
