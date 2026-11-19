@@ -1250,7 +1250,7 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 // hostTypedefIs reports whether td denotes the host type rt: a bare
 // HostIdent stamp canonicalizes to rt's bound or source twin, so
 // interned descriptors agree exactly when td is that twin —
-// [runtime.HostTwinOf] remains the fallback for typedefs the intern
+// [hostbridge.HostTwinOf] remains the fallback for typedefs the intern
 // table cannot key.
 func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 	if rt == nil || td == nil {
@@ -1303,7 +1303,7 @@ func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 			}
 		}
 	}
-	return runtime.HostTwinOf(rt, td)
+	return hostbridge.HostTwinOf(rt, td)
 }
 
 // HostNamedTwin is [VM.hostTypedefIs] for intrinsics holding only a

@@ -289,12 +289,12 @@ func TagOf(v Value) *TypeDef {
 // against io/fs's ModeDir. The stored values stay as they are.
 func TwinOperands(a, b Value) (Value, Value) {
 	if n, ok := b.(*Named); ok {
-		if p, rt, ok := HostNamedScalar(a); ok && HostTwinOf(rt, n.Typ) {
+		if p, rt, ok := HostNamedScalar(a); ok && hostTwinOf(rt, n.Typ) {
 			return Tag(n.Typ, p), b
 		}
 	}
 	if n, ok := a.(*Named); ok {
-		if p, rt, ok := HostNamedScalar(b); ok && HostTwinOf(rt, n.Typ) {
+		if p, rt, ok := HostNamedScalar(b); ok && hostTwinOf(rt, n.Typ) {
 			return a, Tag(n.Typ, p)
 		}
 	}
@@ -1990,7 +1990,7 @@ type TypeDef struct {
 	// the host boundary stands for — identity only, unlike HostNew it
 	// builds no zero. An unboxed host []ast.Stmt keeps its element's
 	// identity here so the source-interpreted go/ast's own Stmt can be
-	// recognized as the same type (see [HostNamedIs]).
+	// recognized as the same type (see hostTwinOf).
 	HostIdent reflect.Type
 
 	// Local marks a typedef declared inside a function body: Go gives
@@ -2135,32 +2135,35 @@ func HostNamedPayload(hv any) (Value, reflect.Type, bool) {
 	return nil, nil, false
 }
 
-// HostNamedIs reports whether the host type rt is the type a source
-// typedef declares: same package path and name. The printed spelling
-// cannot decide it — inside go/ast `*BlockStmt` spells "*BlockStmt",
-// and under `import goast "go/ast"` a script spells "*goast.BlockStmt",
-// while the host value prints "*ast.BlockStmt" either way. Function-local
-// types and generic instances never match a host type.
-func HostNamedIs(rt reflect.Type, td *TypeDef) bool {
-	if rt == nil || td == nil || td.Pkg == nil || td.Pkg.Path == "" || td.Name == "" || td.Local || len(td.Binds) > 0 {
-		return false
-	}
-	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
-}
-
-// HostTwinOf reports whether a value of td is a value of the host type
-// rt: td is rt's source twin ([HostNamedIs]) or the bound typedef that
-// boxes rt as a scalar (time.Month's HostScalar). A boxed host named
-// basic meets exactly these typedefs' values, never a look-alike of
-// another type with the same payload.
-func HostTwinOf(rt reflect.Type, td *TypeDef) bool {
+// hostTwinOf is the residual reflect.Type↔typedef compare: it answers
+// not "same type" but "safe to tag the scalar's payload under td" — a
+// bound typedef whose Named payload is a *T box (reflect.Kind) does not
+// qualify even though it IS rt's type, while a bound HostScalar td
+// (time.Month) and a source twin do. Callers outside runtime that need
+// the same answer use hostbridge.HostTwinOf; callers with an engine's
+// type intern table asking true identity use HostNamedTwin.
+//
+// hostTwinOf is the residual reflect.Type↔typedef compare for callers
+// that carry no intern-table answer (a nil twin in [TwinOperands] and
+// thin non-VM callers): td is rt's source twin (same package path and
+// declared name — the printed spelling cannot decide it, since inside
+// go/ast `*BlockStmt` spells "*BlockStmt" while a script may spell it
+// "*goast.BlockStmt") or the bound typedef boxing rt as a scalar
+// (time.Month's HostScalar). Callers holding an engine's type
+// machinery should answer through the intern table instead
+// ([runtime.HostNamedTwinner]); see internal/hostbridge's exported
+// residual for callers outside runtime.
+func hostTwinOf(rt reflect.Type, td *TypeDef) bool {
 	if rt == nil || td == nil {
 		return false
 	}
 	if td.HostScalar != nil {
 		return reflect.TypeOf(td.HostScalar) == rt
 	}
-	return HostNamedIs(rt, td)
+	if td.Pkg == nil || td.Pkg.Path == "" || td.Name == "" || td.Local || len(td.Binds) > 0 {
+		return false
+	}
+	return rt.PkgPath() == td.Pkg.Path && rt.Name() == td.Name
 }
 
 // HostType returns reflect.TypeOf(td.HostNew()) without allocating a new
