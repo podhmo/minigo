@@ -1,12 +1,33 @@
 package stdlib
 
 import (
+	"math"
 	"reflect"
 	"time"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
+
+// NumNaNOf reports whether v's scalar payload is a NaN float —
+// slices.Max/Min propagate NaN instead of dropping it.
+func NumNaNOf(v runtime.Value) bool {
+	n, ok := scalarNum(v)
+	return ok && n.cls == 2 && math.IsNaN(n.f)
+}
+
+// PosZeroOf reports whether v's scalar payload is +0.
+func PosZeroOf(v runtime.Value) bool {
+	n, ok := scalarNum(v)
+	return ok && n.cls == 2 && n.f == 0 && !math.Signbit(n.f)
+}
+
+// NegZeroOf reports whether v's scalar payload is -0 — gc's
+// slices.Min prefers it and slices.Max prefers +0.
+func NegZeroOf(v runtime.Value) bool {
+	n, ok := scalarNum(v)
+	return ok && n.cls == 2 && n.f == 0 && math.Signbit(n.f)
+}
 
 // RetErr wraps a (n int, err error) or single-value+error result into
 // the script-visible tuple (value, err-or-nil).

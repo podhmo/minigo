@@ -26,7 +26,7 @@ func hostMethodSpecs(d *Decl, ptr bool) []*Method {
 		return nil
 	}
 	if ptr && rt.Kind() != reflect.Ptr {
-		rt = reflect.PtrTo(rt)
+		rt = reflect.PointerTo(rt)
 	} else if !ptr && rt.Kind() == reflect.Ptr {
 		rt = rt.Elem()
 	}
