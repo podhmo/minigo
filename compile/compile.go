@@ -113,8 +113,8 @@ func (c *compiler) fresh(base string) string {
 
 func (c *compiler) emit(op bytecode.Op, a, b int, pos token.Pos) int {
 	ins := bytecode.Instruction{Op: op, A: int32(a), B: int32(b), C: -1, Pos: pos}
-	if op == bytecode.OpGlobal {
-		// C names the site's resolution cache (bytecode.GlobalSite).
+	if op == bytecode.OpGlobal || op == bytecode.OpSelect || op == bytecode.OpSelectCall {
+		// C names the instruction's resolution cache (bytecode.GlobalSite).
 		ins.C = int32(len(c.ch.Sites))
 		c.ch.Sites = append(c.ch.Sites, &bytecode.GlobalSite{})
 	}

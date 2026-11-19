@@ -33,7 +33,15 @@ import (
 
 // selectMember implements base.name for import refs, packages, structs,
 // typedefs, and cells.
-func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Value {
+func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*bytecode.GlobalSite) runtime.Value {
+	// site is the calling instruction's per-site cache (OpSelect /
+	// OpSelectCall); nested selects — dynamic dispatch on a promoted
+	// member, unwrapping a ref — forward it: the slot's TypeID guard
+	// keeps one typedef's answer from serving another.
+	var site *bytecode.GlobalSite
+	if len(sites) > 0 {
+		site = sites[0]
+	}
 	switch b := base.(type) {
 	case *runtime.ImportRef:
 		if !token.IsExported(name) && !b.AllNames {
@@ -83,7 +91,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		return mv
 	case *runtime.Struct:
-		return v.structMember(f, b, name, b)
+		return v.structMember(f, b, name, b, site)
 	case *runtime.Named:
 		return v.namedMember(f, b, name, b)
 	case *runtime.Cell:
@@ -99,13 +107,13 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 				f.trap("select %s on cyclic reference %T", name, b.Elem)
 			}
 			f.selSeen[b.Elem] = true
-			r := v.selectMember(f, b.Elem, name)
+			r := v.selectMember(f, b.Elem, name, site)
 			delete(f.selSeen, b.Elem)
 			return r
 		}
 		switch e := b.Elem.(type) {
 		case *runtime.Struct:
-			return v.structMember(f, e, name, b)
+			return v.structMember(f, e, name, b, site)
 		case *runtime.Named:
 			return v.namedMember(f, e, name, b)
 		case *runtime.TypedNil:
@@ -159,7 +167,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Val
 		}
 		switch t := dv.(type) {
 		case *runtime.Struct:
-			return v.structMember(f, t, name, recv)
+			return v.structMember(f, t, name, recv, site)
 		case *runtime.Named:
 			return v.namedMember(f, t, name, recv)
 		case *runtime.Slice:
@@ -418,65 +426,6 @@ func (v *VM) methodExprDeref(td *runtime.TypeDef, m *runtime.Function) runtime.V
 	}
 }
 
-func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime.Value) runtime.Value {
-	def := s.Def
-	for i, fn := range def.Fields {
-		if fn == name {
-			return s.Fields[i]
-		}
-	}
-	if m, ok := def.Methods[name]; ok {
-		if err := m.EnsureCompiled(); err != nil {
-			f.trap("%s", err)
-		}
-		r := recv
-		if m.PtrRecv {
-			r = v.ptrReceiver(r)
-		} else {
-			// value receiver operates on a copy
-			if dv, ok := runtime.Deref(r); ok {
-				r = dv
-			}
-			r = valueCopy(r)
-		}
-		return &runtime.BoundMethod{Recv: r, Fn: m}
-	}
-	// promoted member: fields, methods, interface-stored values and
-	// host members all compete at promotion depth, breadth-first like
-	// Go (the same walk composite-literal keys use). The declaration
-	// answers the field side first when the hook can: a unique field
-	// path then only competes against non-field members at a
-	// shallower-or-equal depth — the bounded member search owns those.
-	if v.H.FieldPath != nil && len(s.Def.LocalTypes) == 0 {
-		if idx, found, decided := v.H.FieldPath(s.Def, name); decided {
-			// the method set answers the non-field members — methods,
-			// interface-dispatched and host members all locate their
-			// receiver slot by declared index path, so the value-level
-			// walk only re-runs for a member the set cannot name (a
-			// promoted host FIELD is not in the method set).
-			if mv, ok := v.promotedViaMethodSet(f, s, name, idx, found); ok {
-				return mv
-			}
-			if found {
-				if pr, ok := v.promotedMemberEx(f, s, name, true, false, len(idx)-1); ok {
-					return v.promotedValue(f, name, pr)
-				}
-				return v.fieldAtPath(f, s, idx, name)
-			}
-			if pr, ok := v.promotedMemberEx(f, s, name, true, false, -1); ok {
-				return v.promotedValue(f, name, pr)
-			}
-			f.trap("%s has no field or method %s", def.Name, name)
-			return nil
-		}
-	}
-	if pr, ok := v.promotedMember(f, s, name, true); ok {
-		return v.promotedValue(f, name, pr)
-	}
-	f.trap("%s has no field or method %s", def.Name, name)
-	return nil
-}
-
 // promotedViaMethodSet resolves a promoted member through the typedef's
 // shared method set — methods, interface-dispatched and host members the
 // set locates by declared index path. A member the set cannot name (a
@@ -484,13 +433,13 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 // caller falls back to the value walk; an ambiguous or outranked member
 // is decided here — ambiguous traps like Go's compile-time rejection, a
 // member deeper than the declared field path loses to it.
-func (v *VM) promotedViaMethodSet(f *frame, s *runtime.Struct, name string, fieldPath []int, fieldFound bool) (runtime.Value, bool) {
+func (v *VM) promotedViaMethodSet(f *frame, s *runtime.Struct, name string, fieldPath []int, fieldFound bool) (runtime.Value, *selRes, bool) {
 	if v.H.TypeMethodInfoOf == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	ms, err := v.H.TypeMethodInfoOf(s.Def, true)
 	if err != nil || ms == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	fieldDepth := -1
 	if fieldFound {
@@ -500,41 +449,45 @@ func (v *VM) promotedViaMethodSet(f *frame, s *runtime.Struct, name string, fiel
 		if fieldDepth < 0 || ad <= fieldDepth {
 			f.trap("ambiguous selector %s", name)
 		}
-		return nil, false // the shallower declared field wins
+		return nil, nil, false // the shallower declared field wins
 	}
 	pm := ms.Members[name]
 	if pm == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	if fieldDepth >= 0 {
 		if pm.Depth > fieldDepth {
-			return nil, false // the declared field wins
+			return nil, nil, false // the declared field wins
 		}
 		if pm.Depth == fieldDepth {
 			f.trap("ambiguous selector %s", name)
 		}
 	}
 	if len(pm.Path) == 0 {
-		return nil, false
+		return nil, nil, false
 	}
 	st, ix := v.fieldSlotAtPath(f, s, pm.Path, name)
 	if st == nil {
-		return nil, false
+		return nil, nil, false
 	}
 	slot := st.Fields[ix]
+	res := &selRes{kind: selMemberSet, path: pm.Path}
 	switch pm.Via {
 	case "iface":
 		// dispatch dynamically on the stored interface value — the
 		// synthesized signature shell in Funcs is not callable.
-		return v.selectMember(f, slot, name), true
+		res.via = 1
+		return v.selectMember(f, slot, name), res, true
 	case "host":
-		return v.selectMember(f, runtime.Unwrap(slot), name), true
+		res.via = 2
+		return v.selectMember(f, runtime.Unwrap(slot), name), res, true
 	}
 	fn := ms.Funcs[name]
 	if fn == nil {
-		return nil, false
+		return nil, nil, false
 	}
-	return v.promotedValue(f, name, &promoted{m: fn, recv: slot, mst: st, midx: ix}), true
+	res.m = fn
+	return v.promotedValue(f, name, &promoted{m: fn, recv: slot, mst: st, midx: ix}), res, true
 }
 
 // promotedValue binds the member promotedMember found: a field value,

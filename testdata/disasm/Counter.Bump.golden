@@ -10,8 +10,8 @@ chunk Counter.Bump (params=1 locals=1 results=1)
   0008  OpBinary +
   0009  OpSetRefs 1
   0010  OpLocalRef slot0
-  0011  OpSelect k3
-  0012  OpGlobal k4 site0
+  0011  OpSelect k3 site0
+  0012  OpGlobal k4 site1
   0013  OpLocalType
   0014  OpCoerceTop
   0015  OpReturn 1
