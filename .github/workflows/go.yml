@@ -50,11 +50,11 @@ jobs:
     - name: File budgets vs base branch (M1-4)
       if: github.event_name == 'pull_request'
       run: |
-        # Compare with the base branch's tip, not the merge base: on a
-        # stacked PR the merge base is an older commit whose budgets do
-        # not reflect raises that legitimately landed below, while the
-        # base tip is the table this PR actually diffs.
-        git show "origin/${{ github.base_ref }}:internal/archcheck/budgets.go" > /tmp/base_budgets.go
+        # Compare with the base commit GitHub diffs this PR against
+        # (pull_request.base.sha = the base branch's tip at event time).
+        # A stacked PR's merge base is an older commit whose budgets do
+        # not reflect raises that legitimately landed below it.
+        git show "${{ github.event.pull_request.base.sha }}:internal/archcheck/budgets.go" > /tmp/base_budgets.go
         go run ./internal/cmd/archcheck -budget-base /tmp/base_budgets.go
 
   race-test:
