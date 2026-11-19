@@ -189,7 +189,7 @@ func asWriter(v any) (io.Writer, error) {
 // asWriterVM is asWriter plus script-defined writers: when the VM is
 // available and the value carries a Write method, it adapts into an
 // io.Writer that calls back into the script.
-func asWriterVM(vc runtime.VMCaller, v any) (io.Writer, error) {
+func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 	// args arrive fmtArg'd: a *runtime.Cell (a `&b` address-of) surfaces
 	// as *fmtValue — unwrap back through the reference to the box.
 	if fv, ok := v.(*fmtValue); ok {
@@ -319,7 +319,7 @@ func readResult64(c runtime.MemberCaller, r runtime.Value) (int64, error) {
 // scriptWriter adapts a script-side Write method to io.Writer so
 // fmt.Fprint* writes through a writer implemented in the script.
 type scriptWriter struct {
-	v     runtime.VMCaller
+	v     runtime.MemberCaller
 	write runtime.Value
 }
 

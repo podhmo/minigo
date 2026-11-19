@@ -931,7 +931,7 @@ func pointeeDeclTyp(v runtime.Value) *runtime.TypeDef {
 // replace a[formatAt+1:] with the returned tail. Exotic mixes of %[n]
 // and * in one directive, or operands past the argument list, pass
 // through untouched.
-func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int, c runtime.VMCaller) (string, []any) {
+func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int, c runtime.MemberCaller) (string, []any) {
 	vals := rawArgs[formatAt+1:]
 	off := formatAt + 1
 	type dir struct {

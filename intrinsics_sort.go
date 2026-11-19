@@ -180,7 +180,7 @@ func orderScalar(v runtime.Value) runtime.Value {
 
 // scriptSortable is the sort.Interface view of a script object.
 type scriptSortable struct {
-	vc                    runtime.VMCaller
+	vc                    runtime.ScriptCaller
 	lenFn, lessFn, swapFn runtime.Value
 }
 
