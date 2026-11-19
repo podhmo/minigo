@@ -294,6 +294,12 @@ func (v *VM) resolveArgHints(cf *frame, hints []bytecode.ArgHint) []*runtime.Typ
 			if err != nil {
 				panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
 			}
+			// the operand path ran OpLocalType after every compiled
+			// type expression — a resolved local decl needs the same
+			// outer-args wrap or its identity loses the instantiation.
+			if td != nil {
+				td = v.outerTypedef(cf, td)
+			}
 			statics[i] = td
 		case bytecode.HintDeferredValueTyp:
 			site := cf.ch.CallSites[h.A]

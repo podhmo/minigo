@@ -280,12 +280,35 @@ func (c *compiler) exprSiteAt(x ast.Expr, teFile *syntax.File, pos token.Pos) in
 	}
 	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
 		Expr: x, File: file, Pos: pos,
-		Ctx:    &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+		Ctx:    &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: visibleBinds(c.binds, localTypes), LocalTypes: localTypes},
 		Consts: localConsts,
 		Sym:    -1,
 		Quote:  -1,
 	})
 	return len(c.ch.CallSites) - 1
+}
+
+// visibleBinds drops the type-parameter binds a function-local `type`
+// declaration shadows: at the expression's scope the decl name wins,
+// so the pinned context must not let the deferred resolver answer the
+// parameter's placeholder for it.
+func visibleBinds(binds map[string]runtime.Value, localTypes map[string]*runtime.TypeDef) map[string]runtime.Value {
+	out := binds
+	cloned := false
+	for name := range localTypes {
+		if _, shadowed := binds[name]; !shadowed {
+			continue
+		}
+		if !cloned {
+			out = map[string]runtime.Value{}
+			for k, v := range binds {
+				out[k] = v
+			}
+			cloned = true
+		}
+		delete(out, name)
+	}
+	return out
 }
 
 // typExprDeferred reports whether te is a qualified type name whose
