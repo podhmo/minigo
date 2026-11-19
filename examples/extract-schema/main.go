@@ -40,7 +40,7 @@ func runMain(ctx context.Context, argv []string) int {
 	fs.SetOutput(os.Stderr)
 	pkgMode := fs.Bool("pkg", false, "target is an import path instead of a directory")
 	var plugins stringList
-	fs.Var(&plugins, "plugin", "script package dir providing Overrides() (repeatable)")
+	fs.Var(&plugins, "plugin", "script package dir with func(*extschema.Config) hooks (repeatable)")
 	stdlib := fs.String("stdlib", "leaf", "leaf|walk: stop at standard-library types or walk them")
 	loose := fs.Bool("loose", true, "emit additionalProperties:true on object schemas")
 	title := fs.String("title", "", "title attribute of the schema document")
