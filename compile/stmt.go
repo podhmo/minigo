@@ -196,7 +196,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 			// a copy (struct elements copy in Go), so the value
 			// path silently dropped the store. Same ref/deref/add/
 			// store shape as `x op= y`.
-			c.refTarget(xe, false)
+			c.refTarget(xe, false, false)
 			c.emit(bytecode.OpDup, 0, 0, xe.Pos())
 			c.emitDerefSite(xe.Pos())
 			one()
@@ -395,10 +395,10 @@ func (c *compiler) rangeStmt(st *ast.RangeStmt) {
 
 	if useRefs {
 		if st.Key != nil {
-			c.refTarget(st.Key, true)
+			c.refTarget(st.Key, true, false)
 		}
 		if st.Value != nil {
-			c.refTarget(st.Value, true)
+			c.refTarget(st.Value, true, false)
 		}
 		c.emit3(bytecode.OpSetRefs, nvars, 1, 0, st.Pos())
 	} else {

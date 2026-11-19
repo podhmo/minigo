@@ -35,7 +35,7 @@ const (
 	OpLocal    // push cell(slot A).Elem
 	OpLocalTyp // push the declared typedef stamped on cell(slot A) (NIL when untyped)
 	OpSetLocal // pop -> cell(slot A).Elem
-	OpLocalRef // push the cell at slot A itself (address-of)
+	OpLocalRef // push the cell at slot A itself (address-of); B=1 when the ref can be published, 0 for a transient store target
 	OpUpval    // push cell(upval A).Elem
 	OpUpvalTyp // push the declared typedef stamped on upval cell A (NIL when untyped)
 	OpSetUpval // pop -> cell(upval A).Elem
