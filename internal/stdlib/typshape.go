@@ -166,3 +166,55 @@ func PeelNil(v runtime.Value) (*runtime.TypeDef, bool) {
 		return nil, false
 	}
 }
+
+// refDeclTyp recovers the declared type an &-operand points at when it
+// arrives as a tracked ref: a FieldRef reads its field's declared
+// typedef (an interface field spells *main.I of its stored concrete),
+// an IndexRef its container's declared element typedef. A plain &var
+// cell already stamps the same type on itself (cell.Typ), so refs
+// share that answer. Nil when the ref kind or declared type is unknown.
+func RefDeclTyp(v runtime.Value) *runtime.TypeDef {
+	switch r := v.(type) {
+	case *runtime.FieldRef:
+		if st, idx, ok := r.Find(); ok && st != nil && st.Def != nil {
+			return FieldTypOf(st.Def, idx)
+		}
+	case *runtime.IndexRef:
+		if s := r.Slice(); s != nil {
+			return SliceElemTyp(s.Typ)
+		}
+		if m := r.Map(); m != nil {
+			_, et := MapElemTyps(m.Typ)
+			return et
+		}
+	}
+	return nil
+}
+
+// pointeeDeclTyp is the declared type an &-operand points at: a tracked
+// ref answers through its declared field/element typedef (refDeclTyp),
+// a plain &var cell through its own stamped Typ. Nil when the pointee's
+// declared type is unknown.
+func PointeeDeclTyp(v runtime.Value) *runtime.TypeDef {
+	if td := RefDeclTyp(v); td != nil {
+		return td
+	}
+	if c := AsCell(v); c != nil {
+		return c.Typ
+	}
+	return nil
+}
+
+// AsCell peels named wrappers down to the underlying cell, or nil.
+func AsCell(v runtime.Value) *runtime.Cell {
+	for {
+		switch x := v.(type) {
+		case *runtime.Cell:
+			return x
+		case *runtime.Named:
+			v = x.V
+		default:
+			return nil
+		}
+	}
+}

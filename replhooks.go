@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/podhmo/minigo/internal/replhooks"
+	stdfmt "github.com/podhmo/minigo/internal/stdlib/fmt"
 	stdinspect "github.com/podhmo/minigo/internal/stdlib/inspect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -47,7 +48,7 @@ func (e *Engine) ReplHooks() *replhooks.Hooks {
 
 		BindCompiles: e.bindCompiles,
 		FormatValue: func(c runtime.VMCaller, x runtime.Value) fmt.Formatter {
-			return &fmtValue{c: c, x: x, nilSyntax: true}
+			return stdfmt.NewFmtValue(c, x)
 		},
 	}
 }
