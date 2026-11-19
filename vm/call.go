@@ -243,6 +243,10 @@ func (v *VM) inPlaceArgs(f *frame, argc int, args []runtime.Value) []runtime.Val
 		buf = make([]runtime.Value, argc)
 	} else {
 		buf = buf[:argc]
+		// nil the stale tail — a shorter call leaves the previous
+		// call's args past len(buf) where freeFrame's clear cannot
+		// reach them.
+		clear(buf[argc:cap(buf)])
 	}
 	copy(buf, v.vals[len(v.vals)-argc:])
 	f.argbuf = buf
