@@ -150,6 +150,7 @@ var strictLazyCorpus = []string{
 	"sizeof_funcret",
 	"sizeof_ucall",
 	"sizeof_sideeffect",
+	"time_weekday_bound",
 }
 
 // TestStrictLazyCompile runs the COMPILE_TIME_FACT-pinned cases under
@@ -219,11 +220,11 @@ func TestStrictLazyCompile(t *testing.T) {
 // (IndexedOnly answers Found instead of Deferred) and must produce
 // exactly the recorded output, like the cold compile does.
 func TestStrictLazyCompilePreparedIndex(t *testing.T) {
-	// Cases that still diverge under prepared index. The
-	// gate_qualforeign* `.imp:<path>` runtime-resolution bug was fixed
-	// upstream of the prepared-index work. Each entry must still
-	// diverge; a case that starts passing is removed from the list to
-	// pin the fix.
+	// Cases that still diverge under prepared index: each entry must
+	// keep diverging; a case that starts passing is removed from the
+	// list to pin the fix. (The `.imp:<path>` resolution bug that
+	// pinned gate_qualforeign{,_case,_mon,_nil} is fixed — the
+	// resolver now strips the prefix and loads the encoded path.)
 	preparedDivergent := map[string]bool{}
 	for _, slug := range strictLazyCorpus {
 		dir := filepath.Join("testdata/difffuzz", slug)
