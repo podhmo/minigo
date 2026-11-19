@@ -44,4 +44,10 @@ func main() {
 	for v := range seq {
 		fmt.Println(v)
 	}
+	// variable-less range still walks every element once.
+	n := 0
+	for range slices.Values([]int{1, 2, 3, 4}) {
+		n++
+	}
+	fmt.Println(n)
 }
