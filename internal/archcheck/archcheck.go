@@ -131,19 +131,17 @@ func Check(g Graph, rules map[string][]string) []Violation {
 	return out
 }
 
-// typeDecl is a named type plus the import table of the file that
-// declares it — selector types must resolve through that file's
-// aliases, since different files may reuse an alias for different
-// paths.
+// typeDecl is a named type plus its declaring file's import table —
+// selector types resolve through that file's aliases.
 type typeDecl struct {
 	spec    *ast.TypeSpec
 	imports map[string]string
+	tps     map[string]bool // the spec's type parameter names
 }
 
 // Sizes counts lines of every non-test, non-generated .go file in the
-// module (same directory rules as Build). Keys are slash paths relative
-// to root. Files whose head carries the standard
-// "// Code generated ... DO NOT EDIT." marker are skipped.
+// module (same directory rules as Build). Files whose head carries
+// "// Code generated ... DO NOT EDIT." are skipped.
 func Sizes(root string) (map[string]int, error) {
 	sizes := map[string]int{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -182,10 +180,8 @@ func Sizes(root string) (map[string]int, error) {
 	return sizes, nil
 }
 
-// isGenerated reports whether src carries the standard generated-file
-// marker: a whole line `// Code generated .* DO NOT EDIT.` before the
-// package clause. Matching as a substring would also hide hand-written
-// files that merely mention the marker in a string literal.
+// isGenerated reports whether src carries the `// Code generated ...
+// DO NOT EDIT.` marker before the package clause.
 func isGenerated(src string) bool {
 	for line := range strings.Lines(src) {
 		if strings.HasPrefix(line, "package ") {
@@ -230,8 +226,7 @@ type pkgDecls struct {
 	types map[string]typeDecl
 }
 
-// loadPkg parses every non-test .go file in root/pkgRel and returns its
-// type table.
+// loadPkg parses every non-test .go file in root/pkgRel.
 func loadPkg(root, pkgRel string) (*pkgDecls, error) {
 	p := &pkgDecls{types: map[string]typeDecl{}}
 	ents, err := os.ReadDir(filepath.Join(root, filepath.FromSlash(pkgRel)))
@@ -268,7 +263,15 @@ func loadPkg(root, pkgRel string) (*pkgDecls, error) {
 			}
 			for _, spec := range gd.Specs {
 				if ts, ok := spec.(*ast.TypeSpec); ok {
-					p.types[ts.Name.Name] = typeDecl{ts, imports}
+					tps := map[string]bool{}
+					if fl := ts.TypeParams; fl != nil {
+						for _, f := range fl.List {
+							for _, n := range f.Names {
+								tps[n.Name] = true
+							}
+						}
+					}
+					p.types[ts.Name.Name] = typeDecl{ts, imports, tps}
 				}
 			}
 		}
@@ -312,19 +315,19 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 	}
 	// walkType inspects a field type expr; imports comes from the
 	// declaring file, since files may reuse an alias.
-	var walkType func(pkg, strct, field string, imports map[string]string, expr ast.Expr) error
-	walkType = func(pkg, strct, field string, imports map[string]string, expr ast.Expr) error {
+	var walkType func(pkg, strct, field string, decl typeDecl, expr ast.Expr) error
+	walkType = func(pkg, strct, field string, decl typeDecl, expr ast.Expr) error {
 		d, err := load(pkg)
 		if err != nil {
 			return err
 		}
 		switch t := expr.(type) {
 		case *ast.Ident:
-			// unqualified names resolve in the declaring package ("." is the module root)
-			if fq := modPath + strings.TrimPrefix("/"+pkg, "/.") + "." + t.Name; forbidden[fq] {
-				report(pkg, strct, field, fq)
-			}
-			if _, ok := d.types[t.Name]; ok {
+			// declared types only — a type parameter shadows the package's own name
+			if _, ok := d.types[t.Name]; ok && !decl.tps[t.Name] {
+				if fq := modPath + strings.TrimPrefix("/"+pkg, "/.") + "." + t.Name; forbidden[fq] { // "." is the module root
+					report(pkg, strct, field, fq)
+				}
 				r := ref{pkg, t.Name}
 				if !seen[r] {
 					seen[r] = true
@@ -336,7 +339,7 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 			if !ok {
 				return nil
 			}
-			path, ok := imports[id.Name]
+			path, ok := decl.imports[id.Name]
 			if !ok {
 				return nil
 			}
@@ -353,40 +356,37 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				}
 			}
 		case *ast.StarExpr:
-			return walkType(pkg, strct, field, imports, t.X)
+			return walkType(pkg, strct, field, decl, t.X)
 		case *ast.ParenExpr:
-			return walkType(pkg, strct, field, imports, t.X)
+			return walkType(pkg, strct, field, decl, t.X)
 		case *ast.Ellipsis:
-			return walkType(pkg, strct, field, imports, t.Elt)
+			return walkType(pkg, strct, field, decl, t.Elt)
 		case *ast.ArrayType:
-			return walkType(pkg, strct, field, imports, t.Elt)
+			return walkType(pkg, strct, field, decl, t.Elt)
 		case *ast.MapType:
-			if err := walkType(pkg, strct, field, imports, t.Key); err != nil {
+			if err := walkType(pkg, strct, field, decl, t.Key); err != nil {
 				return err
 			}
-			return walkType(pkg, strct, field, imports, t.Value)
+			return walkType(pkg, strct, field, decl, t.Value)
 		case *ast.ChanType:
-			return walkType(pkg, strct, field, imports, t.Value)
+			return walkType(pkg, strct, field, decl, t.Value)
 		case *ast.IndexExpr:
-			// generic instantiation: the args can carry forbidden types
-			// even when the generic base is clean
-			if err := walkType(pkg, strct, field, imports, t.X); err != nil {
+			// generic instantiation args can carry forbidden types
+			if err := walkType(pkg, strct, field, decl, t.X); err != nil {
 				return err
 			}
-			return walkType(pkg, strct, field, imports, t.Index)
+			return walkType(pkg, strct, field, decl, t.Index)
 		case *ast.IndexListExpr:
-			if err := walkType(pkg, strct, field, imports, t.X); err != nil {
+			if err := walkType(pkg, strct, field, decl, t.X); err != nil {
 				return err
 			}
 			for _, ix := range t.Indices {
-				if err := walkType(pkg, strct, field, imports, ix); err != nil {
+				if err := walkType(pkg, strct, field, decl, ix); err != nil {
 					return err
 				}
 			}
 		case *ast.StructType:
-			// field is "" when the walk expands a named type's own
-			// (possibly parenthesized) declaration: "Good.Cb", not
-			// "Good.Good.Cb"
+			// field is "" when the walk expands the named decl itself: "Good.Cb"
 			prefix := field
 			if prefix != "" {
 				prefix += "."
@@ -398,7 +398,7 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				} else {
 					name = embeddedName(f.Type)
 				}
-				if err := walkType(pkg, strct, prefix+name, imports, f.Type); err != nil {
+				if err := walkType(pkg, strct, prefix+name, decl, f.Type); err != nil {
 					return err
 				}
 			}
@@ -434,7 +434,7 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 					// embedded field: name is the type's own
 					name = embeddedName(f.Type)
 				}
-				if err := walkType(r.pkg, r.name, name, td.imports, f.Type); err != nil {
+				if err := walkType(r.pkg, r.name, name, td, f.Type); err != nil {
 					return nil, err
 				}
 			}
@@ -443,9 +443,8 @@ func CheckSharedFields(root, pkgDir, typeName string, forbidden, exempt map[stri
 				out = append(out, Violation{r.pkg, "", fmt.Sprintf("shared state reaches function type %s", r.name)})
 			}
 		default:
-			// named alias-ish decls (chan, map, paren, selector, ...);
-			// field="" means the walk is expanding the decl itself
-			if err := walkType(r.pkg, r.name, "", td.imports, t); err != nil {
+			// alias-ish decls (chan, map, paren, ...); field="" expands the decl
+			if err := walkType(r.pkg, r.name, "", td, t); err != nil {
 				return nil, err
 			}
 		}
