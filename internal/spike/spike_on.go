@@ -17,6 +17,7 @@ var (
 	chunksBoxedAny      atomic.Int64
 	slotsLocal          atomic.Int64
 	slotsBoxed          atomic.Int64
+	slotsPromoted       atomic.Int64
 	boxReasons          sync.Map // why -> *atomic.Int64
 )
 
@@ -44,6 +45,10 @@ func NoteChunkEscape(escapes bool) {
 
 // NoteChunkClassified counts one compiled chunk's slot classification:
 // chunks with at least one boxed slot, and the boxed/local slot totals.
+// NoteSlotPromoted records one plain slot's run-time promotion into a
+// boxed cell — an escape the compile-time classification did not prove.
+func NoteSlotPromoted() { slotsPromoted.Add(1) }
+
 func NoteChunkClassified(boxed []bool) {
 	chunksClassified.Add(1)
 	slotsLocal.Add(int64(len(boxed)))
@@ -87,6 +92,7 @@ func ChunksClassified() int64  { return chunksClassified.Load() }
 func ChunksBoxedAny() int64    { return chunksBoxedAny.Load() }
 func SlotsLocal() int64        { return slotsLocal.Load() }
 func SlotsBoxed() int64        { return slotsBoxed.Load() }
+func SlotsPromoted() int64     { return slotsPromoted.Load() }
 
 func Reset() {
 	compileDepth.Store(0)
@@ -98,6 +104,7 @@ func Reset() {
 	chunksBoxedAny.Store(0)
 	slotsLocal.Store(0)
 	slotsBoxed.Store(0)
+	slotsPromoted.Store(0)
 	boxReasons.Range(func(k, _ any) bool {
 		boxReasons.Delete(k)
 		return true

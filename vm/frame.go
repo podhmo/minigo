@@ -270,6 +270,7 @@ func (f *frame) localCell(i int) *runtime.Cell {
 	if i < len(f.ltyps) {
 		c.Typ = f.ltyps[i]
 	}
+	spike.NoteSlotPromoted()
 	f.setLocalCell(i, c)
 	return c
 }
