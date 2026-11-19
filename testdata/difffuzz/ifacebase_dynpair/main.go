@@ -45,7 +45,22 @@ func main() {
 	}
 	var e2 E
 	fmt.Println(e2 == nil)
+	reqs()
 	if _, ok := e2.(E); ok {
 		fmt.Println("nil asserts")
 	}
+}
+
+func reqs() {
+	var a any = 42
+	if _, ok := a.(E); ok {
+		fmt.Println("bad")
+	} else {
+		fmt.Println("42 is not E")
+	}
+	var e2 E
+	var a2 A = e2
+	fmt.Println(a2 == nil)
+	e3 := e2
+	fmt.Println(e3 == nil)
 }

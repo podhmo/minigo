@@ -791,7 +791,12 @@ func (v *VM) ifaceSatisfied(td *runtime.TypeDef, x runtime.Value) (bool, error) 
 }
 
 func (v *VM) ifaceSatisfiedUncached(td *runtime.TypeDef, x runtime.Value) (bool, error) {
-	if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 {
+	// an iface-tagged Named satisfies through the payload it carries:
+	// re-coercing `var e E = myErr{}` reads myErr's methods, not E's.
+	x = unwrapIfaceTag(x)
+	if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 && !td.IfaceBase {
+		// a declared-over-interface type carries its requirements on
+		// the underlying spec, resolved through IfaceReqs below.
 		return true, nil // empty interface
 	}
 	if v.H.IfaceReqs == nil || v.H.MethodsOf == nil {
@@ -949,7 +954,7 @@ func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
 // method set; concrete types compare by type identity.
 func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 	if td.Kind == runtime.KindInterface || td.IfaceBase {
-		if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 {
+		if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 && !td.IfaceBase {
 			return true
 		}
 		if v.H.IfaceReqs == nil || v.H.TypeMethods == nil {

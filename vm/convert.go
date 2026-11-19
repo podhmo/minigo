@@ -890,6 +890,14 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 			}
 			return &runtime.IfaceNil{Typ: tn.Typ}
 		}
+		if isIfaceNilValue(x) {
+			// a nil interface value binds any interface slot — its
+			// (empty) method set never gates the assignment.
+			if td.IfaceBase {
+				return &runtime.Named{Typ: td, V: x}
+			}
+			return x
+		}
 		if !v.satisfiesIface(f, td, x) {
 			f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 		}
