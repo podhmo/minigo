@@ -1475,22 +1475,20 @@ func arrayTypedef(td *TypeDef) bool {
 	return ok && at.Len != nil
 }
 
-// typeTagMemo memoizes typeTagOf's spelling per typedef — a struct or
-// array map key asks for its tag (twice today: once into the repr, once
-// into mapKey.typ) on every CanonicalKey, and the tag is a pure
-// function of the declaration. Entries are bounded by declaration +
-// instantiation count, like the intern table's.
-var typeTagMemo sync.Map // *TypeDef -> string
-
+// typeTagOf memoizes its spelling on the typedef itself (td.typeTag):
+// a struct or array map key asks for the tag twice per CanonicalKey —
+// once into the repr, once for mapKey.typ — and the tag is a pure
+// spelling of the declaration. Caching on td keeps the entry scoped to
+// the typedef's lifetime rather than a process-global table.
 func typeTagOf(td *TypeDef) string {
 	if td == nil {
 		return "?"
 	}
-	if s, ok := typeTagMemo.Load(td); ok {
-		return s.(string)
+	if s, ok := td.typeTag.Load().(string); ok {
+		return s
 	}
 	s := typeTagOfInner(td)
-	typeTagMemo.Store(td, s)
+	td.typeTag.Store(s)
 	return s
 }
 
@@ -2238,6 +2236,9 @@ type TypeDef struct {
 	// conversion paths recompute it — and its zero-value allocation —
 	// once per comparison otherwise.
 	hostType atomic.Value
+	// typeTag caches typeTagOf's spelling (a string): map keys ask for
+	// it on every access, and it depends only on td's declaration.
+	typeTag atomic.Value
 }
 
 // CloneUncached copies td's descriptive fields and drops the cached
@@ -2388,6 +2389,7 @@ func (td *TypeDef) ResetCaches() {
 	td.ifaceReqs = atomic.Value{}
 	td.ifaceSigs = atomic.Value{}
 	td.hostType = atomic.Value{}
+	td.typeTag = atomic.Value{}
 }
 
 // TypeKind classifies a [TypeDef] by its underlying type. Predeclared
