@@ -156,7 +156,7 @@
 - [x] **P4-4 `CallSite` 記述子**: 引数のヒント、spread の型、quote インデックス、遅延された事実、ソース位置をまとめる。完了条件: `frame.argbuf/statbuf` と `deferredCall.statics/spreadTd` が消えている。
   - [x] **P4-4a 通常呼び出しの引数メタデータ**: M4-7a の `CallSite` に引数のヒント、spread の型、quote インデックスを載せる。通常・可変長・特殊形式で結果が一致することを確認する。
   - [x] **P4-4b defer とバッファの撤去**: P4-4a のあと、defer が同じ記述子を使うようにする。評価順、spread、panic 経由の呼び出しをテストし、既存のバッファと重複フィールドを削除する。
-- [ ] **P4-5 インラインキャッシュ**: `OpGlobal`（`Env` epoch でガード）と `OpSelect`（`TypeID → パス`）にキャッシュを置く。Chunk は Session ごとのままにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
+- [x] **P4-5 インラインキャッシュ**: `OpGlobal`（`Env` epoch でガード）と `OpSelect`（`TypeID → パス`）にキャッシュを置く。Chunk は Session ごとのままにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
   - [x] **P4-5a OpGlobal のキャッシュ**: `Env` epoch で再束縛時に無効化する。別 Session や同一 Session 内の goroutine で値が混ざらないことを確認し、ベンチ差分を記録する。
   - [x] **P4-5b OpSelect のキャッシュ**: M4-1d と M4-3 のあと、`TypeID` ごとの `FieldPath` を使う。同じサイトに異なるレシーバ型が来る場合と、並行アクセスをテストする。
 - [ ] **P4-6 `OpEvalAST` を `OpEvalFragment` に改名する**: REPL/`EvalExpr` のブリッジとしてだけ残す。独立した PR で命令名・逆アセンブル出力・golden を更新し、REPL と `EvalExpr` の挙動を確認する。
