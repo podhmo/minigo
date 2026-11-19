@@ -1,6 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/podhmo/minigo/testdata/difffuzz/ifacebase_dynpair/pkga"
+	"github.com/podhmo/minigo/testdata/difffuzz/ifacebase_dynpair/pkgb"
+)
 
 type A any
 type E error
@@ -49,6 +54,7 @@ func main() {
 	ptrs()
 	sigs()
 	unexported()
+	crosspkg()
 	if _, ok := e2.(E); ok {
 		fmt.Println("nil asserts")
 	}
@@ -159,4 +165,12 @@ func unexported() {
 	var f func(S2) string = S2.hidden
 	fmt.Println(f(s))
 	fmt.Println(s.hidden())
+}
+
+// a promoted pkg-qualified member keeps its own signature — a
+// same-named method from another package does not shadow it.
+func crosspkg() {
+	var t pkgb.T
+	t.I = pkga.Impl{}
+	fmt.Println(pkga.Assert(t))
 }

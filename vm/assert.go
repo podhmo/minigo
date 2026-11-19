@@ -878,7 +878,21 @@ func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value, ms *runtime.Me
 // is met by a same-named member with an identical signature. A member
 // absent from dynFns kept its name-only pass.
 func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
+	// a pkg-qualified requirement (a.m) also lists its plain alias (m)
+	// for member selection — but satisfaction resolves the qualified
+	// key, so comparing the alias too would match a different package's
+	// same-named member. Skip a plain key when a qualified sibling
+	// carries the requirement.
+	aliased := map[string]bool{}
+	for m := range reqFns {
+		if i := strings.LastIndexByte(m, '.'); i >= 0 {
+			aliased[m[i+1:]] = true
+		}
+	}
 	for m, reqFn := range reqFns {
+		if aliased[m] {
+			continue
+		}
 		if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
 			return false
 		}
