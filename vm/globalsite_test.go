@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -32,12 +33,20 @@ func TestGlobalSiteCache(t *testing.T) {
 		env.Set("x", &runtime.Cell{Elem: 1})
 		v := &VM{}
 		ch := chunk()
-		if got, err := call(v, ch, env); err != nil || got != 1 {
-			t.Fatalf("first read = %v, %v; want 1", got, err)
+		got, err := call(v, ch, env)
+		if err != nil {
+			t.Fatalf("first read: %v", err)
+		}
+		if diff := cmp.Diff(1, got); diff != "" {
+			t.Fatalf("first read (-want +got):\n%s", diff)
 		}
 		env.Set("x", &runtime.Cell{Elem: 2})
-		if got, err := call(v, ch, env); err != nil || got != 2 {
-			t.Fatalf("after rebind = %v, %v; want 2 (gen bump re-resolves)", got, err)
+		got, err = call(v, ch, env)
+		if err != nil {
+			t.Fatalf("after rebind: %v", err)
+		}
+		if diff := cmp.Diff(2, got); diff != "" {
+			t.Fatalf("after rebind, gen bump must re-resolve (-want +got):\n%s", diff)
 		}
 	})
 
@@ -47,12 +56,20 @@ func TestGlobalSiteCache(t *testing.T) {
 		env.Set("x", cell)
 		v := &VM{}
 		ch := chunk()
-		if got, err := call(v, ch, env); err != nil || got != 1 {
-			t.Fatalf("first read = %v, %v; want 1", got, err)
+		got, err := call(v, ch, env)
+		if err != nil {
+			t.Fatalf("first read: %v", err)
+		}
+		if diff := cmp.Diff(1, got); diff != "" {
+			t.Fatalf("first read (-want +got):\n%s", diff)
 		}
 		cell.Elem = 42
-		if got, err := call(v, ch, env); err != nil || got != 42 {
-			t.Fatalf("after cell write = %v, %v; want 42 (no rebind needed)", got, err)
+		got, err = call(v, ch, env)
+		if err != nil {
+			t.Fatalf("after cell write: %v", err)
+		}
+		if diff := cmp.Diff(42, got); diff != "" {
+			t.Fatalf("after cell write, no rebind needed (-want +got):\n%s", diff)
 		}
 	})
 
@@ -63,11 +80,19 @@ func TestGlobalSiteCache(t *testing.T) {
 		envB.Set("x", &runtime.Cell{Elem: 2})
 		v := &VM{}
 		ch := chunk()
-		if got, err := call(v, ch, envA); err != nil || got != 1 {
-			t.Fatalf("envA read = %v, %v; want 1", got, err)
+		got, err := call(v, ch, envA)
+		if err != nil {
+			t.Fatalf("envA read: %v", err)
 		}
-		if got, err := call(v, ch, envB); err != nil || got != 2 {
-			t.Fatalf("envB read = %v, %v; want 2 (foreign env misses the slot)", got, err)
+		if diff := cmp.Diff(1, got); diff != "" {
+			t.Fatalf("envA read (-want +got):\n%s", diff)
+		}
+		got, err = call(v, ch, envB)
+		if err != nil {
+			t.Fatalf("envB read: %v", err)
+		}
+		if diff := cmp.Diff(2, got); diff != "" {
+			t.Fatalf("envB read, foreign env must miss the slot (-want +got):\n%s", diff)
 		}
 	})
 
@@ -88,8 +113,8 @@ func TestGlobalSiteCache(t *testing.T) {
 						errs <- fmt.Errorf("goroutine %d: %w", i, err)
 						return
 					}
-					if got != 7 {
-						errs <- fmt.Errorf("goroutine %d: read %v, want 7", i, got)
+					if diff := cmp.Diff(7, got); diff != "" {
+						errs <- fmt.Errorf("goroutine %d read (-want +got):\n%s", i, diff)
 						return
 					}
 				}
