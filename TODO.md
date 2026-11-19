@@ -13,7 +13,11 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
-- [ ] **deferred operand types are dropped at binding sites (range vars, select recv, multi-result `:=`)**: `rangeVarTyps` (compile/stmt.go:459), `bindRecv` (stmt.go:772), and the `nthResultOpTyp` bind paths (assign.go:466, stmt.go:109) read only `t.te`/`t.dte` and ignore `t.deferred`, so under strict/DeferFacts `for i := range p.Arr`, `case v := <-p.Ch`, and `a, b := p.F()` bind their names with no type and later comparisons that should trap (`i == d`, `v == s`, `b == d`) silently print `false`. Also, a bound (non-indexed) package member var like `var Ch = make(chan int, 1)` never yields a static elem type through `selOpTyp`'s Globals path — the unnamed `chan int` typedef can't spell an `ast.Expr` — so `v == s` prints `false` in normal mode too. Pinned by `gate_rangedeferred`, `gate_recvdeferred` (PENDING), `gate_binddeferred` (normal-mode fixed via calleeFuncTyp member signatures; strict still diverges). Found during M4-9a enumeration; fix belongs with M4-9b's chunk-stored facts.
+- [x] **Preserve deferred operand types at binding sites**: `gate_rangedeferred`, `gate_recvdeferred`, and `gate_binddeferred` enforce the pinned diagnostics in both normal and strict conformance.
+
+- [ ] **A package-level function named `make` is compiled as the builtin**: `func make(x int) int { return x }; var X = make(1)` traps with `unsupported type expression *ast.BasicLit` in normal and strict modes. The call should pass `1` as a value.
+
+- [ ] **Deferred mismatch diagnostics omit the package name of a channel element type**: comparing a receive from `origin.Named` (declared as `chan origin.Count` from the caller's view) with a `string` reports `Count and string` in strict mode. The ordinary compile gate and Go report `origin.Count and string`.
 
 - [ ] **a defined type over a host struct does not promote methods declared on the host's anonymous fields**: for `type Wrap Base` where the host `Base` embeds e.g. `*parse.Tree`, gc promotes Tree's methods into Wrap's method set (the promotion goes through the anonymous field, not Base's method set), but `hostFieldDepths`/the old `hostMemberInner(methods=false)` only count fields — `struct{ Wrap }` then misses `s.M()` for M declared on the embedded host field type. The method-set walk has the same gap it inherited. Found during M4-2c review fixes.
 

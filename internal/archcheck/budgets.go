@@ -1,9 +1,7 @@
 package archcheck
 
-// FileBudgets is the M1-4 file-size ratchet: recorded line counts for
-// every .go file in the module. A file may only shrink — growing one
-// fails TestFileBudgetsMatchRepo until the map is regenerated
-// (`go run ./internal/cmd/archcheck -print-sizes`).
+// FileBudgets records the M1-4 line-count ratchet for each Go file.
+// Use `go run ./internal/cmd/archcheck -print-sizes` after a file shrinks.
 var FileBudgets = map[string]int{
 	"asmimpl.go":                                   279,
 	"bindenv.go":                                   52,
@@ -29,14 +27,16 @@ var FileBudgets = map[string]int{
 	"compile/slots.go":                             341,
 	"compile/special.go":                           90,
 	"compile/stmt.go":                              1222,
-	"compile/typehint.go":                          2322,
+	"compile/typehint.go":                          2235,
+	"compile/typeidentity.go":                      105,
 	"dispatch.go":                                  1504,
 	"dispatch_deferred.go":                         687,
-	"dispatch_deferred_typ.go":                     95,
+	"dispatch_deferred_typ.go":                     93,
 	"eval.go":                                      42,
 	"host/host.go":                                 42,
 	"hostslice.go":                                 350,
 	"hostvars.go":                                  54,
+	"index/builtin.go":                             22,
 	"index/index.go":                               311,
 	"index/value_specs.go":                         45,
 	"inspect.go":                                   1192,
