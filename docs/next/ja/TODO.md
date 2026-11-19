@@ -71,7 +71,7 @@
 - [x] **P2-8 `scriptIface` のアダプタ一族を生成に切り替える**: インタフェース → メソッド → arity の表から生成し、`scriptFileSeek` などの組み合わせ爆発をなくす。
 - [-] **P2-9 `builtin/` を抽出する**: `builtins.go` を移す。
   - [x] **P2-9a 定数と値の共通 helper**: `uconstNative`、`constAtWidth`、`makeHostType` などを、root や Engine への依存がない置き場所に移す。定数の幅・オーバーフロー、名前付き host 型を既存テストで確認する。`internal/hostbridge/maketype.go` に `ConstNative`/`ConstAtWidth`/`MakeHostType` として移動（`uconstNative` は `runtime.UConstNative` の薄い wrapper だったので呼び出しを直接化）。
-  - [ ] **P2-9b 表示と callback の共通 helper**: `display` など実行側に問い合わせる helper を、必要な capability で呼べるようにする。型・値の表示と script method への再入を固定する。
+  - [x] **P2-9b 表示と callback の共通 helper**: `display` など実行側に問い合わせる helper を、必要な capability で呼べるようにする。型・値の表示と script method への再入を固定する。`display`/`joinDisplay` は `hostbridge.Display`/`JoinDisplay` に移動し caller は `runtime.ConstMaterializer` に絞った（`Format` は nil caller で呼べる wrapper として残置）。`callOrPanic`/`callBool` は `hostbridge.CallOrPanic`/`CallBool` へ（`runtime.ScriptCaller` のみ必要）。
   - [ ] **P2-9c builtin の登録を移す**: P2-9a/b のあとに `builtins.go` の組み込み関数と登録を移す。root の登録窓口から既存名を解決でき、examples が無修正で通ることを確認する。
 - [x] **P2-10 stdlib: 名前レジストリと `bind.Env`**: テーブルはまだ即時に構築したまま、`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位/bound-shadow チェックを `names` ビューに移す。エンジンを捕捉している約 45 個のクロージャを `bind.Env` 経由にする。完了条件: 振る舞いが変わっていない。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
   - [x] `bind.Env` インタフェース（`internal/bind`）を導入し、エンジン捕捉のクロージャを `h.env` 経由に変更（`bindenv.go` アダプタ）（PR #1144）

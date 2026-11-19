@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -131,7 +132,7 @@ func mapsEqualFunc() *runtime.BuiltinFunc {
 				continue
 			}
 			v2, ok := m2.Get(k)
-			if !ok || !callBool(vc, args[2], v1, v2) {
+			if !ok || !hostbridge.CallBool(vc, args[2], v1, v2) {
 				return false, nil
 			}
 		}
@@ -165,7 +166,7 @@ func mapsDeleteFunc() *runtime.BuiltinFunc {
 			if conv != nil {
 				ak = conv(k)
 			}
-			if callBool(vc, args[1], ak, v) {
+			if hostbridge.CallBool(vc, args[1], ak, v) {
 				m.Delete(k)
 			}
 		}

@@ -91,7 +91,7 @@ func hostSortSlice(v runtime.ScriptCaller, x, less runtime.Value, stable bool) b
 		return false
 	}
 	cmp := func(i, j int) bool {
-		r := callOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
+		r := hostbridge.CallOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
 		b, _ := r.(bool)
 		return b
 	}

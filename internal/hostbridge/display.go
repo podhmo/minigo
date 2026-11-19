@@ -112,3 +112,20 @@ func JoinDisplay(parts []any) string {
 	}
 	return sb.String()
 }
+
+// CallOrPanic calls a script callback for its result, letting a script
+// panic propagate as the panic it is (callback-in-builtin callers wrap
+// when a panic must not cross the host boundary).
+func CallOrPanic(v runtime.ScriptCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
+	r, err := v.Call(fn, args)
+	if err != nil {
+		panic(err)
+	}
+	return r
+}
+
+// CallBool runs a script predicate callback for its bool result.
+func CallBool(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) bool {
+	b, _ := runtime.Unwrap(CallOrPanic(vc, fn, args)).(bool)
+	return b
+}
