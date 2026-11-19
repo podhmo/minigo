@@ -2,10 +2,10 @@ package vm
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
 	"unsafe"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -18,16 +18,16 @@ func TestHostTypedefOfKind(t *testing.T) {
 	v := &VM{}
 	for _, c := range []struct {
 		name string
-		rt   reflect.Type
+		rt   hostbridge.Type
 		want runtime.TypeKind
 	}{
-		{"struct", reflect.TypeOf(struct{}{}), runtime.KindStruct},
-		{"named pointer", reflect.TypeOf(testPtr(nil)), runtime.KindPointer},
-		{"named array", reflect.TypeOf(testArr{}), runtime.KindSlice},
-		{"named slice", reflect.TypeOf(testSlice{}), runtime.KindSlice},
-		{"named unsafe.Pointer", reflect.TypeOf(unsafe.Pointer(nil)), runtime.KindNamedBasic},
-		{"named basic", reflect.TypeOf(int64(0)), runtime.KindNamedBasic},
-		{"interface", reflect.TypeOf((*fmt.Stringer)(nil)).Elem(), runtime.KindInterface},
+		{"struct", hostbridge.TypeOf(struct{}{}), runtime.KindStruct},
+		{"named pointer", hostbridge.TypeOf(testPtr(nil)), runtime.KindPointer},
+		{"named array", hostbridge.TypeOf(testArr{}), runtime.KindSlice},
+		{"named slice", hostbridge.TypeOf(testSlice{}), runtime.KindSlice},
+		{"named unsafe.Pointer", hostbridge.TypeOf(unsafe.Pointer(nil)), runtime.KindNamedBasic},
+		{"named basic", hostbridge.TypeOf(int64(0)), runtime.KindNamedBasic},
+		{"interface", hostbridge.TypeOf((*fmt.Stringer)(nil)).Elem(), runtime.KindInterface},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			td := v.hostTypedefOf(c.rt)
@@ -57,7 +57,7 @@ func TestHostTypedefOfBuiltinShadow(t *testing.T) {
 	}}}
 
 	// a package-declared `type error` must not resolve on the name alone.
-	td := v.hostTypedefOf(reflect.TypeOf(error{}))
+	td := v.hostTypedefOf(hostbridge.TypeOf(error{}))
 	if td == builtinInt {
 		t.Fatalf("package-named error resolved to the builtin typedef")
 	}
@@ -66,7 +66,7 @@ func TestHostTypedefOfBuiltinShadow(t *testing.T) {
 	}
 
 	// a predeclared name still resolves to the builtin.
-	if td := v.hostTypedefOf(reflect.TypeOf(int(0))); td != builtinInt {
+	if td := v.hostTypedefOf(hostbridge.TypeOf(int(0))); td != builtinInt {
 		t.Fatalf("predeclared int should resolve to the builtin typedef")
 	}
 }
@@ -95,7 +95,7 @@ func testTwinDef(name string, fields ...string) *runtime.TypeDef {
 func TestTwinStructConversion(t *testing.T) {
 	pair := &runtime.Struct{Def: testTwinDef("testPair", "a", "b"),
 		Fields: []runtime.Value{"x", int64(3)}}
-	rv, err := marshalHost.ToReflect(pair, reflect.TypeOf(testPair{}), nil)
+	rv, err := marshalHost.ToReflect(pair, hostbridge.TypeOf(testPair{}), nil)
 	if err != nil {
 		t.Fatalf("twin convert: %v", err)
 	}
@@ -106,14 +106,14 @@ func TestTwinStructConversion(t *testing.T) {
 	// `type P testPair` is not a twin — a Named tag of a different
 	// declared type must not convert, like gc's unassignability.
 	aliased := &runtime.Named{Typ: testTwinDef("notPair", "a", "b"), V: pair}
-	if _, err := marshalHost.ToReflect(aliased, reflect.TypeOf(testPair{}), nil); err == nil {
+	if _, err := marshalHost.ToReflect(aliased, hostbridge.TypeOf(testPair{}), nil); err == nil {
 		t.Fatal("differently-named struct converted; want unassignable")
 	}
 
 	// a cyclic twin must error, not recurse until the stack gives out.
 	cyc := &runtime.Struct{Def: testTwinDef("testCyc", "next"), Fields: []runtime.Value{nil}}
 	cyc.Fields[0] = &runtime.Cell{Elem: cyc}
-	if _, err := marshalHost.ToReflect(&runtime.Cell{Elem: cyc}, reflect.TypeOf((*testCyc)(nil)), nil); err == nil {
+	if _, err := marshalHost.ToReflect(&runtime.Cell{Elem: cyc}, hostbridge.TypeOf((*testCyc)(nil)), nil); err == nil {
 		t.Fatal("cyclic twin converted; want depth error")
 	}
 }

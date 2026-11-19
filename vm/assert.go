@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"reflect"
 	"sort"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
@@ -520,12 +519,12 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			// the host pointer to the same package path and name; other
 			// *T fall back to comparing the printed type spelling.
 			if et.HostNew != nil {
-				return reflect.TypeOf(gv.V) == et.HostType()
+				return hostbridge.TypeOf(gv.V) == et.HostType()
 			}
-			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && v.hostTypedefIs(rt.Elem(), et) {
+			if rt := hostbridge.TypeOf(gv.V); rt.Kind() == hostbridge.KindPointer && v.hostTypedefIs(rt.Elem(), et) {
 				return true
 			}
-			return reflect.TypeOf(gv.V).String() == tdName(td)
+			return hostbridge.TypeOf(gv.V).String() == tdName(td)
 		}
 		if pt := v.pointeeTag(x); pt != nil && sameTypeDef(pt, et) {
 			// any ref's stamped pointee type settles the assert as a
@@ -535,7 +534,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			// pointeeTag synthesizes the pointee's typedef for them.
 			return true
 		}
-		if et.HostNew != nil && reflect.TypeOf(x) == et.HostType() {
+		if et.HostNew != nil && hostbridge.TypeOf(x) == et.HostType() {
 			// an unboxed host native still matches its typedef's box —
 			// the backstop for handles pointeeTag does not tag.
 			return true
@@ -590,18 +589,18 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// complex64, and interface{}(bytes.Buffer{}) asserts to
 		// bytes.Buffer. Compare type spellings like the KindPointer
 		// GoValue branch above.
-		rt := reflect.TypeOf(xv.V)
+		rt := hostbridge.TypeOf(xv.V)
 		if rt == nil {
 			return false
 		}
-		// reflect.Value is the minireflect facade, boxed as its pointer
+		// hostbridge.Value is the minireflect facade, boxed as its pointer
 		// (the typedef's HostNew) though it spells reflect.Value.
 		if td.Name == "reflect.Value" && td.HostNew != nil {
 			return rt == td.HostType()
 		}
 		// a boxed host func compares signatures like a script func
 		// value — func(int) int never asserts to func(string).
-		if rt.Kind() == reflect.Func && td.Name == "" {
+		if rt.Kind() == hostbridge.KindFunc && td.Name == "" {
 			if ft, ok := td.Anon.(*ast.FuncType); ok {
 				return rt.String() == runtime.TypGoSpelling(ft, td)
 			}
@@ -614,7 +613,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// a raw host scalar — a time.Duration a host call returned, or
 		// `any(2*time.Second)` whose constant folded untagged — is a
 		// value of its bound typedef: x.(time.Duration) matches.
-		return td.HostScalar != nil && reflect.TypeOf(dv) == reflect.TypeOf(td.HostScalar)
+		return td.HostScalar != nil && hostbridge.TypeOf(dv) == hostbridge.TypeOf(td.HostScalar)
 	}
 }
 
@@ -631,7 +630,7 @@ func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
 		// a host-bound func still names its real Go type through Target,
 		// so a bound context.CancelFunc asserts back to context.CancelFunc.
 		if bf, ok := x.(*runtime.BuiltinFunc); ok && bf.Target != nil {
-			return reflect.TypeOf(bf.Target).String() == runtime.DisplayName(td)
+			return hostbridge.TypeOf(bf.Target).String() == runtime.DisplayName(td)
 		}
 		return false
 	}
@@ -647,7 +646,7 @@ func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
 	}
 	if bf, ok := x.(*runtime.BuiltinFunc); ok && bf.Target != nil {
 		// a bound host func compares by its real Go signature.
-		return reflect.TypeOf(bf.Target).String() == runtime.TypGoSpelling(ft, td)
+		return hostbridge.TypeOf(bf.Target).String() == runtime.TypGoSpelling(ft, td)
 	}
 	// intrinsics and synthesized adapters declare no signature to check —
 	// keep the historical kind match.
@@ -694,7 +693,7 @@ func (v *VM) satisfiesIface(f *frame, td *runtime.TypeDef, x runtime.Value) bool
 // same typedef, which methodInfoOfValue resolves differently).
 type ifaceKey struct {
 	iface, dyn *runtime.TypeDef
-	host       reflect.Type
+	host       hostbridge.Type
 	ptr        bool
 	nilIface   bool
 }
@@ -716,7 +715,7 @@ func ifaceDynKey(x runtime.Value) (key ifaceKey, ok bool) {
 	case *runtime.GoValue:
 		// hostMethodSet reads only the reflect type, and host methods
 		// carry no signatures for the second pass.
-		rt := reflect.TypeOf(t.V)
+		rt := hostbridge.TypeOf(t.V)
 		return ifaceKey{host: rt}, rt != nil
 	case *runtime.IfaceNil:
 		return ifaceKey{dyn: t.Typ, nilIface: true}, t.Typ != nil
@@ -1183,7 +1182,7 @@ func (v *VM) pointeeTag(x runtime.Value) *runtime.TypeDef {
 func (v *VM) internalTypedef(x runtime.Value) *runtime.TypeDef {
 	switch x.(type) {
 	case *runtime.Package, *runtime.TypeDef, *runtime.Iterator, *runtime.ImportRef:
-		return v.hostTypedefOf(reflect.TypeOf(x))
+		return v.hostTypedefOf(hostbridge.TypeOf(x))
 	}
 	return nil
 }
@@ -1238,7 +1237,7 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 // interned descriptors agree exactly when td is that twin —
 // [runtime.HostTwinOf] remains the fallback for typedefs the intern
 // table cannot key.
-func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
+func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 	if rt == nil || td == nil {
 		return false
 	}
@@ -1254,7 +1253,7 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 			return true
 		}
 	}
-	if rt.Kind() == reflect.Pointer && rt.Name() == "" {
+	if rt.Kind() == hostbridge.KindPointer && rt.Name() == "" {
 		// `x.(**T)` hands an unnamed *T: resolve the element's twin
 		// and mint the *T typedef directly — interning a HostIdent
 		// stamp could park a hollow descriptor in the table, and a
@@ -1294,7 +1293,7 @@ func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
 
 // HostNamedTwin is [VM.hostTypedefIs] for intrinsics holding only a
 // [runtime.VMCaller] (see [runtime.HostNamedTwinner]).
-func (v *VM) HostNamedTwin(rt reflect.Type, td *runtime.TypeDef) bool {
+func (v *VM) HostNamedTwin(rt hostbridge.Type, td *runtime.TypeDef) bool {
 	return v.hostTypedefIs(rt, td)
 }
 
@@ -1388,7 +1387,7 @@ func (v *VM) nilableTypedef(td *runtime.TypeDef) bool {
 		// its zero's own kind tells a named slice or map (net.IP,
 		// net.HardwareAddr) that answers `== nil`.
 		switch u.HostType().Kind() {
-		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
+		case hostbridge.KindSlice, hostbridge.KindMap, hostbridge.KindChan, hostbridge.KindFunc:
 			return true
 		}
 	}
@@ -1559,8 +1558,8 @@ func hostPtrBox(x runtime.Value) bool {
 	if !ok {
 		return false
 	}
-	rv := reflect.ValueOf(gv.V)
-	return rv.IsValid() && (rv.Kind() == reflect.Ptr || rv.Kind() == reflect.UnsafePointer)
+	rv := hostbridge.RVOf(gv.V)
+	return rv.IsValid() && (rv.Kind() == hostbridge.KindPtr || rv.Kind() == hostbridge.KindUnsafePointer)
 }
 
 // unsafePtrAddr mints a uintptr for an unsafe.Pointer payload — the
@@ -1571,7 +1570,7 @@ func hostPtrBox(x runtime.Value) bool {
 func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 	x = runtime.Unwrap(x)
 	if gv, ok := x.(*runtime.GoValue); ok {
-		if rv := reflect.ValueOf(gv.V); rv.IsValid() && (rv.Kind() == reflect.Ptr || rv.Kind() == reflect.UnsafePointer) {
+		if rv := hostbridge.RVOf(gv.V); rv.IsValid() && (rv.Kind() == hostbridge.KindPtr || rv.Kind() == hostbridge.KindUnsafePointer) {
 			return uint64(rv.Pointer()), true
 		}
 		return 0, false
@@ -1587,7 +1586,7 @@ func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 		// Go address would mint a different value every evaluation.
 		if sl := r.Slice(); sl != nil {
 			if i, ok := runtime.Unwrap(r.Key).(int64); ok && i >= 0 && i < int64(len(sl.Elems)) {
-				return uint64(reflect.ValueOf(sl.Elems).Index(int(i)).Addr().Pointer()), true
+				return uint64(hostbridge.RVOf(sl.Elems).Index(int(i)).Addr().Pointer()), true
 			}
 		}
 		return 0, false
@@ -1595,7 +1594,7 @@ func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 		// &s.f's address is the field's slot in the struct — stable for
 		// the storage no matter how the ref was spelled or promoted.
 		if st, idx, ok := r.Find(); ok {
-			return uint64(reflect.ValueOf(st.Fields).Index(idx).Addr().Pointer()), true
+			return uint64(hostbridge.RVOf(st.Fields).Index(idx).Addr().Pointer()), true
 		}
 		return 0, false
 	case *runtime.DerefRef:
@@ -1606,7 +1605,7 @@ func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 		return 0, false
 	}
 	if _, ok := runtime.Deref(x); ok {
-		return uint64(reflect.ValueOf(x).Pointer()), true
+		return uint64(hostbridge.RVOf(x).Pointer()), true
 	}
 	return 0, false
 }

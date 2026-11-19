@@ -22,12 +22,12 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"reflect"
 	"sync"
 	"sync/atomic"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -157,7 +157,7 @@ type Hooks struct {
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil
 	// when the engine has not loaded rt's package.
-	HostTwin func(rt reflect.Type) *runtime.TypeDef
+	HostTwin func(rt hostbridge.Type) *runtime.TypeDef
 	// Linkname resolves a bodiless function carrying a two-arg
 	// `//go:linkname local importpath.symbol` doc directive to the
 	// target's callable value — stdlib internals (net/http's

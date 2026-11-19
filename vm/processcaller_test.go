@@ -2,7 +2,6 @@ package vm
 
 import (
 	"fmt"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -136,7 +135,7 @@ func TestReflectedCallbackKeepsProcess(t *testing.T) {
 	root := &runtime.BuiltinFunc{Fn: func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
 		// A raw VM entering a reflected host call must bind arguments before
 		// the host can retain them, independently of the BuiltinFunc path.
-		_, err := callReflectFunc("capture", reflect.ValueOf(func(f func() string) {
+		_, err := callReflectFunc("capture", hostbridge.RVOf(func(f func() string) {
 			callback = f
 		}), v, []runtime.Value{fn})
 		if err != nil {
@@ -187,7 +186,7 @@ func TestFieldFactoryRemainsReusableAcrossRootCalls(t *testing.T) {
 		// Generic value/field adaptation is deliberately outside the initial
 		// retained host-argument boundary. Source packages use persistent
 		// Pool.New factories (notably go/printer's package-global pool).
-		fv, err := marshalHost.AdaptFuncWith(factory, reflect.TypeFor[func() any](), v, hostbridge.AdaptOpts{})
+		fv, err := marshalHost.AdaptFuncWith(factory, hostbridge.TypeForOf[func() any](), v, hostbridge.AdaptOpts{})
 		if err != nil {
 			return nil, err
 		}
@@ -198,7 +197,7 @@ func TestFieldFactoryRemainsReusableAcrossRootCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	get := &runtime.BuiltinFunc{Fn: func(c runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-		return callOpaqueStore("*sync.Pool", "Get", reflect.ValueOf(pool).MethodByName("Get"), c, nil)
+		return callOpaqueStore("*sync.Pool", "Get", hostbridge.RVOf(pool).MethodByName("Get"), c, nil)
 	}}
 	for range 2 {
 		got, err := v.Call(get, nil)

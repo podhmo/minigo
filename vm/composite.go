@@ -23,7 +23,6 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
-	"reflect"
 	"time"
 	"unsafe"
 
@@ -135,7 +134,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 			// an inspect-layer package stored in a var
 			return v.selectMember(f, e, name)
 		case runtime.Nil:
-			// a nil interface slot (var t reflect.Type; t := TypeOf(nil))
+			// a nil interface slot (var t hostbridge.Type; t := TypeOf(nil))
 			// — Go's nil itab deref is a recoverable panic, not a trap.
 			panic(runtime.NilDerefPanic())
 		default:
@@ -221,10 +220,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 				// base is the modeled type: bound struct reps mint pointers
 				// (bytes.Buffer's rep is *bytes.Buffer).
 				if rt := hostTypOf(et); rt != nil {
-					for rt.Kind() == reflect.Pointer {
+					for rt.Kind() == hostbridge.KindPointer {
 						rt = rt.Elem()
 					}
-					if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+					if _, ok := hostbridge.PointerTo(rt).MethodByName(name); ok {
 						return v.methodExprThunk(b, name)
 					}
 				}
@@ -243,7 +242,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 			return m // method expression: T.M(recv, ...)
 		}
 		// a bound host basic's methods live on the host type
-		// (reflect.StructTag.Get, time.Duration.String): the method
+		// (hostbridge.StructTag.Get, time.Duration.String): the method
 		// expression re-dispatches on its receiver argument like Go's
 		// selector lowering — value methods only, matching T's set.
 		if rt := hostTypOf(b); rt != nil {
@@ -251,13 +250,13 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 			// method-expression set is the named type's — value
 			// receivers only; a pointer-only name traps like the
 			// declared PtrRecv arm above.
-			for rt.Kind() == reflect.Pointer {
+			for rt.Kind() == hostbridge.KindPointer {
 				rt = rt.Elem()
 			}
 			if _, ok := rt.MethodByName(name); ok {
 				return v.methodExprThunk(b, name)
 			}
-			if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+			if _, ok := hostbridge.PointerTo(rt).MethodByName(name); ok {
 				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
 			}
 		}
@@ -326,7 +325,7 @@ func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 	if fv, ok := hostField(hv, name, framePkgPath(f)); ok {
 		return hostbridge.GoSlotValueOf(fv), true
 	}
-	m := reflect.ValueOf(hv).MethodByName(name)
+	m := hostbridge.RVOf(hv).MethodByName(name)
 	if sm, ok := hv.(runtime.ScriptMethoder); ok {
 		if fn, ok := sm.ScriptMethod(name); ok {
 			bf := &runtime.BuiltinFunc{Name: name, Fn: fn}
@@ -342,7 +341,7 @@ func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
-	if rt := reflect.TypeOf(hv).String(); hostbridge.OpaqueContainers[rt] {
+	if rt := hostbridge.TypeOf(hv).String(); hostbridge.OpaqueContainers[rt] {
 		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return callOpaqueStore(rt, name, m, vc, args)
 		}
@@ -368,7 +367,7 @@ func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 	// the method value's own PC is a thunk (reflect.methodValueCall)
 	// — the declared method's Func is the only handle that still
 	// points at the real code, so keep it for inspect.
-	if tm, ok := reflect.TypeOf(hv).MethodByName(name); ok {
+	if tm, ok := hostbridge.TypeOf(hv).MethodByName(name); ok {
 		tm := tm
 		bf.Method = &tm
 	}
@@ -863,11 +862,11 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 	}
 	if td != nil && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
 		// a bound host named basic keeps a script payload (a
-		// reflect.StructTag's string): its declared method set is
+		// hostbridge.StructTag's string): its declared method set is
 		// empty, but the host type's methods apply once the payload
 		// is materialized as the host type — tag.Get("json").
-		rt := reflect.TypeOf(td.HostNew())
-		if rv := reflect.ValueOf(sv); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
+		rt := hostbridge.TypeOf(td.HostNew())
+		if rv := hostbridge.RVOf(sv); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
 			if mv, ok := v.hostMember(f, rv.Convert(rt).Interface(), name); ok {
 				return mv
 			}
@@ -1011,14 +1010,14 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 	case *runtime.GoValue:
 		// host struct behind a pointer: `cmd.Dir = "sub"` writes through
 		// reflection so intrinsics like os/exec stay wired to scripts.
-		rv := reflect.ValueOf(b.V)
-		for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+		rv := hostbridge.RVOf(b.V)
+		for rv.Kind() == hostbridge.KindPointer || rv.Kind() == hostbridge.KindInterface {
 			if rv.IsNil() {
 				f.trap("set field %s on nil host %T", name, b.V)
 			}
 			rv = rv.Elem()
 		}
-		if rv.Kind() != reflect.Struct {
+		if rv.Kind() != hostbridge.KindStruct {
 			f.trap("set field %s on host value %T", name, b.V)
 		}
 		fv := rv.FieldByName(name)
@@ -1043,7 +1042,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			fv.Set(nv)
 			return
 		}
-		reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
+		hostbridge.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
 	case *runtime.TypedNil:
 		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
 			panic(runtime.NilDerefPanic())
@@ -1974,7 +1973,7 @@ func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) run
 			return u
 		}
 		if kt.HostScalar == nil && kt.HostNew != nil {
-			// a bound host enum without a scalar (reflect.Kind) keeps
+			// a bound host enum without a scalar (hostbridge.Kind) keeps
 			// its GoValue box: the named display and identity live in
 			// the box, a bare payload key would lose both.
 			return u
@@ -2150,7 +2149,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		b.Elems[i] = val
 	case *runtime.Map:
 		idx = v.mapKeyOperand(f, b.Typ, rawIdx)
-		if idx != nil && !reflect.TypeOf(idx).Comparable() {
+		if idx != nil && !hostbridge.TypeOf(idx).Comparable() {
 			f.trap("map key %T is not comparable", idx)
 		}
 		// the map's declared element type constrains the write.
@@ -2548,7 +2547,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 		// exported fields of the host struct through reflection
 		// (`&sync.Pool{New: f}`).
 		hv := td.HostNew()
-		if rt := reflect.TypeOf(hv); rt != nil && rt.Kind() == reflect.Slice {
+		if rt := hostbridge.TypeOf(hv); rt != nil && rt.Kind() == hostbridge.KindSlice {
 			// a bound named slice (net.IP{1, 2, 3, 4})
 			return v.hostSliceLiteral(f, td, rt, n, kv, raw)
 		}

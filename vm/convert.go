@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"go/ast"
 	"math"
-	"reflect"
 	"unicode/utf8"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
@@ -204,7 +203,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		switch x.(type) {
 		case int64, float64, string, bool:
 		default:
-			if rv := reflect.ValueOf(x); rv.Kind() == reflect.String && rv.Type() != reflect.TypeFor[string]() {
+			if rv := hostbridge.RVOf(x); rv.Kind() == hostbridge.KindString && rv.Type() != hostbridge.TypeForOf[string]() {
 				x = rv.String()
 			}
 		}
@@ -357,9 +356,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			}
 			return nil, fmt.Errorf("cannot convert %s to string", tdName(sx.Typ))
 		case *runtime.GoValue:
-			// a host value of string kind — reflect.StructTag from
+			// a host value of string kind — hostbridge.StructTag from
 			// StructField.Tag — converts by its underlying string.
-			if rv := reflect.ValueOf(sx.V); rv.Kind() == reflect.String {
+			if rv := hostbridge.RVOf(sx.V); rv.Kind() == hostbridge.KindString {
 				return rv.String(), nil
 			}
 		default:
@@ -368,9 +367,9 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			if sx, ok := hostbridge.HostInt64(x); ok {
 				return stringFromInt(sx), nil
 			}
-			// a raw host scalar of string kind (reflect.StructTag)
+			// a raw host scalar of string kind (hostbridge.StructTag)
 			// converts by its underlying string.
-			if rv := reflect.ValueOf(x); rv.IsValid() && rv.Kind() == reflect.String {
+			if rv := hostbridge.RVOf(x); rv.IsValid() && rv.Kind() == hostbridge.KindString {
 				return rv.String(), nil
 			}
 		}
@@ -466,7 +465,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 // int64/float64 pass through, and a boxed host number converts by its
 // own kind (uint64 reads unsigned — a wide literal keeps 2^63, not
 // the int64 reinterpretation).
-// hostEnumConv converts an integer to a bound host enum (reflect.Kind,
+// hostEnumConv converts an integer to a bound host enum (hostbridge.Kind,
 // parse.NodeType) as the boxed host value its constants carry, so
 // `parse.NodeType(1) == parse.NodeAction`. A constant must be
 // representable; a variable wraps like Go's conversion.
@@ -763,14 +762,14 @@ func (v *VM) hostPtrConv(td *runtime.TypeDef, x runtime.Value) bool {
 	if et.HostNew == nil {
 		return false
 	}
-	rt := reflect.TypeOf(et.HostNew())
+	rt := hostbridge.TypeOf(et.HostNew())
 	if rt == nil {
 		return false
 	}
-	if rt.Kind() != reflect.Pointer {
-		rt = reflect.PointerTo(rt)
+	if rt.Kind() != hostbridge.KindPointer {
+		rt = hostbridge.PointerTo(rt)
 	}
-	return rt == reflect.TypeOf(x.(*runtime.GoValue).V)
+	return rt == hostbridge.TypeOf(x.(*runtime.GoValue).V)
 }
 
 // convertStruct implements `S(x)` on struct typedefs: legal when the
@@ -920,11 +919,11 @@ func convComplex(x runtime.Value) (complex128, bool) {
 
 func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	if u, ok := x.(*runtime.UConst); ok && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
-		// a bound host enum (reflect.Kind, parse.NodeType) holds the
+		// a bound host enum (hostbridge.Kind, parse.NodeType) holds the
 		// boxed host value its constants and host results carry, so
-		// `var k reflect.Kind = 2` compares equal to reflect.Int.
+		// `var k hostbridge.Kind = 2` compares equal to hostbridge.KindInt.
 		if hv := td.HostNew(); hostbridge.HostNamedInt(hv) {
-			if r, ok := hostbridge.ConstToHostInt(u, reflect.TypeOf(hv)); ok {
+			if r, ok := hostbridge.ConstToHostInt(u, hostbridge.TypeOf(hv)); ok {
 				return r
 			}
 		}
@@ -1110,7 +1109,7 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 				}
 			}
 		} else if et, err := v.H.ElemOf(utd); err == nil && et != nil &&
-			et.HostNew != nil && x != nil && reflect.TypeOf(x) == et.HostType() {
+			et.HostNew != nil && x != nil && hostbridge.TypeOf(x) == et.HostType() {
 			// a bound typedef's pointer slot takes the raw native value
 			// the intrinsics return — *runtime.Package rides no Cell or
 			// GoValue tag for pointeeTag to read, so identity compares on

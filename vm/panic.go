@@ -20,9 +20,9 @@ package vm
 
 import (
 	"fmt"
-	"reflect"
 	"runtime/debug"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -490,8 +490,8 @@ func (v *VM) invokeDeferred(d deferredCall) {
 			// a deferred host func — context.WithCancel's CancelFunc
 			// boxes run the same way a direct Call does, through
 			// reflect, on a sentinel frame so recover() distances hold.
-			fv := reflect.ValueOf(c.V)
-			if !fv.IsValid() || fv.Kind() != reflect.Func {
+			fv := hostbridge.RVOf(c.V)
+			if !fv.IsValid() || fv.Kind() != hostbridge.KindFunc {
 				break
 			}
 			v.pushDeferredSentinel(fv.Type().String())
