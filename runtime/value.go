@@ -1324,9 +1324,9 @@ type typedKey struct {
 // CanonicalKey; composites already key by type.
 func IfaceKeyOf(v Value) Value {
 	if tk, ok := typedScalarKeyOf(v); ok {
-		if ck, isNaN := tk.v.(mapKey); isNaN {
-			return ck
-		}
+		// keep tk whole: a NaN payload's nonce lives inside its
+		// mapKey repr, so the outer tag must not be peeled off —
+		// peeling would collapse NS(st) onto st.
 		return tk
 	}
 	return CanonicalKey(v)
@@ -1368,7 +1368,11 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 		case int64, float64, float32, string, bool, complex64, complex128:
 			return typedKey{typ: typ, v: CanonicalKey(p)}, true
 		}
-		return typedKey{}, false
+		// a declared type over a non-scalar still carries its own
+		// tag: NS(st) keys apart from St, and C(ch) from chan int.
+		// An unhashable payload panics inside CanonicalKey like a
+		// bare key would.
+		return typedKey{typ: typ, v: CanonicalKey(p)}, true
 	case *GoValue:
 		if p, rt, ok := HostNamedScalar(x); ok {
 			return typedKey{typ: hostTypeTag(rt), v: p}, true
