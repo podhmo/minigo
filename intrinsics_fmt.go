@@ -16,6 +16,7 @@ import (
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
+	stdjson "github.com/podhmo/minigo/internal/stdlib/json"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -385,9 +386,9 @@ func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 		}
 		return fmt.Sprintf("%p", t.V)
 	case *runtime.Slice:
-		if isArrayTyp(t.Typ) {
+		if stdlib.IsArrayTyp(t.Typ) {
 			fv := &fmtValue{c: c, x: t}
-			return badVerb('p', typedefSpelling(t.Typ), fv.renderList(t, 'v', zs))
+			return badVerb('p', stdlib.TypedefSpelling(t.Typ), fv.renderList(t, 'v', zs))
 		}
 		if len(t.Elems) == 0 {
 			return "0x0"
@@ -399,7 +400,7 @@ func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 		return fmt.Sprintf("%p", t)
 	case *runtime.Struct:
 		fv := &fmtValue{c: c, x: t}
-		return badVerb('p', typedefSpelling(t.Def), fv.render('v', zs))
+		return badVerb('p', stdlib.TypedefSpelling(t.Def), fv.render('v', zs))
 	case *runtime.Named:
 		return ptrSpelling(c, t.V)
 	case *runtime.UConst:
@@ -430,7 +431,7 @@ func ifaceCallStringPanic(c runtime.MemberCaller, x runtime.Value, name string) 
 // skip — Named and ref layers peel to the pointer-shaped TypedNil
 // underneath.
 func fmtNilPointer(x runtime.Value) bool {
-	td, ok := peelNil(x)
+	td, ok := stdlib.PeelNil(x)
 	return ok && td != nil && td.Kind == runtime.KindPointer
 }
 
@@ -451,14 +452,14 @@ func nilGoSyntax(td *runtime.TypeDef) string {
 	if td.Name == "" {
 		switch td.Kind {
 		case runtime.KindPointer, runtime.KindChan, runtime.KindFunc:
-			return "(" + typedefSpelling(td) + ")(nil)"
+			return "(" + stdlib.TypedefSpelling(td) + ")(nil)"
 		case runtime.KindSlice:
-			if byteSliceTyp(td) {
+			if stdlib.ByteSliceTyp(td) {
 				return "[]byte(nil)"
 			}
 		}
 	}
-	return typedefSpelling(td) + "(nil)"
+	return stdlib.TypedefSpelling(td) + "(nil)"
 }
 
 // badVerb emits Go's %!verb(type=value) marker for an incompatible verb.
@@ -502,128 +503,11 @@ func scriptScalarName(x runtime.Value) string {
 			return scriptScalarName(nv)
 		}
 	case *runtime.Named:
-		return typedefSpelling(t.Typ)
+		return stdlib.TypedefSpelling(t.Typ)
 	case *runtime.GoValue:
 		return scriptTypeString(t)
 	}
 	return fmt.Sprintf("%T", x)
-}
-
-// isArrayTyp reports whether td denotes a fixed-length array ([N]T) —
-// arrays have no addressable backing pointer under %p.
-func isArrayTyp(td *runtime.TypeDef) bool {
-	at, ok := td.TypeExpr().(*ast.ArrayType)
-	return ok && at.Len != nil
-}
-
-// byteSliceTyp reports whether td's element type is byte/uint8 — the one
-// slice fmt renders as text rather than a bracketed list.
-func byteSliceTyp(td *runtime.TypeDef) bool {
-	if td == nil {
-		return false
-	}
-	if td.Elem != nil {
-		return typedefSpelling(td.Elem) == "uint8"
-	}
-	at, ok := td.TypeExpr().(*ast.ArrayType)
-	if !ok {
-		return false
-	}
-	id, ok := at.Elt.(*ast.Ident)
-	return ok && (id.Name == "byte" || id.Name == "uint8")
-}
-
-// elemTyp wraps a composite element's type AST so leaf rendering can
-// spell bad-verb markers with the declared element type. Only idents
-// naming a declared type carry the package — builtin type names spell
-// unqualified like Go.
-func elemTyp(e ast.Expr, pkg *runtime.Package) *runtime.TypeDef {
-	if e == nil {
-		return nil
-	}
-	if id, ok := e.(*ast.Ident); ok {
-		td := &runtime.TypeDef{Name: id.Name, Kind: runtime.KindNamedBasic}
-		if pkg != nil && pkg.Index != nil {
-			if itd, ok := pkg.Index.Types[id.Name]; ok && itd.Decl != nil {
-				// an alias name never spells — the declared slot's
-				// type is the target's (`type A = B` IS B).
-				if ts, ok := itd.Decl.Spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
-					return elemTyp(ts.Type, pkg)
-				}
-				td.Pkg = pkg
-			}
-		}
-		return td
-	}
-	return &runtime.TypeDef{Pkg: pkg, Anon: e}
-}
-
-// sliceElemTyp resolves a slice/array typedef's element typedef.
-func sliceElemTyp(td *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil {
-		return nil
-	}
-	if td.Elem != nil {
-		return td.Elem
-	}
-	if at, ok := td.TypeExpr().(*ast.ArrayType); ok {
-		return bindTyp(td, elemTyp(at.Elt, td.Pkg))
-	}
-	return nil
-}
-
-// mapElemTyps resolves a map typedef's key and value typedefs.
-func mapElemTyps(td *runtime.TypeDef) (key, val *runtime.TypeDef) {
-	if mt, ok := td.TypeExpr().(*ast.MapType); ok && td != nil {
-		return bindTyp(td, elemTyp(mt.Key, td.Pkg)), bindTyp(td, elemTyp(mt.Value, td.Pkg))
-	}
-	return nil, nil
-}
-
-// fieldTypOf resolves the i'th field's typedef from a struct typedef's
-// declaration — embedded fields count once and multi-name decls expand.
-func fieldTypOf(td *runtime.TypeDef, i int) *runtime.TypeDef {
-	st, ok := td.TypeExpr().(*ast.StructType)
-	if !ok {
-		return nil
-	}
-	n := 0
-	for _, fd := range st.Fields.List {
-		cnt := len(fd.Names)
-		if cnt == 0 {
-			cnt = 1
-		}
-		if i < n+cnt {
-			return bindTyp(td, elemTyp(fd.Type, td.Pkg))
-		}
-		n += cnt
-	}
-	return nil
-}
-
-// bindTyp resolves a declared element typedef through the enclosing
-// typedef's instantiation binds — a `Pair[error, any]` `Key K` field's
-// declared type is `K`, but a value stored there statically has the
-// bound argument's type. Composite field types keep the binds so a
-// nested type-parameter name (a `[]K` field's element) resolves the
-// same way one level down.
-func bindTyp(td *runtime.TypeDef, et *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil || et == nil || len(td.Binds) == 0 {
-		return et
-	}
-	if et.Anon == nil && et.Spec == nil {
-		if bv, ok := td.Binds[et.Name]; ok {
-			if btd, ok := bv.(*runtime.TypeDef); ok {
-				return btd
-			}
-		}
-	}
-	if len(et.Binds) == 0 {
-		cp := et.CloneUncached()
-		cp.Binds = td.Binds
-		return cp
-	}
-	return et
 }
 
 // formatDirective rebuilds a fmt directive from the verb and the
@@ -694,7 +578,7 @@ func elemVerb(verb rune) rune {
 // byte/uint8 and every element is an int in byte range — the one slice
 // fmt renders as text, not a bracketed list.
 func sliceBytes(v *runtime.Slice) ([]byte, bool) {
-	if !byteSliceTyp(v.Typ) {
+	if !stdlib.ByteSliceTyp(v.Typ) {
 		return nil, false
 	}
 	bs := make([]byte, len(v.Elems))
@@ -729,110 +613,7 @@ func chanTypSpelling(td *runtime.TypeDef) string {
 	if td == nil {
 		return "chan interface{}"
 	}
-	return typedefSpelling(td)
-}
-
-// nilIfaceTyp reports the interface typedef when x is a nil interface
-// value — an iface-kind IfaceNil, possibly Named-wrapped — and nil for
-// any other value. A nil interface has no dynamic type: %T spells <nil>
-// at top level, while under a pointer the declared typedef still shows.
-func nilIfaceTyp(x runtime.Value) *runtime.TypeDef {
-	if n, ok := x.(*runtime.Named); ok {
-		x = n.V
-	}
-	return runtime.IfaceTaggedNil(x)
-}
-
-// scriptTypeString spells a value's type the way Go's %T does —
-// "[]int", "main.Point" — using the typedef, not the Go wrapper type.
-func scriptTypeString(x runtime.Value) string {
-	switch t := x.(type) {
-	case nil, runtime.Nil:
-		// a nil interface has no dynamic type — %T spells <nil>.
-		return "<nil>"
-	case *runtime.UConst:
-		return t.DefaultName()
-	case *runtime.Named:
-		if nilIfaceTyp(t) != nil {
-			return "<nil>" // a nil interface has no dynamic type
-		}
-		return typedefSpelling(t.Typ)
-	case *runtime.Struct:
-		return typedefSpelling(t.Def)
-	case *runtime.Slice:
-		return typedefSpelling(t.Typ)
-	case *runtime.Map:
-		return typedefSpelling(t.Typ)
-	case *runtime.Chan:
-		return typedefSpelling(t.Typ)
-	case *runtime.TypedNil:
-		return typedefSpelling(t.Typ)
-	case *runtime.IfaceNil:
-		if nilIfaceTyp(t) != nil {
-			return "<nil>" // a nil interface has no dynamic type
-		}
-		return typedefSpelling(t.Typ)
-	case *runtime.PanicNilError:
-		return "*runtime.PanicNilError"
-	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
-		if dv, ok := runtime.Deref(t); ok {
-			// the pointee slot's stamped declared type names the
-			// pointee's static type — `&i` on an interface-typed var
-			// spells *main.I, not *main.S of its stored value. A ref
-			// operand reads it through the ref itself: a FieldRef's
-			// declared field type, an IndexRef's element type.
-			if td := pointeeDeclTyp(t); td != nil {
-				return "*" + typedefSpelling(td)
-			}
-			if c := asCell(dv); c != nil && c.Typ != nil {
-				return "*" + typedefSpelling(c.Typ)
-			}
-			// *interface{} / *error keeps the pointee's declared name —
-			// the pointer itself is the dynamic type, not <nil>.
-			if td := nilIfaceTyp(dv); td != nil {
-				return "*" + typedefSpelling(td)
-			}
-			return "*" + scriptTypeString(dv)
-		}
-		return "unsafe.Pointer"
-	case *runtime.GoValue:
-		if se, ok := t.V.(*hostbridge.ScriptError); ok {
-			return scriptTypeString(se.V)
-		}
-		switch t.V.(type) {
-		case *jsonEncoder:
-			return "*json.Encoder"
-		case stdruntime.CleanupHandle:
-			return "runtime.Cleanup"
-		case *minireflect.RValue:
-			return "reflect.Value"
-		case *minireflect.RType:
-			return "*reflect.rtype"
-		case *minireflect.MapIter:
-			return "*reflect.MapIter"
-		case *minireflect.StructField:
-			return "reflect.StructField"
-		case *minireflect.Method:
-			return "reflect.Method"
-		}
-		if rt := proxyHostTypeOf(t.V); rt != nil {
-			// a proxy box spells its API type, not the box's name.
-			return rt.String()
-		}
-		return fmt.Sprintf("%T", t.V)
-	case int64:
-		return "int"
-	case float64:
-		return "float64"
-	case string:
-		return "string"
-	case bool:
-		return "bool"
-	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-		return funcSigSpelling(t)
-	default:
-		return fmt.Sprintf("%T", x)
-	}
+	return stdlib.TypedefSpelling(td)
 }
 
 // formatString recovers a plain string from a script value that reached
@@ -868,14 +649,14 @@ func refDeclTyp(v runtime.Value) *runtime.TypeDef {
 	switch r := v.(type) {
 	case *runtime.FieldRef:
 		if st, idx, ok := r.Find(); ok && st != nil && st.Def != nil {
-			return fieldTypOf(st.Def, idx)
+			return stdlib.FieldTypOf(st.Def, idx)
 		}
 	case *runtime.IndexRef:
 		if s := r.Slice(); s != nil {
-			return sliceElemTyp(s.Typ)
+			return stdlib.SliceElemTyp(s.Typ)
 		}
 		if m := r.Map(); m != nil {
-			_, et := mapElemTyps(m.Typ)
+			_, et := stdlib.MapElemTyps(m.Typ)
 			return et
 		}
 	}
@@ -1236,15 +1017,6 @@ func fmtRValue(c runtime.MemberCaller, rv *minireflect.RValue) any {
 	}
 }
 
-// typedefSpelling renders a typedef for %T/#v output — it delegates to
-// the canonical display speller.
-func typedefSpelling(td *runtime.TypeDef) string {
-	if td == nil {
-		return "interface{}"
-	}
-	return runtime.DisplayName(td)
-}
-
 func (s *fmtValue) Format(f fmt.State, verb rune) {
 	io.WriteString(f, s.render(verb, f))
 }
@@ -1364,7 +1136,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			if runtime.IfaceTaggedNil(v.V) != nil {
 				return "<nil>" // a nil interface has no dynamic type
 			}
-			return typedefSpelling(v.Typ)
+			return stdlib.TypedefSpelling(v.Typ)
 		}
 		// a bound host scalar (time.Month/time.Duration) whose payload is
 		// still script-shaped — a stored int64 or a const-domain UConst —
@@ -1446,13 +1218,13 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Struct:
 		switch verb {
 		case 'T':
-			return typedefSpelling(v.Def)
+			return stdlib.TypedefSpelling(v.Def)
 		case 'q':
 			return strconv.Quote(s.renderValue(x, 'v', f))
 		}
 		parts := make([]string, len(v.Fields))
 		for i, e := range v.Fields {
-			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: fieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
+			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: stdlib.FieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
 			if f.Flag('+') && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
@@ -1467,16 +1239,16 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		body := strings.Join(parts, sep)
 		if f.Flag('#') {
-			return typedefSpelling(v.Def) + "{" + body + "}"
+			return stdlib.TypedefSpelling(v.Def) + "{" + body + "}"
 		}
 		return "{" + body + "}"
 	case *runtime.Slice:
 		switch verb {
 		case 'T':
-			return typedefSpelling(v.Typ)
+			return stdlib.TypedefSpelling(v.Typ)
 		case 'p':
-			if isArrayTyp(v.Typ) {
-				return badVerb(verb, typedefSpelling(v.Typ), s.renderList(v, 'v', f))
+			if stdlib.IsArrayTyp(v.Typ) {
+				return badVerb(verb, stdlib.TypedefSpelling(v.Typ), s.renderList(v, 'v', f))
 			}
 			return fmt.Sprintf("%p", v)
 		case 's', 'q', 'x', 'X':
@@ -1495,10 +1267,10 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			// %#v renders a byte slice as []byte{0xNN, ...} — the byte
 			// spelling applies only at the top level (reflect cannot
 			// distinguish byte from uint8 below it).
-			if f.Flag('#') && byteSliceTyp(v.Typ) {
+			if f.Flag('#') && stdlib.ByteSliceTyp(v.Typ) {
 				if bs, ok := sliceBytes(v); ok {
-					spell := typedefSpelling(v.Typ)
-					if v.Typ.Name == "" && s.depth == 0 && !isArrayTyp(v.Typ) {
+					spell := stdlib.TypedefSpelling(v.Typ)
+					if v.Typ.Name == "" && s.depth == 0 && !stdlib.IsArrayTyp(v.Typ) {
 						spell = "[]byte"
 					}
 					parts := make([]string, len(bs))
@@ -1513,7 +1285,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Map:
 		switch verb {
 		case 'T':
-			return typedefSpelling(v.Typ)
+			return stdlib.TypedefSpelling(v.Typ)
 		case 'p':
 			return fmt.Sprintf("%p", v)
 		}
@@ -1534,7 +1306,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', nested(f))
 			return ka < kb
 		})
-		kt, vt := mapElemTyps(v.Typ)
+		kt, vt := stdlib.MapElemTyps(v.Typ)
 		ev := elemVerb(verb)
 		parts := make([]string, 0, len(order))
 		for _, k := range order {
@@ -1544,7 +1316,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			parts = append(parts, kr+":"+vr)
 		}
 		if f.Flag('#') {
-			return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
+			return stdlib.TypedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
 		}
 		return "map[" + strings.Join(parts, " ") + "]"
 	case *runtime.Tuple:
@@ -1555,7 +1327,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		return strings.Join(parts, " ")
 	case *runtime.TypedNil:
 		if verb == 'T' {
-			return typedefSpelling(v.Typ)
+			return stdlib.TypedefSpelling(v.Typ)
 		}
 		if rt := hostbridge.HostNilType(v.Typ); rt != nil {
 			// a nil named host slice (net.IP) renders as the host nil
@@ -1576,7 +1348,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			return badVerb(verb, "", "<nil>")
 		}
 		if verb == 'T' {
-			return typedefSpelling(v.Typ)
+			return stdlib.TypedefSpelling(v.Typ)
 		}
 		if rt := hostbridge.HostNilType(v.Typ); rt != nil {
 			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
@@ -1599,7 +1371,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 	case *runtime.Chan:
 		switch verb {
 		case 'T':
-			return typedefSpelling(v.Typ)
+			return stdlib.TypedefSpelling(v.Typ)
 		case 'v':
 			// %#v spells pointer-shaped values as (T)(0xADDR).
 			if f.Flag('#') {
@@ -1609,7 +1381,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		case 'p':
 			return fmt.Sprintf("%p", v)
 		}
-		return badVerb(verb, typedefSpelling(v.Typ), fmt.Sprintf("%p", v))
+		return badVerb(verb, stdlib.TypedefSpelling(v.Typ), fmt.Sprintf("%p", v))
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		switch verb {
 		case 'T':
@@ -1635,7 +1407,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return "type"
 		}
-		return typedefSpelling(v)
+		return stdlib.TypedefSpelling(v)
 	}
 	return s.leaf(x, verb, f)
 }
@@ -1644,14 +1416,14 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 // descends elementwise like Go's fmt ([]int under %q quotes each element
 // as a char, under %s each becomes a %!s marker).
 func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
-	et := sliceElemTyp(v.Typ)
+	et := stdlib.SliceElemTyp(v.Typ)
 	ev := elemVerb(verb)
 	parts := make([]string, len(v.Elems))
 	for i, e := range v.Elems {
 		parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: et, depth: s.depth + 1}).render(ev, nested(f))
 	}
 	if f.Flag('#') && verb == 'v' {
-		return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
+		return stdlib.TypedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
 	}
 	return "[" + strings.Join(parts, " ") + "]"
 }
@@ -1670,7 +1442,7 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 		// dynamic type, not the interface — []any{1} gives %!v(int=1)
 		if s.et != nil && s.et.Name != "any" {
 			if _, isIface := s.et.TypeExpr().(*ast.InterfaceType); !isIface {
-				name = typedefSpelling(s.et)
+				name = stdlib.TypedefSpelling(s.et)
 			}
 		}
 		if name == "" {
@@ -1708,7 +1480,7 @@ func (s *fmtValue) nilTyp(verb rune, f fmt.State, td *runtime.TypeDef) string {
 	}
 	switch td.Kind {
 	case runtime.KindSlice:
-		if byteSliceTyp(td) {
+		if stdlib.ByteSliceTyp(td) {
 			switch verb {
 			case 's', 'x', 'X':
 				return ""
@@ -1735,7 +1507,100 @@ func (s *fmtValue) nilTyp(verb rune, f fmt.State, td *runtime.TypeDef) string {
 			// a nil address formats as 0 under the numeric verbs
 			return fmt.Sprintf(formatOf(f, verb), 0)
 		}
-		return badVerb(verb, typedefSpelling(td), "<nil>")
+		return badVerb(verb, stdlib.TypedefSpelling(td), "<nil>")
 	}
 	return "<nil>"
+}
+
+// scriptTypeString spells a value's type the way Go's %T does —
+// "[]int", "main.Point" — using the typedef, not the Go wrapper type.
+func scriptTypeString(x runtime.Value) string {
+	switch t := x.(type) {
+	case nil, runtime.Nil:
+		// a nil interface has no dynamic type — %T spells <nil>.
+		return "<nil>"
+	case *runtime.UConst:
+		return t.DefaultName()
+	case *runtime.Named:
+		if stdlib.NilIfaceTyp(t) != nil {
+			return "<nil>" // a nil interface has no dynamic type
+		}
+		return stdlib.TypedefSpelling(t.Typ)
+	case *runtime.Struct:
+		return stdlib.TypedefSpelling(t.Def)
+	case *runtime.Slice:
+		return stdlib.TypedefSpelling(t.Typ)
+	case *runtime.Map:
+		return stdlib.TypedefSpelling(t.Typ)
+	case *runtime.Chan:
+		return stdlib.TypedefSpelling(t.Typ)
+	case *runtime.TypedNil:
+		return stdlib.TypedefSpelling(t.Typ)
+	case *runtime.IfaceNil:
+		if stdlib.NilIfaceTyp(t) != nil {
+			return "<nil>" // a nil interface has no dynamic type
+		}
+		return stdlib.TypedefSpelling(t.Typ)
+	case *runtime.PanicNilError:
+		return "*runtime.PanicNilError"
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		if dv, ok := runtime.Deref(t); ok {
+			// the pointee slot's stamped declared type names the
+			// pointee's static type — `&i` on an interface-typed var
+			// spells *main.I, not *main.S of its stored value. A ref
+			// operand reads it through the ref itself: a FieldRef's
+			// declared field type, an IndexRef's element type.
+			if td := pointeeDeclTyp(t); td != nil {
+				return "*" + stdlib.TypedefSpelling(td)
+			}
+			if c := asCell(dv); c != nil && c.Typ != nil {
+				return "*" + stdlib.TypedefSpelling(c.Typ)
+			}
+			// *interface{} / *error keeps the pointee's declared name —
+			// the pointer itself is the dynamic type, not <nil>.
+			if td := stdlib.NilIfaceTyp(dv); td != nil {
+				return "*" + stdlib.TypedefSpelling(td)
+			}
+			return "*" + scriptTypeString(dv)
+		}
+		return "unsafe.Pointer"
+	case *runtime.GoValue:
+		if se, ok := t.V.(*hostbridge.ScriptError); ok {
+			return scriptTypeString(se.V)
+		}
+		if stdjson.IsEncoder(t.V) {
+			return "*json.Encoder"
+		}
+		switch t.V.(type) {
+		case stdruntime.CleanupHandle:
+			return "runtime.Cleanup"
+		case *minireflect.RValue:
+			return "reflect.Value"
+		case *minireflect.RType:
+			return "*reflect.rtype"
+		case *minireflect.MapIter:
+			return "*reflect.MapIter"
+		case *minireflect.StructField:
+			return "reflect.StructField"
+		case *minireflect.Method:
+			return "reflect.Method"
+		}
+		if rt := proxyHostTypeOf(t.V); rt != nil {
+			// a proxy box spells its API type, not the box's name.
+			return rt.String()
+		}
+		return fmt.Sprintf("%T", t.V)
+	case int64:
+		return "int"
+	case float64:
+		return "float64"
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		return funcSigSpelling(t)
+	default:
+		return fmt.Sprintf("%T", x)
+	}
 }

@@ -86,12 +86,8 @@ func (h *hostHelpers) FnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 	return bf
 }
 
-// Unexported spellings keep the existing call sites; the exported
-// variants satisfy stdlib.Helpers for the moved installers (P2-12c).
-func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.Fn(name, f, target...)
-}
-
+// The exported variants satisfy stdlib.Helpers for the moved
+// installers (P2-12c).
 // Fn1/Fn2/Fn3 are arity-checked variants.
 func (h *hostHelpers) Fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
 	return h.Arity(name, 1, f, target...)
@@ -303,21 +299,6 @@ func (h *hostHelpers) out() io.Writer {
 // file for net's FileConn/FilePacketConn adapters (P2-12).
 func engineFileOf(v any) *os.File {
 	return stdlibos.EngineFileOf(v)
-}
-
-// derefTyp peels the pointer level off a value's typedef — json.Unmarshal
-// decodes into the pointee, so `&cfg` (*Config) shapes as Config.
-func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
-	if td != nil && td.Kind == runtime.KindPointer {
-		if td.Elem == nil {
-			// `&v` where the pointee's typedef could not be recovered
-			// (e.g. `var v any` carries an untyped iface nil) — decode
-			// as `any` rather than wrapping the value in a cell.
-			return nil
-		}
-		return td.Elem
-	}
-	return td
 }
 
 // cwdAbs anchors a script path at the virtual cwd without a roots check —
