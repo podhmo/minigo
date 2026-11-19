@@ -3699,6 +3699,50 @@ type I interface{ m() }
 
 func Use(x I) {}
 `)
+	write(filepath.Join(root, "a", "sigs.go"), `package a
+
+type JI = interface{ m() int }
+type JS = interface{ m() string }
+
+func (T) F(x interface{ m() int }) { x.m() }
+`)
+	write(filepath.Join(root, "shadow", "main.go"), `package main
+
+import "example.com/m/a"
+
+// the declared field m shadows the promoted method — S does not
+// implement a.I.
+type S struct {
+	a.T
+	m int
+}
+
+func main() { a.Use(S{}) }
+`)
+	write(filepath.Join(root, "sig", "main.go"), `package main
+
+import "example.com/m/a"
+
+func main() {
+	var x any = a.T{}
+	if _, ok := x.(interface{ F(a.JI) }); !ok {
+		panic("same signature should match")
+	}
+	if _, ok := x.(interface{ F(a.JS) }); ok {
+		panic("different unexported signatures must not match")
+	}
+}
+`)
+	write(filepath.Join(root, "local", "main.go"), `package main
+
+import "example.com/m/a"
+
+func main() {
+	type S struct{ a.I }
+	s := S{I: a.T{}}
+	s.m()
+}
+`)
 	write(filepath.Join(root, "ok", "main.go"), `package main
 
 import "example.com/m/a"
@@ -3721,5 +3765,14 @@ func main() { b.Use(a.T{}) }
 	_, err := e.Run(context.Background(), filepath.Join(root, "bad"), "main")
 	if err == nil || !strings.Contains(err.Error(), "cannot use a.T as I") {
 		t.Fatalf("cross-package unexported method must not satisfy, got %v", err)
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "shadow"), "main"); err == nil {
+		t.Fatalf("a declared field must shadow the promoted unexported method")
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "sig"), "main"); err != nil {
+		t.Fatalf("signature comparison under qualified requirement keys: %v", err)
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "local"), "main"); err != nil {
+		t.Fatalf("func-local struct embedding an interface must dispatch m: %v", err)
 	}
 }

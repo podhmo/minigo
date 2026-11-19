@@ -1420,7 +1420,7 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 					// same depth as fields and declared methods, and
 					// dispatches dynamically on the concrete value.
 					if idx < len(st.Fields) {
-						if reqs, err := v.H.IfaceReqs(embTd); err == nil && reqs[name] {
+						if reqs, err := v.H.IfaceReqs(embTd); err == nil && ifaceReqHas(reqs, name) {
 							ifaceCands = append(ifaceCands, st.Fields[idx])
 						}
 					}
@@ -1769,7 +1769,7 @@ func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*ru
 		case et.Kind == runtime.KindInterface:
 			// an embedded interface promises name through the
 			// stored value — it exists at this depth.
-			if reqs, err := v.H.IfaceReqs(et); err == nil && reqs[name] {
+			if reqs, err := v.H.IfaceReqs(et); err == nil && ifaceReqHas(reqs, name) {
 				d = 1
 			}
 		case et.HostNew != nil:
