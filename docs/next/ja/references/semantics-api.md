@@ -69,6 +69,21 @@ import しないので、これらを移すには typedef の写しや解決機�
 | 綴り | `TypSpelling`/`TypGoSpelling`/`TypUnderlyingSpelling`（typedef.go） | repl 補完・`minireflect`・`typeid.go`・`hostslice.go` |
 | alias/underlying 解決 | `TypeResolver` フック（`PeelAlias`/`Underlying`/`ElemOf`） | `dispatch.go` の `aliasOf`/`underlying`/`elemOf` |
 
+## 単一化の配置（M4-6a の決着）
+
+計画 K6 は「単一化は semantics、値 → TypeID はアダプタ」を採った。実装は
+`runtime.Inferer`（infer.go）に単一化を、`vm.generic.go` の `unifyType` /
+`argTypedef` / `inferer()` に値から typedef への証拠抽出を置く形で既に
+分割されている。concrete 側は `*runtime.TypeDef` —— host の型や合成した
+`*T`/`[]T` の証拠、インスタンス化したクローンを含む実行時の型表現であり、
+宣言層の `TypeRef` ではない。semantics は `runtime` を import しないので、
+単一化をそこへ移すには concrete 側の構造的な型表現をもう一枚持つ必要が
+あり、M4-5 と同じ判断で **現行の配置を採用する**。`Inferer` には
+`Underlying`/`ElemOf`/`ResolveType` のフックだけを渡し、Session 依存の
+解決は呼び出し側が注入する（値 → TypeID のアダプタは VM）。宣言側から
+typedef を介さず TypeID だけで単一化したい呼び手が出た時点で、
+`Service` に `Unify(pat TypeRef, conc TypeID)` を足す。
+
 移設する場合の分割（計画の M4-5a/b/c 相当）:
 
 - 同一性とエイリアス: `Identical` + `TypeOf` の alias 解決（定義型・エイリアス・構造体タグ・パッケージ固有名）。
