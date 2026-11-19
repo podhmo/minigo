@@ -262,6 +262,8 @@ var FileBudgetExceptions = map[string]string{
 	"internal/spike/spike_on.go":      "P4-2c: plain-slot promotion counters",
 	"internal/hostbridge/scalars.go":  "intern-widen: HostNamedIs/HostTwinOf residual helpers moved here from runtime/value.go",
 	"internal/execution/intern.go":    "intern-widen: Replace for the canonical-descriptor carrier upgrade",
+	"internal/typedef/dispatch.go":    "host-carried declared methods join the reflect walk",
+	"vm/assert.go":                    "canonical-key compare survives a descriptor upgrade swap",
 	"runtime/value.go":                "intern-widen: unexported hostTwinOf residual + TwinOperands doc",
 	"vm/generic.go":                   "intern-widen: HostIdent on the name-only host mint",
 	"runtime/package.go":              "M0-4/M4-8: type-member materialization without init",
