@@ -544,13 +544,6 @@ func scriptVal(v any) runtime.Value {
 	}
 }
 
-// uconstNative materializes an untyped constant to its host default —
-// the same rule the VM applies when the constant crosses a value
-// boundary. An overflowing constant reports like Go's compile error.
-func uconstNative(u *runtime.UConst) (any, error) {
-	return runtime.UConstNative(u)
-}
-
 func str(v any) string {
 	if n, ok := v.(*runtime.Named); ok {
 		return str(n.V)
