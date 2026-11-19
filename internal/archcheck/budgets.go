@@ -290,7 +290,7 @@ var FileBudgetExceptions = map[string]string{
 	"vm/convert.go":                   "ifacekey: IfaceBase convert/coerce stamps the declared tag on the payload's pair + nil binds any interface slot",
 	"vm/generic.go":                   "intern-widen: HostIdent on the name-only host mint + ifacekey: cyclic-ref depth cap in typeOfValue + instTypeKey + constraintBase/constraintType + genCallSlot + instSiteSlot env-gen guard",
 	"runtime/package.go":              "M0-4/M4-8: type-member materialization without init + specialized-typedef cache",
-	"vm/call.go":                      "M0-4/M4-8 + P2-7f reflect-free vm + profiler count/alloc hooks + call-site arg; cellpool: pooled cells lay out one per slot unconditionally",
+	"vm/call.go":                      "M0-4/M4-8 + P2-7f reflect-free vm + profiler count/alloc hooks + call-site arg; cellpool: pooled cells lay out one per slot unconditionally + recvBuf receiver prepend scratch",
 	"vm/frame.go":                     "P4-2c: plain-slot promotion counters + pooled promotion cells; heap-vs-pooled promote split + cellpool: cellsLeaked publish flag",
 	"vm/loop.go":                      "P4-6 fragment memo + P2-7e host chanops move + profiler alloc counting + OpLocalRef publish mark + cellpool: in-place rebind of unpublished cells",
 	"vm/processcaller.go":             "P2-2b: narrowed host callback helper callers",

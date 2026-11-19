@@ -526,8 +526,12 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 			winArgs++
 			args = v.vals[len(v.vals)-winArgs:]
 		} else {
-			args = append([]runtime.Value{c.Recv}, args...)
-			v.profAllocs++
+			// prepend into the VM scratch: the slice is consumed by
+			// arg binding below, before any other prepend can write
+			// the buffer — no per-call alloc.
+			v.recvBuf = append(v.recvBuf[:0], c.Recv)
+			v.recvBuf = append(v.recvBuf, args...)
+			args = v.recvBuf
 		}
 	default:
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
