@@ -509,7 +509,18 @@ func scriptScalarName(x runtime.Value) string {
 			return scriptScalarName(nv)
 		}
 	case *runtime.Named:
-		return stdlib.TypedefSpelling(t.Typ)
+		// an interface-declared tag is never the dynamic type: the
+		// payload's own tag (or raw scalar) names it — %T of `var a
+		// A = N(1)` for `type A any` prints main.N like gc.
+		n := t
+		for n.Typ != nil && (n.Typ.IfaceBase || n.Typ.Kind == runtime.KindInterface) {
+			nx, ok := n.V.(*runtime.Named)
+			if !ok {
+				break
+			}
+			n = nx
+		}
+		return stdlib.TypedefSpelling(n.Typ)
 	case *runtime.GoValue:
 		return ScriptTypeString(t)
 	}
