@@ -37,3 +37,11 @@ repl         -> compile index internal/replhooks resolve runtime syntax
 | P2-7 | `vm/` が `reflect` を import することを禁止する |
 
 import とセレクタ名の検査では、コールバック経由の実行が起きないことまでは証明できない。それは振る舞いテスト（M0-4）で補う。
+
+## P2-7b の hook 注入（marshal.go の Marshal）
+
+`toReflectValueDepth` とその配下（deepHost/hostMarshal、hostShapeOf、typedContainer、structDataHost ほか）が必要とする VM 依存の断片は、`hostbridge.Marshal` の hook フィールドとして注入する（`Materialize`、`ConstArg`、`AdaptFunc`、`AdaptFuncOpaque`、`AdaptIface`、`HostErr`、`ElemOf`、`MapKeyOf`、`AliasOf`、`HostTypOf`、`ScriptBytes`、`FuncMapElem`、`TemplateCallableNout`）。`ElemOf`/`MapKeyOf`/`AliasOf`/`HostErr` は `VMCaller` から `vmOf` で VM を取り直す closure になっていて、hostbridge 側は `runtime.VMCaller` だけを見る。
+
+注意点: hook の実体（`adaptFunc`/`funcMapElem` など）は本体から `marshalHost` を参照するので、`var marshalHost = &hostbridge.Marshal{...}` と書くと var 初期化の依存閉路でコンパイルエラーになる。`func init()` で代入して閉路を断つ（init の本体は依存解析の対象外）。
+
+`hostArgAs` はフレーム依存が強いので丸ごとは動かさず、`hostbridge.Lift(x, td, *ArgAsHooks, depth)` として切り出し、`v.hostArgAs` は呼び出しごとに hook を組み立てる薄い wrapper として残した。
