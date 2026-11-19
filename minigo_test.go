@@ -2161,8 +2161,11 @@ func TestScriptProfiler(t *testing.T) {
 		"deferred host call": profFlatMs(top, "main.slowDefer ") >= 100,
 		// non-blocking channel ops are run time, not parked time
 		"quick channel ops": profFlatMs(top, "main.recvLoop ") >= float64(recvMs)/2,
+		// a host join (WaitGroup.Wait) parks like a channel op: its
+		// 300ms wait must stay out of the profile
+		"host join excluded": profFlatMs(top, "main.joinWait ") < 50,
 	}
-	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true, "method closure": true, "deferred host call": true, "quick channel ops": true}
+	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true, "method closure": true, "deferred host call": true, "quick channel ops": true, "host join excluded": true}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("profile mismatch (-want +got):\n%s\n%s", diff, top)
 	}
