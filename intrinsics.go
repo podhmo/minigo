@@ -14,6 +14,7 @@ import (
 	"go/ast"
 	"io"
 	"os"
+	"path/filepath"
 	"reflect"
 	goruntime "runtime"
 	"slices"
@@ -27,6 +28,7 @@ import (
 	"github.com/podhmo/minigo/internal/stdlib"
 	stdcontext "github.com/podhmo/minigo/internal/stdlib/context"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
+	stdlibos "github.com/podhmo/minigo/internal/stdlib/os"
 	stdtime "github.com/podhmo/minigo/internal/stdlib/time"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -45,42 +47,6 @@ func hostType(name string, new func() any) *runtime.TypeDef {
 // and results back to runtime values.
 type hostHelpers struct {
 	env bind.Env // the narrow host-environment surface the bindings see
-}
-
-// engineStdout is the script-visible os.Stdout: a *os.File facade whose
-// writes forward to the engine's output (WithOutput) lazily, so a host
-// callee receiving os.Stdout — template.Execute, fmt.Fprint's target —
-// lands in the same stream the fmt intrinsics print to. The embedded
-// *os.File promotes the rest of the file API (Name, Fd, Stat, Sync, the
-// deadline family, Read/ReadAt/Seek, ...) onto the reflect method set,
-// so member access keeps working like Go's.
-type engineStdout struct {
-	*os.File
-	h *hostHelpers
-}
-
-func (w *engineStdout) Write(p []byte) (int, error) { return w.h.out().Write(p) }
-
-func (w *engineStdout) WriteString(s string) (int, error) {
-	if sw, ok := w.h.out().(io.StringWriter); ok {
-		return sw.WriteString(s)
-	}
-	return w.h.out().Write([]byte(s))
-}
-
-// ReadFrom keeps io.Copy(os.Stdout, r) inside the engine's output: the
-// promoted (*os.File).ReadFrom would splice straight to the process's
-// fd 1 and escape WithOutput the way a bare os.Stdout did.
-func (w *engineStdout) ReadFrom(r io.Reader) (int64, error) {
-	return io.Copy(w.h.out(), r)
-}
-
-// out returns the environment's output writer (io.Discard when unset).
-func (h *hostHelpers) out() io.Writer {
-	if h.env == nil {
-		return io.Discard
-	}
-	return h.env.Out()
 }
 
 func (h *hostHelpers) Fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
@@ -135,18 +101,6 @@ func (h *hostHelpers) FnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 // variants satisfy stdlib.Helpers for the moved installers (P2-12c).
 func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
 	return h.Fn(name, f, target...)
-}
-
-func (h *hostHelpers) fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.Fn1(name, f, target...)
-}
-
-func (h *hostHelpers) fn2(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.Fn2(name, f, target...)
-}
-
-func (h *hostHelpers) fn3(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.Fn3(name, f, target...)
 }
 
 // Fn1/Fn2/Fn3 are arity-checked variants.
@@ -391,10 +345,6 @@ func retErr(n int, err error) (any, error) {
 	return stdlib.RetErr(n, err)
 }
 
-func retErr2[T any](v T, err error) (any, error) {
-	return stdlib.RetErr2(v, err)
-}
-
 // errVal delegates to the shared binding machinery in internal/stdlib.
 func errVal(err error) runtime.Value {
 	return stdlib.ErrVal(err)
@@ -633,10 +583,6 @@ func anySlice(v any) []any {
 		return a
 	}
 	return nil
-}
-
-func strsSlice(ss []string) runtime.Value {
-	return stdlib.StrsSlice(ss)
 }
 
 // elemAt indexes a prior container's stored values without failing — a
@@ -1027,14 +973,18 @@ func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
 
 var defaultIOAdapters = &stdio.Adapters{UnwrapArg: unwrapFmtArg}
 
+// out returns the environment's output writer (io.Discard when unset).
+func (h *hostHelpers) out() io.Writer {
+	if h.env == nil {
+		return io.Discard
+	}
+	return h.env.Out()
+}
+
 // engineFileOf unwraps the script-visible os.Stdout facade to the real
 // file for net's FileConn/FilePacketConn adapters (P2-12).
 func engineFileOf(v any) *os.File {
-	if s, ok := v.(*engineStdout); ok {
-		return s.File
-	}
-	t, _ := v.(*os.File)
-	return t
+	return stdlibos.EngineFileOf(v)
 }
 
 // derefTyp peels the pointer level off a value's typedef — json.Unmarshal
@@ -1050,4 +1000,13 @@ func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
 		return td.Elem
 	}
 	return td
+}
+
+// cwdAbs anchors a script path at the virtual cwd without a roots check —
+// for pure path math (filepath.Abs/Rel) where no filesystem is touched.
+func (e *Engine) cwdAbs(p string) string {
+	if filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(e.cwd, p)
 }
