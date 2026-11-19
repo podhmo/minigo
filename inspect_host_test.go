@@ -552,6 +552,36 @@ func TestBodyScope(t *testing.T) {
 	}
 }
 
+// TestDotImportSymbolID pins the under-resolution a dot import forces:
+// `TrimSpace` in inspectdot arrives through `import . "strings"`, so
+// attributing the bare identifier to the file's own package would
+// misattribute it — SymbolID reports nothing instead.
+func TestDotImportSymbolID(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/dotimport")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := p.Index.Funcs["DotMe"]
+	if d == nil {
+		t.Fatal("no DotMe decl")
+	}
+	root, err := xinspect.BodyOf(xinspect.NewDecl(p, d))
+	if err != nil {
+		t.Fatalf("BodyOf: %v", err)
+	}
+	ret := xinspect.NodesOf(root)[0]                  // ReturnStmt
+	call := xinspect.NodesOf(ret)[0]                  // Results -> CallExpr
+	fun := xinspect.ExprOf(xinspect.NodesOf(call)[0]) // Fun -> Ident TrimSpace
+	if fun == nil {
+		t.Fatal("ExprOf(fun) = nil")
+	}
+	if sid, ok := fun.SymbolID(); ok {
+		t.Errorf("dot-imported ident resolved to %v — want under-resolution", sid)
+	}
+}
+
 // TestTypeFieldsError pins the contract the script-visible TypeFields
 // intrinsic shares: a non-composite TypeExpr reports an error (a trap
 // in scripts), so a walk gates on Kind first instead of reading an
