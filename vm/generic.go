@@ -593,6 +593,42 @@ func (v *VM) outerTypeArgs(f *frame) (names []string, args []runtime.Value) {
 	return names, args
 }
 
+// outerTypedef folds the enclosing instantiation's type args onto td —
+// OpLocalType's wrap, shared with resolveArgHints: a deferred-type
+// resolution bypasses OpLocalType, but a function-local decl's
+// identity (`main.L[int]`) and spelling need the same outer args. A
+// typedef that IS a bound type argument — T resolved to a concrete
+// type like the function-local `large` bound by f[large] — is the
+// final type already: folding this instantiation's args onto it
+// invents `large[large·1]` where gc asserts to `large`. Resolved
+// binds and OuterArgs stay Local-only: named identity compares
+// Binds, so folding them onto a package-level typedef would invent a
+// different type.
+func (v *VM) outerTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
+	names, outer := v.outerTypeArgs(f)
+	if len(outer) == 0 {
+		return td
+	}
+	for _, bv := range outer {
+		if typedefOf(bv) == td {
+			return td
+		}
+	}
+	clone := td.CloneUncached()
+	clone.OuterSpell = outer
+	if td.Local {
+		binds := map[string]runtime.Value{}
+		for k, bv := range td.Binds {
+			binds[k] = bv
+		}
+		// resolved args beat compile placeholders
+		bindArgs(binds, names, outer)
+		clone.OuterArgs = outer
+		clone.Binds = binds
+	}
+	return clone
+}
+
 // bindArgs folds a parallel name/argument list into binds in
 // declaration order; names past len(args) stay unbound (a compile-time
 // placeholder survives). Callers trap on arity before binding, so the

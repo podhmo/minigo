@@ -257,7 +257,7 @@ func (c *compiler) callSite(lt litTyp, pos token.Pos) int {
 	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
 		Expr: lt.expr, File: file, Pos: pos,
 		Depth: lt.depth, Key: lt.key, After: lt.after,
-		Ctx:   &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+		Ctx:   &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: visibleBinds(c.binds, localTypes), LocalTypes: localTypes},
 		Sym:   -1,
 		Quote: -1,
 	})
