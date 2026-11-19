@@ -174,9 +174,9 @@ func freeFrame(f *frame) {
 	// f.results' backing may be the returned Tuple's Elems — release it
 	// rather than clearing (OpReturn allocates a fresh slice per call).
 	f.results = nil
-	clear(f.argbuf)
+	clear(f.argbuf[:cap(f.argbuf)])
 	f.argbuf = f.argbuf[:0]
-	clear(f.statbuf)
+	clear(f.statbuf[:cap(f.statbuf)])
 	f.statbuf = f.statbuf[:0]
 	f.boundLo, f.boundHi = 0, 0
 	f.vpack = nil
