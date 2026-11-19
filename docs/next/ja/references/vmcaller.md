@@ -39,6 +39,12 @@
 
 `vm.vmOf`（vm/vm.go:4994）は `*VM`、`ownerCaller`、`processCaller` にダウンキャストしており、7 箇所から呼ばれている。
 
+## 絞り込みの境界（P2-2b）
+
+観測専用（型アサーションして状態を読むだけ、呼び出し能力を持たない）の引数は `runtime.CallerRef`（= `any`）にする。`sched.go` の park/wake API、`vmOf`/`procOf`/`procDoneOf`、`watchCtxDone`/`newChanFeed` 系がこのパターン。
+
+host proxy の callback は member 操作だけが多いので、`callbackContext`（`VMCaller`→`VMCaller`）に対して member-only 版の `callbackMemberContext`（`MemberCaller`→`MemberCaller`）を用意した。`toReflectValue`/`CallCatching`/`c.Fn` に渡す側は `VMCaller` のまま残る — `bindCaller`/`callbackContext` 自身をこれ以上絞ると「VM が要る側に型を合わせてから受け渡す」二重の型付けになるだけで情報が増えない。
+
 ## よく受け渡されている helper（P2-2 の対象の候補）
 
 `runtime.IfaceMember`（18）、`goJSONSeen`（10）、`callOrPanic`（10）、`scriptMapSeqArg`（9）、`runePred`（8）、`jsonShape`（8）、`hostErrOf`（16）、`display`（8）、`jsonCallMethod`（6）、`h.asReaderVM`（6）、`callBool`（6）、`scriptSliceArg`（5）。

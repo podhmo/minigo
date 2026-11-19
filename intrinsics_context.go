@@ -252,7 +252,7 @@ func asCtx(v any) (context.Context, error) {
 // conservative wake source); a nil or dead-managed parent passes the
 // cancel-only property down, and the child registers as dead from
 // birth.
-func watchCtxDone(vc runtime.VMCaller, parent, child context.Context) {
+func watchCtxDone(vc runtime.CallerRef, parent, child context.Context) {
 	done := child.Done()
 	if done == nil {
 		return

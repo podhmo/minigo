@@ -41,7 +41,7 @@ import (
 // them on its io.Reader/io.Writer args), so they only appear on the
 // scriptIfaceW* variants adaptIface picks when the script declares them.
 type scriptIface struct {
-	vc   runtime.VMCaller
+	vc   runtime.MemberCaller
 	recv runtime.Value
 }
 
@@ -51,7 +51,7 @@ type scriptIface struct {
 func (s *scriptIface) ScriptValue() runtime.Value { return s.recv }
 
 func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value, error) {
-	vc := callbackContext(s.vc)
+	vc := callbackMemberContext(s.vc)
 	m, ok := vc.Member(s.recv, name)
 	if !ok || m == nil || m == runtime.NIL {
 		return nil, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
@@ -215,7 +215,7 @@ func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
 // surface only when the script declares them, like the io extension
 // probes: fs.GlobFS/fs.StatFS stay unadopted, so host helpers asserting
 // them fall back through Open.
-func scriptFSFor(vc runtime.VMCaller, v runtime.Value) any {
+func scriptFSFor(vc runtime.MemberCaller, v runtime.Value) any {
 	if _, ok := runtime.IfaceMember(vc, v, "Open"); !ok {
 		return nil
 	}
@@ -237,8 +237,8 @@ func scriptFSFor(vc runtime.VMCaller, v runtime.Value) any {
 // Stat — the fs.File contract's discriminator beside Read/Close — nil
 // otherwise, so a non-file value keeps the generic error. fileOf does
 // the per-file variant probing.
-func scriptFileFor(vc runtime.VMCaller, v runtime.Value) any {
-	if _, ok := runtime.IfaceMember(callbackContext(vc), v, "Stat"); !ok {
+func scriptFileFor(vc runtime.MemberCaller, v runtime.Value) any {
+	if _, ok := runtime.IfaceMember(callbackMemberContext(vc), v, "Stat"); !ok {
 		return nil
 	}
 	return (&scriptFS{scriptIface: &scriptIface{vc: vc, recv: v}}).fileOf(v)
@@ -286,7 +286,7 @@ func (s *scriptFS) fileOf(v runtime.Value) fs.File {
 	}
 	si := &scriptIface{vc: s.vc, recv: v}
 	f := &scriptFile{inner: si}
-	ctx := callbackContext(s.vc)
+	ctx := callbackMemberContext(s.vc)
 	_, seek := runtime.IfaceMember(ctx, v, "Seek")
 	_, wt := runtime.IfaceMember(ctx, v, "WriteTo")
 	if _, ok := runtime.IfaceMember(ctx, v, "ReadDir"); ok {
@@ -329,7 +329,7 @@ func (s *scriptFS) readDir(name string) ([]fs.DirEntry, error) {
 // host DirEntry proxy. A nil script slice means an empty directory, and
 // the script's own error rides along so partial results survive — e.g.
 // entries plus io.EOF, which fs.ReadDirFile permits.
-func dirEntriesOf(vc runtime.VMCaller, rs []runtime.Value, serr error) ([]fs.DirEntry, error) {
+func dirEntriesOf(vc runtime.MemberCaller, rs []runtime.Value, serr error) ([]fs.DirEntry, error) {
 	if len(rs) == 0 {
 		return nil, serr
 	}
