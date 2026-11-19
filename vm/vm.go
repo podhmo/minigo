@@ -203,6 +203,9 @@ type VM struct {
 	vals []runtime.Value
 	// profTick is the Profiler tick this VM last checked in at.
 	profTick uint64
+	// profAllocs counts the interpreter allocations this VM made since
+	// its last safepoint; profCheck flushes it to the Profiler.
+	profAllocs int64
 	// callMu guards callDepth/callGid: the goroutine id owning the
 	// in-flight Call(s). A foreign goroutine's Call spawns instead.
 	callMu    sync.Mutex

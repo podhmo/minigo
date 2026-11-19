@@ -41,9 +41,14 @@ func (v *VM) exec(f *frame) {
 	// between two checks always has the same innermost frame: the caller
 	// is charged up to the call, the callee up to its return.
 	if v.H.Prof != nil {
-		v.profCheck()
+		v.profCheckTick()
 	}
 	v.frames = append(v.frames, f)
+	if v.H.Prof != nil {
+		// the callee's setup allocations (its frame's cells, argbuf)
+		// belong to its stack, not the caller's call line.
+		v.profAllocFlush()
+	}
 	defer func() {
 		r := recover()
 		if v.H.Prof != nil {
@@ -405,6 +410,7 @@ func (v *VM) loop(f *frame) {
 			n := int(ins.A)
 			vals := make([]runtime.Value, n)
 			refs := make([]runtime.Value, n)
+			v.profAllocs += 2
 			if ins.B == 1 {
 				// range-assign order: the iter pair is already pushed,
 				// the LHS refs (evaluated with pre-iteration operands)
@@ -441,6 +447,7 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpInstantiate:
 			ntargs := int(ins.A)
 			targs := make([]runtime.Value, ntargs)
+			v.profAllocs++
 			for i := ntargs - 1; i >= 0; i-- {
 				targs[i] = f.pop()
 			}
@@ -546,6 +553,7 @@ func (v *VM) loop(f *frame) {
 			x := f.pop()
 			if tp, ok := x.(*runtime.Tuple); ok {
 				elems := make([]runtime.Value, len(tp.Elems))
+				v.profAllocs++
 				for i, e := range tp.Elems {
 					var td *runtime.TypeDef
 					if i < len(tds) {
@@ -733,6 +741,7 @@ func (v *VM) loop(f *frame) {
 			for i := n - 1; i >= 0; i-- {
 				el[i] = f.pop()
 			}
+			v.profAllocs++
 			f.push(&runtime.Tuple{Elems: el})
 		case bytecode.OpUnpack:
 			tv := f.pop()
@@ -782,6 +791,7 @@ func (v *VM) loop(f *frame) {
 				continue
 			}
 			cl := &runtime.Closure{Fn: proto}
+			v.profAllocs++
 			for _, d := range proto.Chunk.Upvals {
 				if d.FromParentUpval {
 					cl.Upvals = append(cl.Upvals, f.upvals[d.Index])
@@ -1036,6 +1046,7 @@ func (v *VM) loop(f *frame) {
 				f.retNamed = true
 			default:
 				f.results = make([]runtime.Value, n)
+				v.profAllocs++
 				for i := n - 1; i >= 0; i-- {
 					f.results[i] = f.pop()
 				}

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -39,8 +40,15 @@ type Profiler struct {
 	fnIDs map[*runtime.Function]uint64
 	// counts holds exact per-function call counts — sampling cannot
 	// answer how often a function ran (a 21M-call helper looks like
-	// any other); the VMs count at frame entry.
-	counts sync.Map // *runtime.Function -> *atomic.Int64
+	// any other); the VMs count at frame entry. Keyed by chunk, not by
+	// Function wrapper: OpEvalFragment builds a fresh Function per eval
+	// over the same cached chunk, and a wrapper-keyed map would grow
+	// with every eval.
+	counts sync.Map // *bytecode.Chunk -> *profCount
+	// allocs attributes interpreter allocations to the script stack that
+	// made them: each counted allocation site bumps the VM's profAllocs,
+	// and the next safepoint charges the total to the stack it sees.
+	allocs map[string]*profSample
 	end    time.Time
 }
 
@@ -67,6 +75,7 @@ func NewProfiler(period time.Duration) *Profiler {
 		done:    make(chan struct{}),
 		samples: map[string]*profSample{},
 		fnIDs:   map[*runtime.Function]uint64{},
+		allocs:  map[string]*profSample{},
 	}
 	p.tick.Store(1) // 0 marks a VM that has not checked in yet
 	go p.clock()
@@ -100,7 +109,23 @@ func (p *Profiler) Stop() {
 
 // profCheck is the safepoint hook: cheap when the tick has not moved.
 func (v *VM) profCheck() {
+	v.profCheckFlushing(true)
+}
+
+// profCheckTick is profCheck without the allocation flush — exec uses
+// it before pushing the new frame so the callee's setup allocations
+// land on the callee's own stack, not the caller's call line.
+func (v *VM) profCheckTick() {
+	v.profCheckFlushing(false)
+}
+
+func (v *VM) profCheckFlushing(alloc bool) {
 	p := v.H.Prof
+	// allocations flush at every safepoint, tick or not — they belong
+	// to the stack that made them, not to a time interval.
+	if alloc {
+		v.profAllocFlush()
+	}
 	t := p.tick.Load()
 	last := v.profTick
 	if t == last {
@@ -111,6 +136,15 @@ func (v *VM) profCheck() {
 		return // first check-in: no interval to attribute yet
 	}
 	p.record(v.frames, int64(t-last))
+}
+
+// profAllocFlush charges the counted allocations since the last
+// safepoint to the current stack.
+func (v *VM) profAllocFlush() {
+	if n := v.profAllocs; n > 0 {
+		v.profAllocs = 0
+		v.H.Prof.recordAlloc(v.frames, n)
+	}
 }
 
 // profResync drops the ticks a goroutine spent blocked in a parked op.
@@ -128,14 +162,21 @@ func (v *VM) profResync() {
 	}
 }
 
-// countCall records one entry into fn — the exact call count the
-// samples view cannot give.
-func (p *Profiler) countCall(fn *runtime.Function) {
-	c, _ := p.counts.LoadOrStore(fn, &atomic.Int64{})
-	c.(*atomic.Int64).Add(1)
+type profCount struct {
+	fn *runtime.Function // a representative, for the sample's location
+	n  atomic.Int64
 }
 
-func (p *Profiler) record(frames []*frame, n int64) {
+// countCall records one entry into fn — the exact call count the
+// samples view cannot give.
+func (p *Profiler) countCall(fn *runtime.Function, ch *bytecode.Chunk) {
+	c, _ := p.counts.LoadOrStore(ch, &profCount{fn: fn})
+	c.(*profCount).n.Add(1)
+}
+
+// stackKey snapshots the script frames and folds them into the sample
+// key — shared by the time and allocation sample maps.
+func (p *Profiler) stackKey(frames []*frame) ([]profFrame, string) {
 	stack := make([]profFrame, 0, len(frames))
 	for i := len(frames) - 1; i >= 0; i-- {
 		f := frames[i]
@@ -149,10 +190,8 @@ func (p *Profiler) record(frames []*frame, n int64) {
 		stack = append(stack, pf)
 	}
 	if len(stack) == 0 {
-		return
+		return nil, ""
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	key := make([]byte, 0, 16*len(stack))
 	for _, f := range stack {
 		id, ok := p.fnIDs[f.fn]
@@ -163,17 +202,46 @@ func (p *Profiler) record(frames []*frame, n int64) {
 		key = binary.LittleEndian.AppendUint64(key, id)
 		key = binary.LittleEndian.AppendUint64(key, uint64(f.pos))
 	}
-	if s := p.samples[string(key)]; s != nil {
+	return stack, string(key)
+}
+
+func (p *Profiler) record(frames []*frame, n int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	stack, key := p.stackKey(frames)
+	if stack == nil {
+		return
+	}
+	if s := p.samples[key]; s != nil {
 		s.n += n
 	} else {
-		p.samples[string(key)] = &profSample{stack: stack, n: n}
+		p.samples[key] = &profSample{stack: stack, n: n}
+	}
+}
+
+// recordAlloc charges n counted allocations to the script stack — the
+// VM's profAllocs since its last safepoint.
+func (p *Profiler) recordAlloc(frames []*frame, n int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	stack, key := p.stackKey(frames)
+	if stack == nil {
+		return
+	}
+	if s := p.allocs[key]; s != nil {
+		s.n += n
+	} else {
+		p.allocs[key] = &profSample{stack: stack, n: n}
 	}
 }
 
 // WriteTo writes the samples as a gzipped pprof profile with sample
-// types samples/count, time/nanoseconds and calls/count — the last one
-// exact per-function call counts, one one-frame sample each. Call it
-// after Stop.
+// types samples/count, calls/count, allocs/count and time/nanoseconds
+// — calls are exact per-function call counts (one one-frame sample at
+// each declaration) and allocs counted interpreter allocations
+// attributed to the script stack. time lists last so plain
+// `pprof -top` keeps its documented time-first reading. Call it after
+// Stop.
 func (p *Profiler) WriteTo(w io.Writer) (int64, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -182,25 +250,35 @@ func (p *Profiler) WriteTo(w io.Writer) (int64, error) {
 		end = time.Now()
 	}
 	b := newProfBuilder()
+	// time must list last: `pprof -top` without -sample_index sorts by
+	// the final sample type, and the documented reading is time-first.
 	b.valueType(1, "samples", "count")
-	b.valueType(1, "time", "nanoseconds")
 	b.valueType(1, "calls", "count")
+	b.valueType(1, "allocs", "count")
+	b.valueType(1, "time", "nanoseconds")
 	for _, s := range p.samples {
 		locs := make([]uint64, len(s.stack))
 		for i, f := range s.stack {
 			locs[i] = b.location(f)
 		}
-		b.sample(locs, s.n, s.n*p.period.Nanoseconds(), 0)
+		b.sample(locs, s.n, 0, 0, s.n*p.period.Nanoseconds())
+	}
+	for _, s := range p.allocs {
+		locs := make([]uint64, len(s.stack))
+		for i, f := range s.stack {
+			locs[i] = b.location(f)
+		}
+		b.sample(locs, 0, 0, s.n, 0)
 	}
 	// exact call counts land as one-frame samples at each function's
 	// declaration — `-calls` ranks them; the stack view is unchanged.
-	p.counts.Range(func(k, c any) bool {
-		fn := k.(*runtime.Function)
+	p.counts.Range(func(_, c any) bool {
+		pc := c.(*profCount)
 		var pos token.Pos
-		if fn.Decl != nil {
-			pos = fn.Decl.Pos()
+		if pc.fn.Decl != nil {
+			pos = pc.fn.Decl.Pos()
 		}
-		b.sample([]uint64{b.location(profFrame{fn: fn, pos: pos})}, 0, 0, c.(*atomic.Int64).Load())
+		b.sample([]uint64{b.location(profFrame{fn: pc.fn, pos: pos})}, 0, pc.n.Load(), 0, 0)
 		return true
 	})
 	b.flushTables()
