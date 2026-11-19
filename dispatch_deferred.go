@@ -7,6 +7,7 @@ import (
 	"go/constant"
 	"go/token"
 	"strconv"
+	"strings"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
@@ -38,15 +39,14 @@ func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.P
 		}
 	}
 	if !ok {
-		if from.Pkg.Path == name {
+		// a `.imp:` qualifier (compile's synthImportName) encodes the path
+		path := strings.TrimPrefix(name, ".imp:")
+		if from.Pkg.Path == path {
 			return from.Pkg, nil
 		}
-		ref = &runtime.ImportRef{
-			Path: name,
-			Load: func(path string) (*runtime.Package, error) {
-				return e.loadPath(context.Background(), path)
-			},
-		}
+		ref = &runtime.ImportRef{Path: path, Load: func(path string) (*runtime.Package, error) {
+			return e.loadPath(context.Background(), path)
+		}}
 	}
 	return ref.Materialize()
 }
