@@ -199,8 +199,9 @@ type VM struct {
 
 	// recvBuf is the scratch arg slice for a BoundMethod's receiver
 	// prepend: the prepended args are consumed by arg binding inside
-	// the same prepFrameSeen, so the buffer is dead by the time a
-	// later prepend could write it.
+	// the same prepFrameSeen — cleared after binding — and lifted to
+	// a fresh slice when init code that could write the buffer runs
+	// in between (a package's first method call on this VM).
 	recvBuf []runtime.Value
 
 	// frames is the live call stack (innermost last); recover() consults it.
