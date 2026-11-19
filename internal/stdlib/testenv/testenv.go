@@ -1,12 +1,15 @@
-package minigo
+package testenv
 
 import (
 	"os"
 
+	"github.com/podhmo/minigo/internal/stdlib"
+
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installInternalTestenv(h *hostHelpers) {
+// Install binds the internal/testenv stub surface (pure helpers GOROOT sources call).
+func Install(bind stdlib.Bind, h stdlib.Helpers) {
 	// internal/testenv exists only for GOROOT's own tests; the one entry
 	// the upstream suites reach for is SetGODEBUG. Upstream calls
 	// t.Helper() + t.Setenv (which registers a cleanup restoring the
@@ -14,9 +17,9 @@ func (e *Engine) installInternalTestenv(h *hostHelpers) {
 	// result for a test process, and the bound godebug Setting reads
 	// that same host env, so the knob actually flips. There is no
 	// testing.TB to satisfy: the t argument is ignored.
-	e.bindBound("internal/testenv", map[string]runtime.Value{
-		"SetGODEBUG": h.fn2("testenv.SetGODEBUG", func(a []any) (any, error) {
-			return nil, os.Setenv("GODEBUG", os.Getenv("GODEBUG")+","+str(a[1]))
+	bind("internal/testenv", map[string]runtime.Value{
+		"SetGODEBUG": h.Fn2("testenv.SetGODEBUG", func(a []any) (any, error) {
+			return nil, os.Setenv("GODEBUG", os.Getenv("GODEBUG")+","+stdlib.Str(a[1]))
 		}),
 	})
 }

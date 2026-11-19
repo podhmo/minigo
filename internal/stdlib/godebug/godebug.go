@@ -1,13 +1,16 @@
-package minigo
+package godebug
 
 import (
 	"os"
 	"strings"
 
+	"github.com/podhmo/minigo/internal/stdlib"
+
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installInternalGodebug(h *hostHelpers) {
+// Install binds the internal/godebug stub surface (pure helpers GOROOT sources call).
+func Install(bind stdlib.Bind, h stdlib.Helpers) {
 	// net/url needs no intrinsic: its source interprets cleanly once
 	// the internal/godebug stub answers the knob lookups below.
 	// internal/godebug cannot be imported outside GOROOT, so a stub
@@ -16,11 +19,11 @@ func (e *Engine) installInternalGodebug(h *hostHelpers) {
 	// defaults to its enabled behavior (e.g. url's query-param limit
 	// check in ParseQuery), and a t.Setenv-style GODEBUG write made
 	// through internal/testenv.SetGODEBUG below is honored.
-	e.bindBound("internal/godebug", map[string]runtime.Value{
-		"New": h.fn1("godebug.New", func(a []any) (any, error) {
-			return &runtime.GoValue{V: &godebugSetting{name: str(a[0])}}, nil
+	bind("internal/godebug", map[string]runtime.Value{
+		"New": h.Fn1("godebug.New", func(a []any) (any, error) {
+			return &runtime.GoValue{V: &godebugSetting{name: stdlib.Str(a[0])}}, nil
 		}),
-		"Setting": hostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
+		"Setting": stdlib.HostType("internal/godebug.Setting", func() any { return &godebugSetting{} }),
 	})
 }
 

@@ -273,36 +273,6 @@ func (h *hostHelpers) scanReader(v runtime.MemberCaller, args []runtime.Value) (
 	return []any{r}, nil
 }
 
-// bytealgMaxLen mirrors the host build's arch-tuned init (internal/bytealg
-// index_<arch>.go). amd64 is 63 with AVX2 else 31; without reading CPUID we
-// take the conservative 31 — the bound only gates when IndexString may be
-// used, and a smaller bound just sends longer needles to the generic path.
-// arm64/ppc64x 32, s390x/loong64 64.
-func bytealgMaxLen() int {
-	switch goruntime.GOARCH {
-	case "amd64":
-		return 31
-	case "arm64", "ppc64", "ppc64le":
-		return 32
-	case "s390x", "loong64":
-		return 64
-	}
-	return 0
-}
-
-// bytealgMaxBruteForce mirrors the host build's arch-tuned constant
-// (internal/bytealg/index_<arch>.go): amd64 and s390x brute-force up to
-// 64, arm64/ppc64x/loong64 up to 16, generic 0.
-func bytealgMaxBruteForce() int {
-	switch goruntime.GOARCH {
-	case "amd64", "s390x":
-		return 64
-	case "arm64", "ppc64", "ppc64le", "loong64":
-		return 16
-	}
-	return 0
-}
-
 // sortInPlace sorts a *runtime.Slice's elements directly — going through
 func (h *hostHelpers) sortInPlace(name string) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
