@@ -15,6 +15,7 @@ import (
 
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // stubPanic is the marker body of a stub-package member: a declaration that
@@ -51,6 +52,7 @@ func (r Result) String() string {
 func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) {
 	var out []Result
 	for _, sf := range p.Files {
+		locals := syntax.NewLocalScopes(sf.AST)
 		refs := map[int]*runtime.ImportRef{} // import's position in sf.Imports -> its engine ref
 		if rl := p.Imports[sf]; rl != nil {
 			for i, im := range sf.Imports {
@@ -78,11 +80,7 @@ func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) 
 			imports[name] = im.Path
 		}
 		for _, decl := range sf.AST.Decls {
-			var shadow map[string]bool
-			if fd, ok := decl.(*ast.FuncDecl); ok {
-				shadow = declaredNames(fd)
-			}
-			scanStubCalls(ctx, decl, imports, shadow, &out, deps)
+			scanStubCalls(ctx, decl, imports, locals, &out, deps)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -92,83 +90,11 @@ func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) 
 	return out, nil
 }
 
-// declaredNames collects every identifier a function subtree declares:
-// receiver/param/result names, := targets, local var/const/type names, and
-// range variables — including declarations inside nested function
-// literals, so the set over-approximates shadowing.
-func declaredNames(root ast.Node) map[string]bool {
-	out := map[string]bool{}
-	ast.Inspect(root, func(n ast.Node) bool {
-		switch d := n.(type) {
-		case *ast.FuncType:
-			for _, fl := range []*ast.FieldList{d.Params, d.Results} {
-				if fl == nil {
-					continue
-				}
-				for _, fld := range fl.List {
-					for _, nm := range fld.Names {
-						out[nm.Name] = true
-					}
-				}
-			}
-		case *ast.AssignStmt:
-			if d.Tok == token.DEFINE {
-				for _, lhs := range d.Lhs {
-					if id, ok := lhs.(*ast.Ident); ok {
-						out[id.Name] = true
-					}
-				}
-			}
-		case *ast.GenDecl:
-			for _, sp := range d.Specs {
-				switch s := sp.(type) {
-				case *ast.ValueSpec:
-					for _, nm := range s.Names {
-						out[nm.Name] = true
-					}
-				case *ast.TypeSpec:
-					out[s.Name.Name] = true
-				}
-			}
-		case *ast.RangeStmt:
-			if d.Tok == token.DEFINE {
-				for _, e := range []ast.Expr{d.Key, d.Value} {
-					if id, ok := e.(*ast.Ident); ok {
-						out[id.Name] = true
-					}
-				}
-			}
-		}
-		return true
-	})
-	if fd, ok := root.(*ast.FuncDecl); ok && fd.Recv != nil {
-		for _, fld := range fd.Recv.List {
-			for _, nm := range fld.Names {
-				out[nm.Name] = true
-			}
-		}
-	}
-	return out
-}
-
 // scanStubCalls inspects one declaration subtree for `alias.Sym(...)` calls
-// that reach unregistered stub members, skipping selector bases hidden by
-// the shadow set.
-func scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string, shadow map[string]bool, out *[]Result, deps Deps) {
+// that reach unregistered stub members, skipping selector bases a local
+// binding hides at the call's position.
+func scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string, locals *syntax.LocalScopes, out *[]Result, deps Deps) {
 	ast.Inspect(root, func(n ast.Node) bool {
-		if lit, ok := n.(*ast.FuncLit); ok && root != lit {
-			// A nested function literal introduces its own scope: scan it
-			// with the union of its declared names and the outer set.
-			merged := map[string]bool{}
-			for k := range shadow {
-				merged[k] = true
-			}
-			for k := range declaredNames(lit) {
-				merged[k] = true
-			}
-			scanStubCalls(ctx, lit, imports, merged, out, deps)
-			return false
-		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
@@ -181,8 +107,8 @@ func scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string
 		if !ok {
 			return true
 		}
-		if shadow[x.Name] {
-			return true // a function-local name hides the import binding
+		if locals.At(x.Name, x.Pos()) {
+			return true // a local binding hides the import here
 		}
 		path, ok := imports[x.Name]
 		if !ok {
