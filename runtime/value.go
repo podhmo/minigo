@@ -1358,9 +1358,11 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 		// interface's dynamic type lives in the payload — `type E
 		// error; E(err)` keys like err, and a nil E keys like nil.
 		// KindInterface covers literal interface decls; `type E error`
-		// and `type A any` stay KindNamedBasic, so the underlying
-		// spelling is the tell.
-		if x.Typ.Kind == KindInterface || ifaceUnderlyingSpell(TypUnderlyingSpelling(x.Typ)) {
+		// and `type A any` stay KindNamedBasic and answer through
+		// their declaration's resolved flag (a shadowed `type error =
+		// int` decl does not set it).
+		if x.Typ.Kind == KindInterface || x.Typ.IfaceBase ||
+			(x.Typ.Spec == nil && ifaceUnderlyingSpell(TypUnderlyingSpelling(x.Typ))) {
 			return typedKey{}, false
 		}
 		// a nil interface carries no dynamic type — `var e E` for
@@ -1474,6 +1476,12 @@ func typeTagOf(td *TypeDef) string {
 			if !strings.HasPrefix(name, td.Pkg.Path+".") {
 				name = td.Pkg.Path + "." + name
 			}
+		}
+		if td.Local && td.Spec != nil && td.Pkg != nil && td.Pkg.Fset != nil {
+			// func-local `type C chan int` decls share the pkg+name
+			// tag across scopes — Go gives each decl its own type, so
+			// the decl position splits them.
+			name = fmt.Sprintf("%s@%s", name, td.Pkg.Fset.Position(td.Spec.Name.Pos()))
 		}
 		if len(td.TParams) > 0 || len(td.OuterArgs) > 0 {
 			// an instantiated generic is a different type per type
@@ -2058,6 +2066,14 @@ type TypeDef struct {
 	// in two different functions are distinct types (unlike package-level
 	// types, which dedupe by package path + name).
 	Local bool
+
+	// IfaceBase marks a declared type whose underlying type is an
+	// interface — `type E error`, `type A any`, and interface-decl
+	// chains resolve this at declaration time: a Named value tagged
+	// with it carries no static map-key tag — the payload's dynamic
+	// type decides. (KindInterface covers literal interface decls;
+	// this covers the ident-spelled ones KindNamedBasic keeps.)
+	IfaceBase bool
 
 	// Gen is the decl's `·gen` index — gc numbers each non-alias
 	// function-local type in package source order and spells it inside
@@ -3378,7 +3394,10 @@ func packageTypeSpec(fn *Function, name string) *ast.TypeSpec {
 
 // ifaceUnderlyingSpell reports whether s spells an interface type —
 // [TypUnderlyingSpelling] renders `type E error` as "error" and
-// `type A any` / `interface{...}` decls under "interface{".
+// `type A any` / `interface{...}` decls under "interface{". Decls
+// minted through a resolver set [TypeDef.IfaceBase] instead, which a
+// shadowed builtin name answers correctly; the spelling stays for
+// typedefs synthesized without decl context.
 func ifaceUnderlyingSpell(s string) bool {
 	return s == "error" || strings.HasPrefix(s, "interface{")
 }
