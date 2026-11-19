@@ -44,6 +44,7 @@ import (
 	"github.com/podhmo/minigo/internal/assetaudit"
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/execution"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/resolve"
@@ -391,7 +392,7 @@ func (e *Engine) newVM() *vm.VM {
 		DeferredValueTyp: e.valueTypOf,
 		HostTwin:         e.hostTwin,
 		Linkname:         e.linknameTarget,
-		HostErr:          hostErrOf,
+		HostErr:          hostbridge.HostErrOf,
 	}}
 }
 

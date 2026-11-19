@@ -33,122 +33,6 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// hostArgAsChecked is hostArgAs reporting a mismatch as gc's template
-// error, `wrong type for value; expected T; got U`, rather than a trap.
-func (v *VM) hostArgAsChecked(x runtime.Value, td *runtime.TypeDef, spell string) (r runtime.Value, err error) {
-	defer func() {
-		if p := recover(); p != nil {
-			if _, ok := p.(*runtime.Trap); !ok {
-				panic(p)
-			}
-			r, err = nil, fmt.Errorf("wrong type for value; expected %s; got %s", spell, typeNameOf(x))
-		}
-	}()
-	arg := x
-	if u := v.peelNamed(td); u != nil && u.Kind != runtime.KindPointer && u.Kind != runtime.KindInterface {
-		// like the template engine's own indirection: a pointer argument
-		// fits a parameter of its pointee type.
-		switch x.(type) {
-		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
-			if dv, ok := runtime.Deref(x); ok {
-				arg = dv
-			}
-		}
-	}
-	return v.hostArgAs(&frame{fn: &runtime.Function{Name: "<template func>"}, v: v, base: len(v.vals)}, arg, td, 0), nil
-}
-
-// hostArgAs lifts x, an argument that crossed the host as `any`, to the
-// value of the script type td a parameter declares. A script container
-// reached the host as the generic []any / map[any]any projection (see
-// deepHost), which a `[]Pt` or `map[string]Pt` parameter rejects; here
-// its elements convert to the declared element type and the container
-// takes the declared type, recursively. Whatever does not fit traps, as
-// coerce does for a callee's own parameter binding.
-func (v *VM) hostArgAs(fr *frame, x runtime.Value, td *runtime.TypeDef, depth int) runtime.Value {
-	utd := v.peelNamed(td)
-	if utd == nil || depth > 8 {
-		return x
-	}
-	switch utd.Kind {
-	case runtime.KindSlice:
-		switch s := x.(type) {
-		case *runtime.TypedNil:
-			if hostGenericTyp(s.Typ) {
-				x = &runtime.TypedNil{Typ: td}
-			}
-		case *runtime.Slice:
-			if et := v.elemTypedef(nil, utd); et != nil && !s.Virtual() && hostGenericTyp(s.Typ) {
-				// an array parameter takes only a value of its length
-				if n, isArr := v.arrayLen(fr, utd); isArr && n != int64(len(s.Elems)) {
-					fr.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
-				}
-				elems := make([]runtime.Value, len(s.Elems))
-				for i, e := range s.Elems {
-					elems[i] = v.hostArgAs(fr, e, et, depth+1)
-				}
-				x = &runtime.Slice{Elems: elems}
-			}
-		}
-	case runtime.KindMap:
-		switch m := x.(type) {
-		case *runtime.TypedNil:
-			if hostGenericTyp(m.Typ) {
-				x = &runtime.TypedNil{Typ: td}
-			}
-		case *runtime.Map:
-			kt, et := v.mapKeyTypedef(nil, utd), v.elemTypedef(nil, utd)
-			if kt != nil && et != nil && (m.Typ == nil || hostGenericTyp(m.Typ)) {
-				ku := v.peelNamed(kt)
-				out := runtime.NewMap(nil, ku != nil && ku.Kind == runtime.KindInterface)
-				for i := 0; i < m.Len(); i++ {
-					k, e := m.At(i)
-					out.Insert(v.hostArgAs(fr, k, kt, depth+1), v.hostArgAs(fr, e, et, depth+1))
-				}
-				x = out
-			}
-		}
-	}
-	r := v.coerce(fr, x, td)
-	if _, ok := r.(*runtime.Struct); ok {
-		// coerce copied the struct; an element of a slice the callee
-		// writes through must stay the caller's own, as in Go (the
-		// callee's parameter binding copies it again where Go would).
-		if _, ok := x.(*runtime.Struct); ok {
-			return x
-		}
-	}
-	return r
-}
-
-// hostGenericTyp reports whether td is the type a generic host
-// projection carries — []any or map[any]any, or none at all — the shapes
-// hostArgAs lifts (a script value of a declared type is left to coerce).
-func hostGenericTyp(td *runtime.TypeDef) bool {
-	if td == nil {
-		return true
-	}
-	if td.Name != "" {
-		return false
-	}
-	isAny := func(e ast.Expr) bool {
-		switch t := e.(type) {
-		case *ast.Ident:
-			return t.Name == "any"
-		case *ast.InterfaceType:
-			return t.Methods == nil || len(t.Methods.List) == 0
-		}
-		return false
-	}
-	switch t := td.Anon.(type) {
-	case *ast.ArrayType:
-		return t.Len == nil && isAny(t.Elt)
-	case *ast.MapType:
-		return isAny(t.Key) && isAny(t.Value)
-	}
-	return false
-}
-
 // typedefOf unwraps references down to a *TypeDef, or nil.
 func typedefOf(v runtime.Value) *runtime.TypeDef {
 	for {
@@ -1604,3 +1488,51 @@ var builtinTypeNames = map[string]bool{
 }
 
 func isBuiltinTypeName(n string) bool { return builtinTypeNames[n] }
+
+// hostArgAs lifts x for a host parameter — the frame-dependent hooks go
+// to hostbridge.Lift through ArgAsHooks built per call.
+func (v *VM) hostArgAs(fr *frame, x runtime.Value, td *runtime.TypeDef, depth int) runtime.Value {
+	return hostbridge.Lift(x, td, &hostbridge.ArgAsHooks{
+		PeelNamed: v.peelNamed,
+		ElemOf: func(td *runtime.TypeDef) *runtime.TypeDef {
+			return v.elemTypedef(nil, td)
+		},
+		MapKeyOf: func(td *runtime.TypeDef) *runtime.TypeDef {
+			return v.mapKeyTypedef(nil, td)
+		},
+		ArrayLen: func(td *runtime.TypeDef) (int64, bool) {
+			return v.arrayLen(fr, td)
+		},
+		Coerce: func(x runtime.Value, td *runtime.TypeDef) runtime.Value {
+			return v.coerce(fr, x, td)
+		},
+		Trap:       fr.trap,
+		TypeNameOf: typeNameOf,
+		TdName:     tdName,
+	}, depth)
+}
+
+// hostArgAsChecked is hostArgAs reporting a mismatch as gc's template
+// error, `wrong type for value; expected T; got U`, rather than a trap.
+func (v *VM) hostArgAsChecked(x runtime.Value, td *runtime.TypeDef, spell string) (r runtime.Value, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			if _, ok := p.(*runtime.Trap); !ok {
+				panic(p)
+			}
+			r, err = nil, fmt.Errorf("wrong type for value; expected %s; got %s", spell, typeNameOf(x))
+		}
+	}()
+	arg := x
+	if u := v.peelNamed(td); u != nil && u.Kind != runtime.KindPointer && u.Kind != runtime.KindInterface {
+		// like the template engine's own indirection: a pointer argument
+		// fits a parameter of its pointee type.
+		switch x.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if dv, ok := runtime.Deref(x); ok {
+				arg = dv
+			}
+		}
+	}
+	return v.hostArgAs(&frame{fn: &runtime.Function{Name: "<template func>"}, v: v, base: len(v.vals)}, arg, td, 0), nil
+}

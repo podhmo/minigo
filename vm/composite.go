@@ -342,7 +342,7 @@ func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
-	if rt := reflect.TypeOf(hv).String(); opaqueContainers[rt] {
+	if rt := reflect.TypeOf(hv).String(); hostbridge.OpaqueContainers[rt] {
 		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return callOpaqueStore(rt, name, m, vc, args)
 		}
@@ -1035,7 +1035,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if !fv.CanSet() && !ownPkg {
 			f.trap("host value %T has no settable field %s", b.V, name)
 		}
-		nv, err := hostFieldValue(val, rv.Type(), name, fv.Type(), v)
+		nv, err := marshalHost.HostFieldValue(val, rv.Type(), name, fv.Type(), v)
 		if err != nil {
 			f.trap("set field %s: %s", name, err)
 		}
@@ -1234,7 +1234,7 @@ func (v *VM) hostIndexInt(f *frame, rv reflect.Value, idx runtime.Value) int {
 
 // hostMapKey converts idx to the key type of the host map rv.
 func (v *VM) hostMapKey(f *frame, rv reflect.Value, idx runtime.Value) reflect.Value {
-	kv, err := toReflectValue(v.materialize(f, idx), rv.Type().Key(), v)
+	kv, err := marshalHost.ToReflect(v.materialize(f, idx), rv.Type().Key(), v)
 	if err != nil {
 		f.trap("index %s with %T: %v", rv.Type(), idx, err)
 	}
@@ -1260,7 +1260,7 @@ func (v *VM) hostSetIndex(f *frame, b *runtime.GoValue, idx, val runtime.Value) 
 	default:
 		return false
 	}
-	ev, err := toReflectValue(v.materialize(f, val), rv.Type().Elem(), v)
+	ev, err := marshalHost.ToReflect(v.materialize(f, val), rv.Type().Elem(), v)
 	if err != nil {
 		f.trap("cannot use %T as %s value in assignment: %v", val, rv.Type().Elem(), err)
 	}

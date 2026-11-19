@@ -76,7 +76,7 @@ func StoreHostSlice(vc runtime.VMCaller, host, snap runtime.Value) error {
 	}
 	et := rv.Type().Elem()
 	for i := 0; i < len(s.Elems) && i < rv.Len(); i++ {
-		ev, err := toReflectValue(s.Elems[i], et, vc)
+		ev, err := marshalHost.ToReflect(s.Elems[i], et, vc)
 		if err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ func ReboxHostSlice(vc runtime.VMCaller, host, snap, res runtime.Value) runtime.
 			}
 		}
 	}
-	hv, err := toReflectValue(rs, rv.Type(), vc)
+	hv, err := marshalHost.ToReflect(rs, rv.Type(), vc)
 	if err != nil {
 		return res
 	}
@@ -123,7 +123,7 @@ func AppendHostSlice(vc runtime.VMCaller, host runtime.Value, add []runtime.Valu
 	et := rv.Type().Elem()
 	vals := make([]reflect.Value, len(add))
 	for i, a := range add {
-		ev, err := toReflectValue(a, et, vc)
+		ev, err := marshalHost.ToReflect(a, et, vc)
 		if err != nil {
 			return nil, fmt.Errorf("cannot use %T as %s value in append: %w", a, et, err)
 		}
@@ -143,7 +143,7 @@ func CopyIntoHostSlice(vc runtime.VMCaller, host runtime.Value, src []runtime.Va
 	et := rv.Type().Elem()
 	vals := make([]reflect.Value, n)
 	for i := range vals {
-		ev, err := toReflectValue(src[i], et, vc)
+		ev, err := marshalHost.ToReflect(src[i], et, vc)
 		if err != nil {
 			return 0, fmt.Errorf("cannot use %T as %s value in copy: %w", src[i], et, err)
 		}
@@ -180,7 +180,7 @@ func (v *VM) hostSliceConv(td *runtime.TypeDef, x runtime.Value) (runtime.Value,
 	}
 	switch s := x.(type) {
 	case *runtime.Slice:
-		hv, err := toReflectValue(s, rt, v)
+		hv, err := marshalHost.ToReflect(s, rt, v)
 		if err != nil {
 			return nil, true, err
 		}
@@ -215,7 +215,7 @@ func (v *VM) hostSliceLiteral(f *frame, td *runtime.TypeDef, rt reflect.Type, n 
 			}
 			next, e = int(idx), raw[2*i+1]
 		}
-		ev, err := toReflectValue(e, et, v)
+		ev, err := marshalHost.ToReflect(e, et, v)
 		if err != nil {
 			f.trap("cannot use %T as %s value in %s literal: %v", e, et, td.Name, err)
 		}

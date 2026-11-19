@@ -1024,7 +1024,7 @@ func callOrPanic(v runtime.ScriptCaller, fn runtime.Value, args []runtime.Value)
 func walkCallback(v runtime.MemberCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
 	sp := scriptPathOf(root, ap, p)
 	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
-	return hostErrOf(v, r)
+	return hostbridge.HostErrOf(v, r)
 }
 
 // hostBoxOf unwraps a host struct value (`var sb strings.Builder`,
@@ -1220,16 +1220,6 @@ func callBool(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) 
 // callInt runs a script cmp-style callback for its int result.
 func callInt(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) int64 {
 	return int64Of(callOrPanic(vc, fn, args))
-}
-
-// structField reads a script struct's field by name (NIL when absent).
-func structField(s *runtime.Struct, name string) runtime.Value {
-	for i, f := range s.Def.Fields {
-		if f == name && i < len(s.Fields) {
-			return s.Fields[i]
-		}
-	}
-	return runtime.NIL
 }
 
 // cellElemTyp reads the declared type held by a cell (the target of
