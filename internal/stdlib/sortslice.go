@@ -900,23 +900,7 @@ func HostSliceElems(x *runtime.GoValue) ([]runtime.Value, *runtime.TypeDef, bool
 
 func SortScript(el []runtime.Value) {
 	sort.Slice(el, func(i, j int) bool {
-		bv := builtin.OrderScalar(el[j])
-		switch a := builtin.OrderScalar(el[i]).(type) {
-		case int64:
-			if b, ok := bv.(int64); ok {
-				return a < b
-			}
-		case float64:
-			if b, ok := bv.(float64); ok {
-				// sort.Float64s orders NaN before all other values
-				return a < b || (math.IsNaN(a) && !math.IsNaN(b))
-			}
-		case string:
-			if b, ok := bv.(string); ok {
-				return a < b
-			}
-		}
-		return false
+		return LessScript(el[i], el[j])
 	})
 }
 
@@ -942,14 +926,12 @@ func ScriptElems(v any) []runtime.Value {
 // numbers < strings < others, comparing numerically across int64/float64).
 
 func LessScript(a, b runtime.Value) bool {
+	an, aok := scalarNum(a)
+	bn, bok := scalarNum(b)
 	a = builtin.OrderScalar(a)
 	b = builtin.OrderScalar(b)
-	an, aok := NumOf(a)
-	bn, bok := NumOf(b)
 	if aok && bok {
-		// NaN orders before all other values, like cmp.Compare —
-		// slices.Sort/IsSorted/Search share this ordering.
-		return an < bn || (math.IsNaN(an) && !math.IsNaN(bn))
+		return cmpNum(an, bn) < 0
 	}
 	if ab, ok := a.(bool); ok {
 		if bb, ok := b.(bool); ok {
@@ -970,6 +952,127 @@ func LessScript(a, b runtime.Value) bool {
 	return false
 }
 
+// numOrd is a scalar payload classified for ordering: exact integers
+// keep their full range (the float64 route folded a uint64 above
+// MaxInt64 and merged neighbours past 2^53), floats compare under
+// cmp.Compare's NaN-first rule.
+type numOrd struct {
+	cls int // 0 signed, 1 unsigned, 2 float
+	i   int64
+	u   uint64
+	f   float64
+}
+
+// scalarNum reads a script value's scalar payload for ordering; ok is
+// false for non-numeric payloads. The unsigned check runs before
+// OrderScalar peels the typedef tag — a uint64-tagged element carries
+// its bits as an int64 payload, and the typedef name, not the payload
+// sign, picks the unsigned domain.
+func scalarNum(v runtime.Value) (numOrd, bool) {
+	if n, ok := v.(*runtime.Named); ok && unsignedScalarName(runtime.BasicNameOf(n.Typ)) {
+		if i, ok := builtin.OrderScalar(n.V).(int64); ok {
+			return numOrd{cls: 1, u: uint64(i)}, true
+		}
+	}
+	v = builtin.OrderScalar(v)
+	switch n := v.(type) {
+	case *runtime.Named:
+		return scalarNum(n.V)
+	case *runtime.GoValue:
+		// an unsigned conversion past MaxInt64 keeps its bits boxed
+		// (vm.convertTo: `uint64(1.6e19)` reads via its host kind).
+		return scalarNum(n.V)
+	case *runtime.UConst:
+		// a constant ranks as its default-typed numeric.
+		if f, ok := builtin.ArgFloat(n); ok {
+			return numOrd{cls: 2, f: f}, true
+		}
+	case int64:
+		return numOrd{i: n}, true
+	case float64:
+		return numOrd{cls: 2, f: n}, true
+	case uint64:
+		return numOrd{cls: 1, u: n}, true
+	case time.Duration:
+		return numOrd{i: int64(n)}, true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return numOrd{i: rv.Int()}, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return numOrd{cls: 1, u: rv.Uint()}, true
+	case reflect.Float32, reflect.Float64:
+		return numOrd{cls: 2, f: rv.Float()}, true
+	}
+	return numOrd{}, false
+}
+
+// unsignedScalarName mirrors vm's unsignedName — the typedef spellings
+// whose int64 payloads mean unsigned bits.
+func unsignedScalarName(name string) bool {
+	switch name {
+	case "uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	}
+	return false
+}
+
+// cmpNum orders two numOrds: a float anywhere pulls the pair onto
+// float64 (NaN first, like cmp.Compare); a negative signed value
+// ranks below every unsigned one; otherwise the payloads compare
+// exactly. ±0 stay equal — slices.Max/Min apply the signed-zero
+// preference on top.
+func cmpNum(a, b numOrd) int {
+	if a.cls == 2 || b.cls == 2 {
+		fa, fb := a.f, b.f
+		if a.cls != 2 {
+			fa = float64(a.u)
+			if a.cls == 0 {
+				fa = float64(a.i)
+			}
+		}
+		if b.cls != 2 {
+			fb = float64(b.u)
+			if b.cls == 0 {
+				fb = float64(b.i)
+			}
+		}
+		if math.IsNaN(fa) {
+			if math.IsNaN(fb) {
+				return 0
+			}
+			return -1
+		}
+		if math.IsNaN(fb) {
+			return 1
+		}
+		return cmp.Compare(fa, fb)
+	}
+	if a.cls == 1 || b.cls == 1 {
+		an, aok := a.u, a.cls == 1
+		bn, bok := b.u, b.cls == 1
+		if a.cls == 0 {
+			aok = a.i >= 0
+			an = uint64(a.i)
+		}
+		if b.cls == 0 {
+			bok = b.i >= 0
+			bn = uint64(b.i)
+		}
+		if aok != bok {
+			if !aok {
+				return -1
+			}
+			return 1
+		}
+		if aok {
+			return cmp.Compare(an, bn)
+		}
+		return cmp.Compare(a.i, b.i)
+	}
+	return cmp.Compare(a.i, b.i)
+}
+
 // ScriptSortable is the sort.Interface view of a script object.
 
 type ScriptSortable struct {
@@ -983,12 +1086,12 @@ type ScriptSortable struct {
 // compare exactly — the float64 route would merge neighbours past 2^53.
 
 func CmpScript(a, b runtime.Value) int64 {
-	a, b = builtin.OrderScalar(a), builtin.OrderScalar(b)
-	if x, ok := a.(int64); ok {
-		if y, ok := b.(int64); ok {
-			return int64(cmp.Compare(x, y))
+	if an, aok := scalarNum(a); aok {
+		if bn, bok := scalarNum(b); bok {
+			return int64(cmpNum(an, bn))
 		}
 	}
+	a, b = builtin.OrderScalar(a), builtin.OrderScalar(b)
 	switch {
 	case LessScript(a, b):
 		return -1
