@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"strings"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
@@ -159,6 +160,16 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 	c := &compiler{pkg: fn.Pkg, file: fn.File, fs: newFScope(nil), ch: &bytecode.Chunk{Name: fn.Name}, labels: map[string]*labelInfo{}, binds: fn.Binds, symName: fn.Name, iotaVal: -1, strictLazy: strict}
 	if fn.Pkg != nil {
 		c.symName = fn.Pkg.Name + "." + fn.Name
+		if fn.Recv != "" {
+			// method symbol names carry the receiver Go-style —
+			// `pkg.(*T).m` — so a funclit inside a method spells
+			// `pkg.(*T).m.funcN` like the toolchain's.
+			recv := fn.Recv
+			if fn.PtrRecv {
+				recv = "(*" + recv + ")"
+			}
+			c.symName = fn.Pkg.Name + "." + recv + "." + strings.TrimPrefix(fn.Name, fn.Recv+".")
+		}
 	}
 	c.fs.pushBlock()
 

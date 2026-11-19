@@ -2127,6 +2127,7 @@ func TestScriptProfiler(t *testing.T) {
 	e := minigo.NewEngine(".", minigo.WithScriptProfiler(p))
 	run(t, e, "./testdata/scriptprof", "Main")
 	run(t, e, "./testdata/scriptprof", "Closure")
+	run(t, e, "./testdata/scriptprof", "MethodClosure")
 	recvMs, _ := run(t, e, "./testdata/scriptprof", "Ops").(int64)
 	p.Stop()
 	path := filepath.Join(t.TempDir(), "script.pprof")
@@ -2154,12 +2155,14 @@ func TestScriptProfiler(t *testing.T) {
 		"spin loop line":  strings.Contains(top, "main.(*T).spin") && strings.Contains(top, "scriptprof/main.go:10"),
 		"parked excluded": !profHasFuncAtLine(top, "main.parked", recvLine),
 		"closure name":    strings.Contains(top, " main.Closure.func1 "),
+		// a closure inside a pointer-receiver method names it Go-style
+		"method closure": strings.Contains(top, "main.(*T).methodClosure.func1"),
 		// the deferred Sleep lands on the defer statement's line
 		"deferred host call": profFlatMs(top, "main.slowDefer ") >= 100,
 		// non-blocking channel ops are run time, not parked time
 		"quick channel ops": profFlatMs(top, "main.recvLoop ") >= float64(recvMs)/2,
 	}
-	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true, "deferred host call": true, "quick channel ops": true}
+	want := map[string]bool{"spin loop line": true, "parked excluded": true, "closure name": true, "method closure": true, "deferred host call": true, "quick channel ops": true}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("profile mismatch (-want +got):\n%s\n%s", diff, top)
 	}
