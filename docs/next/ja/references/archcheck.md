@@ -117,3 +117,19 @@ import とセレクタ名の検査では、コールバック経由の実行が�
   `generic.go` の intern、`const.go` の materialize、`assert.go`、
   `composite.go`/`binop.go`/`convert.go` の typedef 解決・dispatch、
   `panic.go`/`vm.go`/`call.go` の断片、テスト。
+
+### P2-7f（部分）: host 呼び出しパス（hostbridge/callhost.go, snapshot.go）
+
+- `CallHooks`: `BindCaller`（bindCaller）・`Parks`（parkingHostMethods
+  参照）・`ProcDone`・`ProcOf`・`Park`（vcPark）・`Exit`（procExit）・
+  `MaskInt`（maskInt+sizedNameOf）・`Materialize`（materializeDefault）・
+  `GoroutineID` を束ね、`v`/`f` を持たない CallerRef 起点で組み立てる
+  （`callHooksOf(vc)`）。
+- 移動したもの: `Marshal.CallReflectFunc`（arity/variadic/CallSlice +
+  blocking host method の proc-done join + write-back）、
+  `Marshal.CallOpaqueStore`、`goResults`、`argBack`/`sliceArg`/`refArg`/
+  `scalarPayload`/`unchangedScalar`/`retagElem`/`mapElemPtrs`、
+  `SnapshotOf`/`snapshotValue`。
+- vm には `callReflectFunc`/`callOpaqueStore`/`SnapshotOf` の薄い wrapper
+  を残す（hostZeroMethod・composite・call・panic の呼び出し元と
+  minigo.go の公開 API）。
