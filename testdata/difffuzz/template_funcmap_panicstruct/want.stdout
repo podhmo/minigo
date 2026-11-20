@@ -1,2 +1,3 @@
 ERR: template: t:1:2: executing "t" at <boom>: error calling boom: {x}
 ERR: template: t2:1:2: executing "t2" at <boomPtr>: error calling boomPtr: &{x}
+ERR: template: t3:1:2: executing "t3" at <boomVar>: error calling boomVar: {x}
