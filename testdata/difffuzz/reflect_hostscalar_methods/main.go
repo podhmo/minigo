@@ -26,5 +26,10 @@ func main() {
 	tv := reflect.TypeFor[*reflect.Value]()
 	_, ok = tv.MethodByName("APIType")
 	fmt.Println(ok)
+	_, ok = tv.MethodByName("IsValid")
+	fmt.Println(ok)
+	mi := reflect.TypeFor[*reflect.MapIter]()
+	_, ok = mi.MethodByName("Next")
+	fmt.Println(mi.NumMethod(), ok)
 	fmt.Println(reflect.TypeFor[P]().NumMethod())
 }

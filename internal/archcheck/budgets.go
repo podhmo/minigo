@@ -142,7 +142,7 @@ var FileBudgets = map[string]int{
 	"minireflect/minireflect.go":               1186,
 	"minireflect/rtype.go":                      1959,
 	"minireflect/minireflect.go":                1183,
-	"minireflect/rtype.go":                      1991,
+	"minireflect/rtype.go":                      2022,
 	"minireflect/rvalue.go":                     3758,
 	"minireflect/rvalue_mexpr.go":               53,
 	"native.go":                                 97,
