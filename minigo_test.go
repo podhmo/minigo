@@ -4082,6 +4082,14 @@ func greet() string {
 	return "hello"
 }
 `,
+		// a same-package alternative: a list naming it is a
+		// different program over the same directory
+		"c.go": `package main
+
+func greet() string {
+	return "bye"
+}
+`,
 	}
 	var names []string
 	for name, src := range files {
@@ -4089,7 +4097,9 @@ func greet() string {
 		if err := os.WriteFile(abs, []byte(src), 0644); err != nil {
 			t.Fatal(err)
 		}
-		names = append(names, abs)
+		if name != "c.go" { // the alternative stays out of the first list
+			names = append(names, abs)
+		}
 	}
 	sort.Strings(names)
 
@@ -4098,8 +4108,34 @@ func greet() string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "hello" {
-		t.Fatalf("got %v, want hello", got)
+	if diff := cmp.Diff("hello", got); diff != "" {
+		t.Fatalf("RunFiles result mismatch (-want +got):\n%s", diff)
+	}
+
+	// a different list over the same directory is a different
+	// program — the earlier list's package must not be replayed
+	cList := []string{names[0], filepath.Join(root, "c.go")}
+	got, err = e.RunFiles(context.Background(), cList, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("bye", got); diff != "" {
+		t.Fatalf("RunFiles second list mismatch (-want +got):\n%s", diff)
+	}
+
+	// a .go symlink inside the allowed root names its target —
+	// a target outside the root is refused
+	outside := t.TempDir()
+	evil := filepath.Join(outside, "evil.go")
+	if err := os.WriteFile(evil, []byte("package main\n\nfunc greet() string { return \"evil\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.go")
+	if err := os.Symlink(evil, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RunFiles(context.Background(), []string{names[0], link}, "main"); err == nil {
+		t.Fatal("expected an allowed-roots error for a symlinked file outside the root")
 	}
 
 	// different package clauses in the list are rejected

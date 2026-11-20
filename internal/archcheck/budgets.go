@@ -138,7 +138,7 @@ var FileBudgets = map[string]int{
 	"repl/repl.go":                                 1259,
 	"replhooks.go":                                 55,
 	"resolve/filescope.go":                         117,
-	"resolve/goscan.go":                            186,
+	"resolve/goscan.go":                            201,
 	"resolve/lang.go":                              87,
 	"resolve/repo.go":                              201,
 	"resolve/resolve.go":                           298,

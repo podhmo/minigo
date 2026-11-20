@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/podhmo/minigo/pkg/locator"
@@ -134,7 +135,13 @@ func (r *GoScanResolver) LocateFiles(ctx context.Context, files []string) (*Pack
 		if !strings.HasSuffix(abs, ".go") {
 			return nil, fmt.Errorf("named files must be .go files: %s", file)
 		}
-		if err := r.cfg.CheckDir(filepath.Dir(abs)); err != nil {
+		// spell the real file before the root check and stat: a .go
+		// symlink inside an allowed root names its target, which may
+		// live outside.
+		if abs, err = resolveSymlinkNearest(abs); err != nil {
+			return nil, err
+		}
+		if err := r.cfg.CheckPath(abs); err != nil {
 			return nil, err
 		}
 		st, err := os.Stat(abs)
@@ -169,8 +176,16 @@ func (r *GoScanResolver) LocateFiles(ctx context.Context, files []string) (*Pack
 	if len(gofiles) == 1 {
 		return r.locateFile(gofiles[0])
 	}
+	// the file list is part of the synthetic path: two lists over one
+	// directory are different programs and must not share the build
+	// cache entry.
+	names := make([]string, len(gofiles))
+	for i, g := range gofiles {
+		names[i] = filepath.Base(g)
+	}
+	sort.Strings(names)
 	return &PackageMeta{
-		ImportPath: FileImportPrefix + filepath.ToSlash(dir),
+		ImportPath: FileImportPrefix + filepath.ToSlash(dir) + "#" + strings.Join(names, ","),
 		Name:       name,
 		Dir:        dir,
 		GoFiles:    gofiles,
