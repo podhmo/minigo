@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -211,6 +212,29 @@ func scanWindows(root string, size int) ([]string, error) {
 	return out, nil
 }
 
+// selfDup splits a same-file window pair "hash@file|file#N" into its
+// "hash@file|file" prefix and copy count.
+func selfDup(x string) (string, int, bool) {
+	i := strings.LastIndexByte(x, '#')
+	if i < 0 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(x[i+1:])
+	if err != nil {
+		return "", 0, false
+	}
+	pre := x[:i]
+	a, bb, ok := strings.Cut(pre, "|")
+	if !ok {
+		return "", 0, false
+	}
+	_, fa, ok := strings.Cut(a, "@")
+	if !ok || fa != bb {
+		return "", 0, false
+	}
+	return pre, n, true
+}
+
 // pairIDs normalizes gosimilarity's pairs to "file:name|file:name".
 func pairIDs(g *gsOutput) []string {
 	decl := map[string]gsDecl{}
@@ -303,11 +327,25 @@ func main() {
 		os.Exit(1)
 	}
 	known := setOf(append(append([]string{}, b.Pairs...), b.Windows...))
+	// same-file window pairs carry the copy count ("h@f|f#N"): the
+	// ratchet fails a pair whose count grew past the baseline's but
+	// lets a shrink through — removing copies must never be a
+	// regression.
+	knownSelf := map[string]int{}
+	for _, x := range b.Windows {
+		if pre, n, ok := selfDup(x); ok && n > knownSelf[pre] {
+			knownSelf[pre] = n
+		}
+	}
 	var news []string
 	for _, x := range append(append([]string{}, pairs...), windows...) {
-		if !known[x] {
-			news = append(news, x)
+		if known[x] {
+			continue
 		}
+		if pre, n, ok := selfDup(x); ok && knownSelf[pre] >= n {
+			continue
+		}
+		news = append(news, x)
 	}
 	if len(news) > 0 {
 		fmt.Fprintf(os.Stderr, "simcheck: %d new duplicate(s) vs the baseline:\n", len(news))
