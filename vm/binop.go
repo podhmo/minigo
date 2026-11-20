@@ -539,8 +539,19 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 			ca.SetMemo(key, r) // comparisons fold to an untyped bool
 			return r
 		}
-		// unfoldable — division by zero, mismatched kinds — falls
-		// through to the runtime path for its own trap.
+		// a divisor that reads zero in the tag's domain — literal or
+		// rounded there (`float32(1) / 1e-50`) — is gc's constant
+		// division-by-zero reject; the runtime path would mint +Inf.
+		if op == bytecode.BinQuo || op == bytecode.BinRem {
+			zb := constInKind(cb, tn).V
+			zero := zb.Kind() == constant.Complex && constant.Compare(zb, token.EQL, constant.MakeImag(constant.MakeInt64(0))) ||
+				zb.Kind() != constant.Complex && numericConstKind(zb.Kind()) && constant.Sign(zb) == 0
+			if zero {
+				f.trap("constant division by zero")
+			}
+		}
+		// unfoldable — mismatched kinds — falls through to the
+		// runtime path for its own trap.
 	}
 	// complex values operate in the complex domain: complex64 wins over
 	// complex128, ordered comparisons are a compile reject in Go.
