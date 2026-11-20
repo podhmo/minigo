@@ -55,10 +55,25 @@ func (v *VM) hostStructBox(x runtime.Value, u, srcTag *runtime.TypeDef) (*runtim
 		return nil, false
 	}
 	want := hostbridge.TypeOf(u.HostNew())
-	if want == nil || want.Kind() != hostbridge.KindPtr {
+	if want == nil {
+		return nil, false
+	}
+	// a bound type's HostNew spells its struct either as T (time.Time)
+	// or *T (bytes.Buffer); the value a T box may hold is T either way.
+	wantT := want
+	if want.Kind() == hostbridge.KindPtr {
+		wantT = want.Elem()
+	}
+	if wantT.Kind() != hostbridge.KindStruct {
 		return nil, false
 	}
 	rt := hostbridge.TypeOf(gv.V)
+	// a T-typed source's box holds T or *T — `var b T` storage and a
+	// snapshot alike are the struct's storage either way.
+	rtT := rt
+	if rt != nil && rt.Kind() == hostbridge.KindPtr {
+		rtT = rt.Elem()
+	}
 	if srcTag != nil {
 		// the declared tag names the source's type: a `var b T` slot
 		// tags T (peels to u); a *T tag peels to a pointer, not u.
@@ -66,12 +81,12 @@ func (v *VM) hostStructBox(x runtime.Value, u, srcTag *runtime.TypeDef) (*runtim
 		if tag == nil {
 			tag = srcTag
 		}
-		if !sameTypeDef(tag, u) || rt != want {
+		if !sameTypeDef(tag, u) || rtT != wantT {
 			return nil, false
 		}
 		return gv, true
 	}
-	if rt == want.Elem() {
+	if rt == wantT {
 		return gv, true
 	}
 	return nil, false
