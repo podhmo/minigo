@@ -13,8 +13,10 @@ import (
 	"io"
 	"math"
 	"net/url"
+	"os"
 	"os/exec"
 	"path"
+	"reflect"
 	"regexp"
 	goruntime "runtime"
 	"slices"
@@ -88,6 +90,18 @@ func SlicesSortInPlace() string {
 // assertion lives in the test, which captures the buffer.
 func Prints() int {
 	fmt.Println("hello", 42)
+	return 0
+}
+
+// StdoutReflectWrite drives os.Stdout through the reflect method
+// expression — the facade's Write must still reach the engine's
+// configured output, not the process fd.
+func StdoutReflectWrite() int {
+	m, ok := reflect.TypeOf(os.Stdout).MethodByName("WriteString")
+	if !ok {
+		return -1
+	}
+	m.Func.Call([]reflect.Value{reflect.ValueOf(os.Stdout), reflect.ValueOf("reflect 7\n")})
 	return 0
 }
 
