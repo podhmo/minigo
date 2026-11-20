@@ -89,7 +89,9 @@ func Lift(x runtime.Value, td *runtime.TypeDef, h *ArgAsHooks, depth int) runtim
 				for i, e := range s.Elems {
 					elems[i] = Lift(e, et, h, depth+1)
 				}
-				x = &runtime.Slice{Elems: elems}
+				// keep Host: element stores through SetElem still write
+				// the shared host backing (`buf.Bytes()` round-trip).
+				x = &runtime.Slice{Elems: elems, Host: s.Host}
 			}
 		}
 	case runtime.KindMap:
