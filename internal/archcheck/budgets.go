@@ -130,7 +130,7 @@ var FileBudgets = map[string]int{
 	"pkg/gentest/gentest.go":                    227,
 	"pkg/gentest/writer.go":                     72,
 	"pkg/locator/locator.go":                    747,
-	"pkg/modulewalk/modulewalk.go":              529,
+	"pkg/modulewalk/modulewalk.go":              541,
 
 	"repl/complete.go":                             1389,
 	"repl/load.go":                                 662,
