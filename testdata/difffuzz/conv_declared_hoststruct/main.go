@@ -34,7 +34,38 @@ func main() {
 	q := Q(p)
 	(*bytes.Buffer)(q).WriteString("!")
 	fmt.Println((*bytes.Buffer)(p).String())
+	// a declared func's result converts like the literal: its static
+	// type is the callee's signature, not the *T box shape.
+	mc := MyBuf(makeBuffer())
+	fmt.Println((*bytes.Buffer)(&mc).Len())
+	// a generic callee's `*T` result must not poison the outer call's
+	// arg typing.
+	fmt.Println(*g(pointer(1)))
+	shadowP()
 }
 
 type P *bytes.Buffer
 type Q P
+
+func makeBuffer() bytes.Buffer {
+	var b bytes.Buffer
+	b.WriteString("zz")
+	return b
+}
+
+func pointer[T any](x T) *T { return &x }
+func g[T any](x *T) *T      { return x }
+
+// a function-local type name shadows the package name an index-chased
+// ident resolves to: Q -> B -> package P (*bytes.Buffer) shares.
+type B P
+
+func shadowP() {
+	type P bytes.Buffer
+	type Q B
+	bp := B(bytes.NewBufferString("hi"))
+	q := Q(bp)
+	other := q
+	(*bytes.Buffer)(other).WriteString("!")
+	fmt.Println((*bytes.Buffer)(q).String())
+}
