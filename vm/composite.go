@@ -339,7 +339,11 @@ func (v *VM) hostMember(f *frame, hv any, name string, sites ...*bytecode.Global
 	if len(sites) > 0 {
 		site = sites[0]
 	}
-	if site != nil {
+	// A ScriptMethoder's answers are instance-scoped — a same-type
+	// sibling can carry a different script method set — so it neither
+	// reads nor writes the type-level site cache.
+	_, isSM := hv.(runtime.ScriptMethoder)
+	if site != nil && !isSM {
 		rt := hostbridge.TypeOf(hv)
 		if slot, _ := site.Cache.Load().(*selectSlot); slot != nil && slot.rt == rt && slot.name == name && slot.res != nil {
 			switch slot.res.kind {
@@ -351,10 +355,27 @@ func (v *VM) hostMember(f *frame, hv any, name string, sites ...*bytecode.Global
 		}
 	}
 	val, res := v.hostMemberRes(f, hv, name)
-	if site != nil && res != nil {
+	if site != nil && res != nil && !isSM && !(res.kind == selHostMiss && hostNil(hv)) {
 		site.Cache.Store(&selectSlot{rt: hostbridge.TypeOf(hv), name: name, res: res})
 	}
 	return val, val != nil
+}
+
+// hostNil reports whether hv is a nil-able host value holding nil. A
+// member miss against it is value-dependent — a non-nil sibling of the
+// same type can still resolve the field — so the site must not record
+// it at type level.
+func hostNil(hv any) bool {
+	rv := hostbridge.RVOf(hv)
+	if !rv.IsValid() {
+		return true
+	}
+	switch rv.Kind() {
+	case hostbridge.KindPtr, hostbridge.KindUnsafePointer, hostbridge.KindInterface,
+		hostbridge.KindSlice, hostbridge.KindMap, hostbridge.KindChan, hostbridge.KindFunc:
+		return rv.IsNil()
+	}
+	return false
 }
 
 // hostMemberRes runs the full member resolution, reporting the
