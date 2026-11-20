@@ -299,10 +299,21 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string, spreads map[ast.E
 				// the arg reads as an Ident, so emit the call with
 				// the source call's flag.
 				c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, call.Pos())
-				for _, a := range subArgs {
+				for i, a := range subArgs {
+					var src ast.Expr
+					if i < len(uc.Args) {
+						src = uc.Args[i]
+					}
+					if _, isCall := ast.Unparen(src).(*ast.CallExpr); isCall {
+						c.spreadTuple = true
+					}
 					c.expr(a)
+					c.spreadTuple = false
 				}
 				c.emit3(bytecode.OpCall, len(uc.Args), 2, c.callSiteArgs(c.argHints(subArgs), call.Pos()), call.Pos())
+				if !spreads[call] {
+					c.emit(bytecode.OpRejectTuple, 0, 0, call.Pos())
+				}
 			} else {
 				if spreads[call] {
 					c.spreadTuple = true
@@ -605,27 +616,34 @@ func (c *compiler) callArgs(args []ast.Expr) {
 	// a lone call argument (`f(g())`) is the one legal result-tuple
 	// spread — the call op's mode-2 splice unpacks it — so arm
 	// spreadTuple for it; every other call lands its own OpRejectTuple.
-	// The eligibility is transitive through lone-arg chains
-	// (`f(g(h()))`) and keys on the SOURCE expr: under strict lazy an
-	// undecidable member call hoists even a lone argument into a
-	// scratch ident, whose deferredCallOperand re-emits the call.
-	var spreads map[ast.Expr]bool
-	if len(args) == 1 {
-		spreads = map[ast.Expr]bool{}
-		for a := args[0]; ; {
-			call, ok := ast.Unparen(a).(*ast.CallExpr)
+	// A call is eligible wherever it is the sole argument of a call —
+	// `sink("x", dep.F(pair()))` splices pair() into F legally — plus
+	// this call's own lone argument; the set keys on the SOURCE expr:
+	// under strict lazy an undecidable member call hoists even a lone
+	// argument into a scratch ident, whose deferredCallOperand re-emits
+	// the call.
+	spreads := map[ast.Expr]bool{}
+	for _, a := range args {
+		ast.Inspect(a, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
 			if !ok {
-				break
+				return true
 			}
+			if len(call.Args) == 1 {
+				if inner, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr); ok {
+					spreads[inner] = true
+				}
+			}
+			return true
+		})
+	}
+	if len(args) == 1 {
+		if call, ok := ast.Unparen(args[0]).(*ast.CallExpr); ok {
 			spreads[call] = true
-			if len(call.Args) != 1 {
-				break
-			}
-			a = call.Args[0]
 		}
-		if len(spreads) == 0 {
-			spreads = nil
-		}
+	}
+	if len(spreads) == 0 {
+		spreads = nil
 	}
 	emit := func(a ast.Expr, arm bool) {
 		if arm {
@@ -638,7 +656,7 @@ func (c *compiler) callArgs(args []ast.Expr) {
 	}
 	if subs, ok := c.hoistEagerOps(args, "$arg", spreads); ok {
 		for i, a := range subs {
-			emit(a, i < len(args) && spreads[args[i]])
+			emit(a, i < len(args) && spreads[ast.Unparen(args[i])])
 		}
 		return
 	}
