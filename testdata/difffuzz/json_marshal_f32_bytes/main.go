@@ -23,6 +23,11 @@ func main() {
 	p(B{104, 105})           // named []byte still base64
 	p([]MyByte{104, 105})    // named byte element still base64
 	p([3]byte{104, 105, 33}) // an array stays element-wise
+	p([]MJByte{104, 105})    // element marshaler demotes base64
 	p(map[string]float32{"x": 0.1})
 	p(S{F: 0.1})
 }
+
+type MJByte byte
+
+func (m MJByte) MarshalJSON() ([]byte, error) { return []byte(`"X!"`), nil }
