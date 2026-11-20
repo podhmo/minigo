@@ -137,23 +137,48 @@ func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
 			case bool:
 				return reflect.ValueOf(x), true
 			case int64:
-				ev := reflect.New(ifaceKindType(tag, reflect.Int)).Elem()
-				if ev.Kind() >= reflect.Int && ev.Kind() <= reflect.Int64 {
+				// the tag is honored only when its kind matches the
+				// payload family — a `type float32 int` shadow names a
+				// float kind for an int payload, and an unsigned tag's
+				// negative int64 is the host's high-bit value in two's
+				// complement (uint(1)<<63 unboxes as -2^63), not a
+				// negative number.
+				k := basicIfaceKinds[tag]
+				switch {
+				case k >= reflect.Int && k <= reflect.Int64:
+					ev := reflect.New(intKindType[k]).Elem()
+					if ev.OverflowInt(x) {
+						return reflect.Value{}, false
+					}
+					ev.SetInt(x)
+					return ev, true
+				case k >= reflect.Uint && k <= reflect.Uintptr:
+					ev := reflect.New(intKindType[k]).Elem()
+					if ev.OverflowUint(uint64(x)) {
+						return reflect.Value{}, false
+					}
+					ev.SetUint(uint64(x))
+					return ev, true
+				default:
+					ev := reflect.New(intKindType[reflect.Int]).Elem()
 					if ev.OverflowInt(x) {
 						return reflect.Value{}, false
 					}
 					ev.SetInt(x)
 					return ev, true
 				}
-				if ev.OverflowUint(uint64(x)) || x < 0 {
-					return reflect.Value{}, false
-				}
-				ev.SetUint(uint64(x))
-				return ev, true
 			case float64:
-				return reflect.ValueOf(x).Convert(ifaceKindType(tag, reflect.Float64)), true
+				k := basicIfaceKinds[tag]
+				if k != reflect.Float32 && k != reflect.Float64 {
+					k = reflect.Float64
+				}
+				return reflect.ValueOf(x).Convert(floatKindType[k]), true
 			case complex128:
-				return reflect.ValueOf(x).Convert(ifaceKindType(tag, reflect.Complex128)), true
+				k := basicIfaceKinds[tag]
+				if k != reflect.Complex64 && k != reflect.Complex128 {
+					k = reflect.Complex128
+				}
+				return reflect.ValueOf(x).Convert(complexKindType[k]), true
 			}
 		}
 	case reflect.String:
@@ -216,44 +241,21 @@ var basicIfaceKinds = map[string]reflect.Kind{
 	"complex64": reflect.Complex64, "complex128": reflect.Complex128,
 }
 
-// ifaceKindType is the concrete reflect.Type for a tag's kind,
-// defaulting to dflt when the tag named nothing basic.
-func ifaceKindType(tag string, dflt reflect.Kind) reflect.Type {
-	k := basicIfaceKinds[tag]
-	if k == reflect.Invalid {
-		k = dflt
-	}
-	switch k {
-	case reflect.Int:
-		return reflect.TypeOf(int(0))
-	case reflect.Int8:
-		return reflect.TypeOf(int8(0))
-	case reflect.Int16:
-		return reflect.TypeOf(int16(0))
-	case reflect.Int32:
-		return reflect.TypeOf(int32(0))
-	case reflect.Int64:
-		return reflect.TypeOf(int64(0))
-	case reflect.Uint:
-		return reflect.TypeOf(uint(0))
-	case reflect.Uint8:
-		return reflect.TypeOf(uint8(0))
-	case reflect.Uint16:
-		return reflect.TypeOf(uint16(0))
-	case reflect.Uint32:
-		return reflect.TypeOf(uint32(0))
-	case reflect.Uint64:
-		return reflect.TypeOf(uint64(0))
-	case reflect.Uintptr:
-		return reflect.TypeOf(uintptr(0))
-	case reflect.Float32:
-		return reflect.TypeOf(float32(0))
-	case reflect.Float64:
-		return reflect.TypeOf(float64(0))
-	case reflect.Complex64:
-		return reflect.TypeOf(complex64(0))
-	case reflect.Complex128:
-		return reflect.TypeOf(complex128(0))
-	}
-	return reflect.TypeOf(int(0))
+// intKindType / floatKindType / complexKindType map a reflect kind to
+// its concrete type for an interface write.
+var intKindType = map[reflect.Kind]reflect.Type{
+	reflect.Int: reflect.TypeOf(int(0)), reflect.Int8: reflect.TypeOf(int8(0)),
+	reflect.Int16: reflect.TypeOf(int16(0)), reflect.Int32: reflect.TypeOf(int32(0)),
+	reflect.Int64: reflect.TypeOf(int64(0)),
+	reflect.Uint:  reflect.TypeOf(uint(0)), reflect.Uint8: reflect.TypeOf(uint8(0)),
+	reflect.Uint16: reflect.TypeOf(uint16(0)), reflect.Uint32: reflect.TypeOf(uint32(0)),
+	reflect.Uint64: reflect.TypeOf(uint64(0)), reflect.Uintptr: reflect.TypeOf(uintptr(0)),
+}
+
+var floatKindType = map[reflect.Kind]reflect.Type{
+	reflect.Float32: reflect.TypeOf(float32(0)), reflect.Float64: reflect.TypeOf(float64(0)),
+}
+
+var complexKindType = map[reflect.Kind]reflect.Type{
+	reflect.Complex64: reflect.TypeOf(complex64(0)), reflect.Complex128: reflect.TypeOf(complex128(0)),
 }
