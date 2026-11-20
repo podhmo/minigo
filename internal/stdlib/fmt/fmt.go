@@ -184,15 +184,18 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 					}
 				}
 			}
-			spec, tail := rewriteTypeVerbs(spec, a, flat, 0, v)
+			spec, tail, raws := rewriteTypeVerbs(spec, a, flat, 0, v)
 			a = append(a[:1], tail...)
+			// indexes a directive's scan computes address the rebuilt
+			// slot list — raws carries each slot's raw value so star and
+			// reflect.Value checks read the same slot, not its old index.
 			rvalIdx := map[int]bool{}
-			for i, x := range flat[1:] {
+			for i, x := range raws {
 				if isRValueArg(x) {
 					rvalIdx[i] = true
 				}
 			}
-			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], flat[1:], bad, rvalIdx)
+			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], raws, bad, rvalIdx)
 			a = append(a[:1], a2...)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			// like gc: the shape follows the raw count of %w verbs that
@@ -264,7 +267,7 @@ func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string, stars []int
 // goes in as %-escaped literal text and the sibling verb consumes the
 // operand, leaving no EXTRA. bad lists one entry per %w in verb order,
 // "" for a good operand.
-func rewriteWrapVerbsOps(spec string, ops []any, flat []runtime.Value, bad []string, rvalIdx map[int]bool) (string, []any) {
+func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []string, rvalIdx map[int]bool) (string, []any) {
 	// opsLen is the operand count gc's argNum and [n] indexes span:
 	// operands appended mid-rewrite (a parked "" an rvalue star reads)
 	// must not become reachable by an OOB directive's MISSING/BADINDEX
@@ -453,8 +456,8 @@ func rewriteWrapVerbsOps(spec string, ops []any, flat []runtime.Value, bad []str
 	// also reads as a value keeps its marshalled form, or %T would lie.
 	for _, ev := range evs {
 		for _, st := range ev.stars {
-			if st < opsLen && !valUsed[st] && !rvalIdx[st] && st < len(flat) {
-				ops[st] = starOperand(ops[st], flat[st])
+			if st < opsLen && !valUsed[st] && !rvalIdx[st] && st < len(raws) {
+				ops[st] = starOperand(ops[st], raws[st])
 			}
 		}
 	}
@@ -833,7 +836,7 @@ func wffn(name string, formatAt, minArgs int, f func(runtime.VMCaller, []any, []
 				spec, ok = formatString(flat[formatAt])
 			}
 			if ok {
-				ns, tail := rewriteTypeVerbs(spec, a, flat, formatAt, v)
+				ns, tail, _ := rewriteTypeVerbs(spec, a, flat, formatAt, v)
 				a[formatAt] = ns
 				a = append(a[:formatAt+1], tail...)
 			}
@@ -1465,7 +1468,10 @@ func formatString(x runtime.Value) (string, bool) {
 // replace a[formatAt+1:] with the returned tail. Exotic mixes of %[n]
 // and * in one directive, or operands past the argument list, pass
 // through untouched.
-func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int, c runtime.MemberCaller) (string, []any) {
+// raws carries, for every slot of the returned args, the raw script
+// value it came from — the slot list is rebuilt in directive order so
+// an index into it is not the arg position a bare read would imply.
+func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt int, c runtime.MemberCaller) (string, []any, []runtime.Value) {
 	vals := rawArgs[formatAt+1:]
 	off := formatAt + 1
 	type dir struct {
@@ -1549,16 +1555,17 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	// original spec (and operands) so host fmt reports it as before.
 	for _, d := range dirs {
 		if d.starIdx || d.pos < 0 || d.pos >= len(vals) || off+d.pos >= len(a) {
-			return spec, a[off:]
+			return spec, a[off:], vals
 		}
 		for _, sp := range d.stars {
 			if sp < 0 || sp >= len(vals) || off+sp >= len(a) {
-				return spec, a[off:]
+				return spec, a[off:], vals
 			}
 		}
 	}
 	var sb strings.Builder
 	var na []any
+	var nraws []runtime.Value
 	prev := 0
 	for _, d := range dirs {
 		sb.WriteString(spec[prev:d.start])
@@ -1619,6 +1626,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		}
 		for _, sp := range stars {
 			na = append(na, starOperand(a[off+sp], vals[sp]))
+			nraws = append(nraws, vals[sp])
 		}
 		if badPrec && !pBadVerb {
 			// gc's marker precedes the formatted directive: write it
@@ -1635,6 +1643,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			sb.WriteString(flags)
 			sb.WriteByte('s')
 			na = append(na, ScriptTypeString(vals[d.pos]))
+			nraws = append(nraws, vals[d.pos])
 		case 'p':
 			if pBadVerb {
 				if badWidth {
@@ -1677,11 +1686,13 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 				sb.WriteByte('s')
 			}
 			na = append(na, spelling)
+			nraws = append(nraws, vals[d.pos])
 		default:
 			sb.WriteByte('%')
 			sb.WriteString(flags)
 			sb.WriteByte(d.verb)
 			na = append(na, a[off+d.pos])
+			nraws = append(nraws, vals[d.pos])
 		}
 		prev = d.end
 	}
@@ -1691,8 +1702,9 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	// any %[n] index reordered the arg list.
 	if !reordered {
 		na = append(na, a[off+maxArg:]...)
+		nraws = append(nraws, vals[maxArg:]...)
 	}
-	return sb.String(), na
+	return sb.String(), na, nraws
 }
 
 // formatOf rebuilds a fmt directive from the verb and the flags/width a
