@@ -302,8 +302,7 @@ func NilDerefUnsafe() int {
 }
 
 func UintptrToPtr() int {
-	var n int
+	var n = 7
 	a := uintptr(unsafe.Pointer(&n))
-	_ = unsafe.Pointer(a) // minigo boundary: no ref can be minted from an integer
-	return 0
+	return *(*int)(unsafe.Pointer(a))
 }

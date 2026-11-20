@@ -1611,6 +1611,27 @@ func hostPtrBox(x runtime.Value) bool {
 // it like gc's; a host box mints the host pointer itself.
 func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 	x = runtime.Unwrap(x)
+	if addr, ok := v.unsafePtrAddrOf(x); ok {
+		if v.unsafePtrMint == nil {
+			v.unsafePtrMint = map[uint64]runtime.Value{}
+		}
+		v.unsafePtrMint[addr] = x
+		return addr, true
+	}
+	return 0, false
+}
+
+// unsafePtrAddrOf computes the minted address itself — see unsafePtrAddr
+// for what each payload kind mints.
+func (v *VM) unsafePtrAddrOf(x runtime.Value) (uint64, bool) {
+	// an integer payload is a uintptr-minted pointer: the int IS the
+	// address, so converting back hands the same bits.
+	switch n := x.(type) {
+	case int64:
+		return uint64(n), true
+	case uint64:
+		return n, true
+	}
 	if gv, ok := x.(*runtime.GoValue); ok {
 		if rv := hostbridge.RVOf(gv.V); rv.IsValid() && (rv.Kind() == hostbridge.KindPtr || rv.Kind() == hostbridge.KindUnsafePointer) {
 			return uint64(rv.Pointer()), true
@@ -1642,7 +1663,7 @@ func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 	case *runtime.DerefRef:
 		// &*p is p — mint the pointer value stored at its location.
 		if pv, ok := runtime.Deref(r.Ptr); ok {
-			return v.unsafePtrAddr(pv)
+			return v.unsafePtrAddrOf(pv)
 		}
 		return 0, false
 	}

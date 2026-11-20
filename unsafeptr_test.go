@@ -62,6 +62,7 @@ func TestUnsafePointer(t *testing.T) {
 			{"FieldAddrStable", int64(1)},
 			{"DerefAddrSame", int64(1)},
 			{"NilUintptr", int64(1)},
+			{"UintptrToPtr", int64(7)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/unsafeptr", c.fn)
@@ -73,7 +74,7 @@ func TestUnsafePointer(t *testing.T) {
 
 	t.Run("trap", func(t *testing.T) {
 		// every one of these is a compile-time rejection in gc except
-		// NilDerefBack (runtime panic) and UintptrToPtr (boundary note)
+		// NilDerefBack (runtime panic)
 		cases := []struct {
 			fn  string
 			msg string
@@ -85,7 +86,6 @@ func TestUnsafePointer(t *testing.T) {
 			{"SliceConv", "cannot convert []int to unsafe.Pointer"},
 			{"FuncConv", "cannot convert"},
 			{"NilDerefBack", "nil pointer dereference"},
-			{"UintptrToPtr", "cannot convert"},
 		}
 		for _, c := range cases {
 			_, err := e.Run(context.Background(), "./testdata/unsafeptr", c.fn)
