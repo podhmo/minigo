@@ -88,6 +88,7 @@ var Rules = map[string][]string{
 	"minireflect":                  {"runtime", "syntax"},
 	"pkg/gentest":                  {},
 	"pkg/locator":                  {},
+	"pkg/modulewalk":               {"pkg/locator", "resolve", "syntax"},
 	"repl":                         {".", "compile", "index", "internal/replhooks", "resolve", "runtime", "syntax"},
 	"resolve":                      {"pkg/locator"},
 	"runtime":                      {"bytecode", "index", "internal/execution", "internal/spike", "special", "syntax"},
