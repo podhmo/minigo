@@ -2118,6 +2118,11 @@ func (c *compiler) argHint(e ast.Expr) bytecode.ArgHint {
 					return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(rs.List[0].Type, e.Pos()))}
 				}
 			}
+			// a declared callee's single result type is the argument's
+			// static type — `MyBuf(makeBuffer())` sees bytes.Buffer.
+			if ot := c.callOpTyp(x); ot.te != nil {
+				return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSiteAt(ot.te, ot.teFile, e.Pos()))}
+			}
 		}
 		return bytecode.ArgHint{Kind: bytecode.HintNil}
 	case *ast.CompositeLit:
