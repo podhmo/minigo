@@ -119,19 +119,20 @@ func jsonMapKeyTyp(c runtime.ExprResolver, td *runtime.TypeDef) *runtime.TypeDef
 // error surfaces as a *jsonScriptErr so it can ride out through
 // encoding/json's error channel like a top-level failure.
 func jsonMapKeyName(c runtime.MemberCaller, k runtime.Value, kt *runtime.TypeDef) any {
-	if s, ok := runtime.Unwrap(k).(string); ok && (kt == nil || kt.Kind != runtime.KindInterface) {
-		// gc uses a string-kinded key directly, before MarshalText.
-		return s
-	}
 	probe := k
-	if kt != nil && kt.Spec != nil {
+	if kt != nil && kt.Kind != runtime.KindInterface && kt.Spec != nil && runtime.TagOf(k) != kt {
 		// a stored key can lose its declared tag or carry a synthetic
 		// map-key approximation without a method set — re-tagging the
 		// resolved key typedef lets a declared MarshalText surface.
+		// A key already tagged with that typedef must not be wrapped a
+		// second time (its String conversions would read the inner tag).
 		// The bare value still reads only the value method set (map
 		// keys are not addressable in gc either).
 		probe = runtime.Tag(kt, k)
 	}
+	// gc names the key through TextMarshaler first: for a declared key
+	// type the resolved typedef supplies the method set, and for an
+	// interface-typed key the stored value's own tag does.
 	if m, ok := runtime.IfaceMember(c, probe, "MarshalText"); ok {
 		if r, err := c.Call(m, nil); err == nil {
 			if b, e, ok := jsonMarshalResult(r); ok {
@@ -141,6 +142,11 @@ func jsonMapKeyName(c runtime.MemberCaller, k runtime.Value, kt *runtime.TypeDef
 				return string(b)
 			}
 		}
+	}
+	if s, ok := runtime.Unwrap(k).(string); ok {
+		// gc uses a string-kinded key directly when no MarshalText
+		// applies.
+		return s
 	}
 	nk := hostbridge.GoNative(k)
 	// an integer key spells its number even when its host type has a
