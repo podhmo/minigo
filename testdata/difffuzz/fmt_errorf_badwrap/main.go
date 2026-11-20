@@ -60,7 +60,12 @@ func main() {
 	fmt.Println(fmt.Errorf("%[9]w %界"))
 	fmt.Println(fmt.Errorf("%[9]w %*界"))
 	fmt.Println(fmt.Errorf("%[9]w %*s %s", "x", "v"))
+	fmt.Println(fmt.Errorf("%[9]w %.*s", "x"))
+	fmt.Println(fmt.Errorf("%[9]w %.*s", 3))
+	fmt.Println(fmt.Errorf("%[9]w %*s", N(9)))
 }
+
+type N int64
 
 type S struct{}
 
