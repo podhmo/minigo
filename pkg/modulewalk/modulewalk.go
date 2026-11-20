@@ -66,8 +66,15 @@ type Walker struct {
 
 	mu      sync.RWMutex
 	fset    *token.FileSet
-	cache   map[string]*PackageImports // package dir -> imports (two checkouts may share an import path)
-	scanned map[string]bool            // every file handed to ParseImports
+	cache   map[scanKey]*PackageImports // (dir, importPath) — a replace can point two paths at one dir
+	scanned map[string]bool             // every file handed to ParseImports
+}
+
+// scanKey keys the walk cache: two checkouts may share an import path,
+// and a module replace can point two paths at one dir — neither alone
+// is unique.
+type scanKey struct {
+	dir, importPath string
 }
 
 func (w *Walker) init() {
@@ -75,7 +82,7 @@ func (w *Walker) init() {
 		w.fset = token.NewFileSet()
 	}
 	if w.cache == nil {
-		w.cache = map[string]*PackageImports{}
+		w.cache = map[scanKey]*PackageImports{}
 	}
 	if w.scanned == nil {
 		w.scanned = map[string]bool{}
@@ -102,7 +109,7 @@ func (w *Walker) Imports(ctx context.Context, importPath string) (*PackageImport
 // ScanDir reads the import table of the package in dir, spelled
 // importPath — the entry [Walker.WalkRepo] and [Walker.FindImporters]
 // use for directories [resolve.ScanRepo] already enumerated. The result
-// is cached under dir.
+// is cached under (dir, importPath).
 func (w *Walker) ScanDir(ctx context.Context, dir, importPath string) (*PackageImports, error) {
 	return w.scanDir(ctx, dir, importPath)
 }
@@ -173,7 +180,7 @@ func (w *Walker) scanRepoPackage(ctx context.Context, repo *resolve.RepoPackage)
 	w.init()
 	w.mu.Unlock()
 	w.mu.RLock()
-	cached, ok := w.cache[repo.Dir]
+	cached, ok := w.cache[scanKey{repo.Dir, repo.ImportPath}]
 	w.mu.RUnlock()
 	if ok {
 		return cached, nil
@@ -230,7 +237,7 @@ func (w *Walker) scanRepoPackage(ctx context.Context, repo *resolve.RepoPackage)
 	sort.Strings(pi.Imports)
 	sort.Strings(pi.TestImports)
 	w.mu.Lock()
-	w.cache[repo.Dir] = pi
+	w.cache[scanKey{repo.Dir, repo.ImportPath}] = pi
 	w.mu.Unlock()
 	return pi, nil
 }
@@ -394,11 +401,16 @@ func (w *Walker) ReverseDependencyMap(ctx context.Context) (map[string][]string,
 	}
 	deps := map[string][]string{}
 	err := w.WalkRepo(ctx, w.Locator.RootDir(), VisitorFunc(func(pi *PackageImports) ([]string, error) {
+		seen := map[string]bool{}
 		for _, imp := range pi.Imports {
 			deps[imp] = append(deps[imp], pi.ImportPath)
+			seen[imp] = true
 		}
 		if w.IncludeTests {
 			for _, imp := range pi.TestImports {
+				if seen[imp] { // a normal file already counts this import
+					continue
+				}
 				deps[imp] = append(deps[imp], pi.ImportPath)
 			}
 		}
