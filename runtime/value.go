@@ -2480,6 +2480,12 @@ type BuiltinFunc struct {
 	// (F[T]) produces a plain BuiltinFunc that calls GenFn with the
 	// bound type arguments (e.g. reflect.TypeFor[T]).
 	GenFn func(vm VMCaller, targs []Value, args []Value) (Value, error)
+	// KeepConstArgs declares that Fn wants untyped-constant arguments
+	// unmaterialized — a package-bound call materializes its constants
+	// by default, but a builtin comparing an operand to the slice/map
+	// element type needs the constant domain for Go's representability
+	// rule (`slices.Index([]uint8{}, 300)` must reject the overflow).
+	KeepConstArgs bool
 	// SyncCallbacks declares that Fn calls back into the VM only
 	// synchronously — on the calling goroutine, before Fn returns —
 	// and never retains the VMCaller (no stored callbacks, iterators or

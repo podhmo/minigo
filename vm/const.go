@@ -194,7 +194,12 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 // gc does — strconv.FormatUint(1<<63, 10) is legal though 1<<63
 // overflows the default int, and a constant the parameter cannot hold
 // is reported (gc's compile error) instead of wrapping silently.
-func (v *VM) matBuiltinArgs(args []runtime.Value, target any) ([]runtime.Value, error) {
+//
+// keepConst (BuiltinFunc.KeepConstArgs) leaves a bare UConst
+// unmaterialized: builtins that apply Go's constant-representability
+// rule against an element type — slices.Index/Contains — need the
+// constant domain, which materialization to int64 would destroy.
+func (v *VM) matBuiltinArgs(args []runtime.Value, target any, keepConst bool) ([]runtime.Value, error) {
 	var out []runtime.Value
 	var ft hostbridge.Type // resolved on the first bare constant
 	for i, a := range args {
@@ -236,6 +241,9 @@ func (v *VM) matBuiltinArgs(args []runtime.Value, target any) ([]runtime.Value, 
 			}
 			mv, err = v.materializeConstErr(u, n.Typ)
 		} else if u, ok := a.(*runtime.UConst); ok {
+			if keepConst {
+				continue
+			}
 			mv, err = materializeDefault(u)
 		} else {
 			continue

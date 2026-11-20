@@ -361,7 +361,7 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 		case *runtime.GoValue:
 			if fv := hostbridge.RVOf(c.V); fv.IsValid() && fv.Kind() == hostbridge.KindFunc {
 				name := fmt.Sprintf("%v", fv.Type())
-				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(f, winArgs, args)), c.V)
+				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(f, winArgs, args)), c.V, false)
 				if err != nil {
 					return nil, fmt.Errorf("%s %w", name, err)
 				}
@@ -427,7 +427,7 @@ func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.
 		// constant arms keep working (append's element-type
 		// conversion, real/imag's constant domain).
 		var err error
-		if args, err = v.matBuiltinArgs(args, c.Target); err != nil {
+		if args, err = v.matBuiltinArgs(args, c.Target, c.KeepConstArgs); err != nil {
 			return nil, fmt.Errorf("%s %w", c.Name, err)
 		}
 	}
