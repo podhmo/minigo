@@ -135,26 +135,28 @@ func (r *GoScanResolver) LocateFiles(ctx context.Context, files []string) (*Pack
 		if !strings.HasSuffix(abs, ".go") {
 			return nil, fmt.Errorf("named files must be .go files: %s", file)
 		}
-		// spell the real file before the root check and stat: a .go
-		// symlink inside an allowed root names its target, which may
-		// live outside.
-		if abs, err = resolveSymlinkNearest(abs); err != nil {
+		// the root check and stat read the link's target — a .go
+		// symlink inside an allowed root may name a file outside it.
+		// The directory and package checks keep the spelled path, like
+		// `go run`: a link still counts as living where it is listed.
+		resolved, err := resolveSymlinkNearest(abs)
+		if err != nil {
 			return nil, err
 		}
-		if err := r.cfg.CheckPath(abs); err != nil {
+		if err := r.cfg.CheckPath(resolved); err != nil {
 			return nil, err
 		}
-		st, err := os.Stat(abs)
+		st, err := os.Stat(resolved)
 		if err != nil {
 			return nil, fmt.Errorf("entry %q not found: %w", file, err)
 		}
 		if !st.Mode().IsRegular() {
 			return nil, fmt.Errorf("entry %q is not a .go file", file)
 		}
-		if seen[abs] {
+		if seen[resolved] {
 			return nil, fmt.Errorf("duplicate file in list: %s", file)
 		}
-		seen[abs] = true
+		seen[resolved] = true
 		f, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.PackageClauseOnly)
 		if err != nil {
 			return nil, fmt.Errorf("reading package clause: %w", err)

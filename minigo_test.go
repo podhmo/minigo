@@ -4066,6 +4066,108 @@ func TestHostSeqElemSpelling(t *testing.T) {
 	}
 }
 
+func TestRunFiles(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"a.go": `package main
+
+func main() string {
+	return greet()
+}
+`,
+		"b.go": `package main
+
+func greet() string {
+	return "hello"
+}
+`,
+		// a same-package alternative: a list naming it is a
+		// different program over the same directory
+		"c.go": `package main
+
+func greet() string {
+	return "bye"
+}
+`,
+	}
+	var names []string
+	for name, src := range files {
+		abs := filepath.Join(root, name)
+		if err := os.WriteFile(abs, []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if name != "c.go" { // the alternative stays out of the first list
+			names = append(names, abs)
+		}
+	}
+	sort.Strings(names)
+
+	e := minigo.NewEngine(root, minigo.WithAllowedRoots(root))
+	got, err := e.RunFiles(context.Background(), names, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("hello", got); diff != "" {
+		t.Fatalf("RunFiles result mismatch (-want +got):\n%s", diff)
+	}
+
+	// a different list over the same directory is a different
+	// program — the earlier list's package must not be replayed
+	cList := []string{names[0], filepath.Join(root, "c.go")}
+	got, err = e.RunFiles(context.Background(), cList, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("bye", got); diff != "" {
+		t.Fatalf("RunFiles second list mismatch (-want +got):\n%s", diff)
+	}
+
+	// a .go symlink inside the allowed root names its target —
+	// a target outside the root is refused
+	outside := t.TempDir()
+	evil := filepath.Join(outside, "evil.go")
+	if err := os.WriteFile(evil, []byte("package main\n\nfunc greet() string { return \"evil\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.go")
+	if err := os.Symlink(evil, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.RunFiles(context.Background(), []string{names[0], link}, "main"); err == nil {
+		t.Fatal("expected an allowed-roots error for a symlinked file outside the root")
+	}
+
+	// a link whose target is inside the root runs: like `go run`,
+	// the file counts as living where it is listed
+	otherDir := filepath.Join(root, "other")
+	if err := os.MkdirAll(otherDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "d.go"), []byte("package main\n\nfunc greet() string { return \"via link\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "inner.go")
+	if err := os.Symlink(filepath.Join(otherDir, "d.go"), inner); err != nil {
+		t.Fatal(err)
+	}
+	got, err = e.RunFiles(context.Background(), []string{names[0], inner}, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("via link", got); diff != "" {
+		t.Fatalf("RunFiles linked file mismatch (-want +got):\n%s", diff)
+	}
+
+	// different package clauses in the list are rejected
+	if err := os.WriteFile(names[1], []byte("package other\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e2 := minigo.NewEngine(root, minigo.WithAllowedRoots(root))
+	if _, err := e2.RunFiles(context.Background(), names, "main"); err == nil || !strings.Contains(err.Error(), "found packages") {
+		t.Fatalf("expected a package-mismatch error, got %v", err)
+	}
+}
+
 func TestSeqTwoVarEmpty(t *testing.T) {
 	e := newEngine(t)
 	got := run(t, e, "./testdata/seqtwovar", "Empty")
