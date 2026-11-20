@@ -2693,8 +2693,12 @@ func (v *VM) litKeyIndex(f *frame, k runtime.Value, last int64) (int64, bool) {
 	if nk, ok := k.(*runtime.Named); ok {
 		k = nk.V
 	}
-	iv, ok := runtime.SmallIntOf(k)
-	return iv, ok
+	if iv, ok := runtime.SmallIntOf(k); ok {
+		return iv, true
+	}
+	// a host scalar index (`reflect.Bool` in gob's decOpTable) arrives
+	// boxed — gc only needs its integer value.
+	return hostbridge.HostInt64(k)
 }
 
 func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
