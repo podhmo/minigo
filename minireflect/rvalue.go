@@ -2997,6 +2997,12 @@ func (v *RValue) Method(i int) *RValue {
 // The facade's own methods implement exactly those semantics, so bind
 // them on the facade rather than on the box that stores it.
 func (v *RValue) methodRecv() (recv reflect.Value, api reflect.Type, facade bool) {
+	if v.rv.Kind() == reflect.Interface {
+		// an interface-typed box (`[]any{v}[0]`): gc enumerates the
+		// interface's own method set — zero for any — and dispatches
+		// on the concrete value, which reflect already does on v.rv.
+		return v.rv, nil, false
+	}
 	// ifaceVal calls Interface(), which panics on a Value obtained from
 	// an unexported host field — a method lookup there must still
 	// answer (invalid), not trap.
