@@ -3,6 +3,7 @@ package stdjson
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"reflect"
 
 	"github.com/podhmo/minigo/internal/stdlib"
@@ -31,6 +32,73 @@ func jsonMarshalProbe(v any, addr bool) any {
 		return v
 	}
 	return &runtime.Cell{Elem: v}
+}
+
+// jsonTypIsIface reports whether td is declared as an interface type —
+// the Kind flag for resolved typdefs, the AST for name-only ones
+// (`interface{}` literal or an `any` spelling).
+func jsonTypIsIface(td *runtime.TypeDef) bool {
+	if td == nil {
+		return false
+	}
+	if td.Kind == runtime.KindInterface {
+		return true
+	}
+	switch x := td.TypeExpr().(type) {
+	case *ast.InterfaceType:
+		return true
+	case *ast.Ident:
+		return x.Name == "any"
+	}
+	return false
+}
+
+// jsonIfaceElem reports whether a slice/array typedef's element is
+// interface-declared: its stored values are copies, never addressable.
+func jsonIfaceElem(c runtime.ElemTyper, td *runtime.TypeDef) bool {
+	if td == nil || c == nil {
+		return false
+	}
+	et, err := c.ElemOf(td)
+	return err == nil && jsonTypIsIface(et)
+}
+
+// jsonReadPathAddr is jsonReadPath plus a flag reporting whether the
+// walk crossed pointer storage — a promoted field below a *E embed
+// sits in real pointee storage, so it stays addressable even when the
+// outer struct marshals by value (gc's CanAddr follows the pointer
+// hop). The hop shows in the field value: a pointer embed stores a
+// Cell/ref, a value embed stores the Struct itself.
+func jsonReadPathAddr(s *runtime.Struct, path []int) (runtime.Value, bool, bool) {
+	cur := s
+	crossed := false
+	for h := 0; h < len(path)-1; h++ {
+		f := cur.Fields[path[h]]
+		if jsonIsPtrValue(f) {
+			crossed = true
+		}
+		st := runtime.StructOf(f)
+		if st == nil {
+			return nil, false, false
+		}
+		cur = st
+	}
+	return cur.Fields[path[len(path)-1]], true, crossed
+}
+
+// jsonIsPtrValue reports whether v is pointer-ish storage — a Cell,
+// field/index/deref ref, possibly inside a named tag.
+func jsonIsPtrValue(v runtime.Value) bool {
+	for {
+		switch x := v.(type) {
+		case *runtime.Named:
+			v = x.V
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 // goJSONSeen is goJSON carrying a path set of live container
@@ -81,7 +149,9 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 	}
 	switch x := v.(type) {
 	case *runtime.Named:
-		return goJSONSeen(c, x.V, seen, addr)
+		// the contents of an interface-typed tag are a copy —
+		// gc never treats them as addressable
+		return goJSONSeen(c, x.V, seen, addr && !jsonTypIsIface(x.Typ))
 	case *runtime.Cell:
 		if jsonSeen(seen, x) {
 			return jsonCycle{via: typeStrOf(x)}
@@ -121,7 +191,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 		var o orderedObject
 		ents := jsonMarshalLive(jsonStructFields(c, x.Def))
 		for _, e := range ents {
-			f, ok := jsonReadPath(x, e.path)
+			f, ok, crossed := jsonReadPathAddr(x, e.path)
 			if !ok {
 				// a nil pointer embed's promoted fields are
 				// unreachable — gc omits them entirely
@@ -130,14 +200,20 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 			if e.omit && jsonIsEmpty(f) {
 				continue
 			}
-			fv := goJSONSeen(c, f, seen, addr)
+			// a field is addressable when the struct is, and also
+			// when its promoted path crosses a pointer embed (the
+			// pointee is real storage either way); an
+			// interface-declared leaf holds a copy, never addressable.
+			iface := jsonPathIsIface(c, x.Def, e.path)
+			faddr := (addr || crossed) && !iface
+			fv := goJSONSeen(c, f, seen, faddr)
 			// `,string` applies to the DECLARED kind: interface
 			// fields marshal normally even when the tag asks.
-			if e.asStr && !jsonPathIsIface(c, x.Def, e.path) {
+			if e.asStr && !iface {
 				// a MarshalText result is already the member's content
 				// — quoting it like a raw string would double-wrap it.
 				_, isStr := fv.(string)
-				_, hasText := runtime.IfaceMember(c, jsonMarshalProbe(f, addr), "MarshalText")
+				_, hasText := runtime.IfaceMember(c, jsonMarshalProbe(f, faddr), "MarshalText")
 				if !(isStr && hasText) {
 					if lit, ok := jsonStringLit(f); ok {
 						fv = lit
@@ -154,10 +230,19 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 		}
 		defer delete(seen, x)
 		out := make([]any, len(x.Elems))
+		// slice elements marshal through their backing array, which
+		// gc always treats as addressable; array elements keep the
+		// array's own addressability, and interface-held elements
+		// are copies (never addressable).
+		eaddr := true
+		if x.Typ != nil && stdlib.IsArrayTyp(x.Typ) {
+			eaddr = addr
+		}
+		if jsonIfaceElem(c, x.Typ) {
+			eaddr = false
+		}
 		for i, e := range x.Elems {
-			// slice elements marshal through their backing array,
-			// which gc always treats as addressable
-			out[i] = goJSONSeen(c, e, seen, true)
+			out[i] = goJSONSeen(c, e, seen, eaddr)
 		}
 		return out
 	case *runtime.Map:
