@@ -83,12 +83,16 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 		// script-side add into snap would let sync skip its push, and
 		// the next pull would then drop it as host-deleted.
 		snap := map[string]runtime.Value{}
-		ds2, _ := s.SnapshotKeys()
-		for _, dk := range ds2 {
+		for i := 0; i < s.Len(); i++ {
+			dk, dv := s.At(i)
+			if nanKey(dk) {
+				// MapIndex/Get can never find a NaN key — keep the
+				// existing entry snapshotted so sync leaves it alone.
+				snap[projKey(dk)] = dv
+				continue
+			}
 			if hk, err := m.ToReflect(dk, krt, vc); err == nil && rv.MapIndex(hk).IsValid() {
-				if v, ok := s.Get(dk); ok {
-					snap[projKey(dk)] = v
-				}
+				snap[projKey(dk)] = dv
 			}
 		}
 		e.snap = snap
