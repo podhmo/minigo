@@ -320,3 +320,22 @@ func TestFindImporters_IncludeTests(t *testing.T) {
 		t.Errorf("importers with IncludeTests = %v", importers)
 	}
 }
+
+func TestDiscoverModules_WorkAbsoluteUse(t *testing.T) {
+	ws := t.TempDir()
+	m := t.TempDir()
+	if err := os.WriteFile(filepath.Join(m, "go.mod"), []byte("module x\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	work := "go 1.25\n\nuse " + filepath.ToSlash(m) + "\n"
+	if err := os.WriteFile(filepath.Join(ws, "go.work"), []byte(work), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := DiscoverModules(ws, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{m}, dirs); diff != "" {
+		t.Errorf("modules (-want +got):\n%s", diff)
+	}
+}
