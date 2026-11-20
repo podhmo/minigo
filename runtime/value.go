@@ -1792,6 +1792,10 @@ func zeroSizePointeeTag(c *Cell) string {
 		tag = zbTagOf(c.Typ)
 	} else if st, ok := c.Elem.(*Struct); ok && st.Def != nil {
 		tag = zbTagOf(st.Def)
+	} else if sl, ok := c.Elem.(*Slice); ok && sl.Typ != nil {
+		// a new()/composite array cell carries no cell-level Typ —
+		// the array typedef sits on the value instead.
+		tag = zbTagOf(sl.Typ)
 	}
 	if tag == "" {
 		return ""
@@ -1808,12 +1812,30 @@ func zbTagOf(td *TypeDef) string {
 		return typeTagOf(td)
 	}
 	if e := td.TypeExpr(); e != nil {
-		var b bytes.Buffer
-		if printer.Fprint(&b, token.NewFileSet(), e) == nil {
-			return b.String()
-		}
+		return zbExprTag(td.Pkg, e)
 	}
 	return typeTagOf(td)
+}
+
+// zbExprTag renders an anonymous type expression for the zerobase key.
+// Array lengths go through ArrayLenExpr so `[0][N]int` keyed by a
+// const N folds to its evaluated length — N=1 and N=2 in different
+// scopes are different types with different zerobases.
+func zbExprTag(p *Package, e ast.Expr) string {
+	if at, ok := e.(*ast.ArrayType); ok {
+		if l := ArrayLenExpr(p, at); l != nil {
+			var b bytes.Buffer
+			if printer.Fprint(&b, token.NewFileSet(), l) == nil {
+				return "[" + b.String() + "]" + zbExprTag(p, at.Elt)
+			}
+		}
+		return "[]" + zbExprTag(p, at.Elt)
+	}
+	var b bytes.Buffer
+	if printer.Fprint(&b, token.NewFileSet(), e) == nil {
+		return b.String()
+	}
+	return ""
 }
 
 // Map is a map value: a header over a [mapStore]. Pairs is keyed by the

@@ -33,4 +33,13 @@ func main() {
 	na := map[any]int{pa: 1}
 	na[pb] = 2
 	fmt.Println(len(na)) // distinct anonymous array types
+	// zero-size array pointers: distinct anon types never merge,
+	// the same type seen twice shares its zerobase.
+	mk := func() any { const N = 1; return new([0][N]int) }
+	mk2 := func() any { const N = 2; return new([0][N]int) }
+	mk3 := func() any { const M = 1; return new([0][M]int) }
+	mm := map[any]int{mk(): 1}
+	mm[mk2()] = 2
+	mm[mk3()] = 3
+	fmt.Println(len(mm))
 }
