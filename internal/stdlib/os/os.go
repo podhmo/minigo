@@ -188,7 +188,15 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			Kind: runtime.KindAlias,
 			Anon: &ast.SelectorExpr{X: ast.NewIdent("io/fs"), Sel: ast.NewIdent("PathError")},
 		},
-		"LinkError":    stdlib.HostType("os.LinkError", func() any { return &os.LinkError{} }),
+		"LinkError": stdlib.HostType("os.LinkError", func() any { return &os.LinkError{} }),
+		// FileMode aliases io/fs's typedef like gc's
+		// `type FileMode = fs.FileMode` — a host-typed binding would
+		// mismatch the source-interpreted fs values (fs.ModeDir).
+		"FileMode": &runtime.TypeDef{
+			Name: "io/fs.FileMode",
+			Kind: runtime.KindAlias,
+			Anon: &ast.SelectorExpr{X: ast.NewIdent("io/fs"), Sel: ast.NewIdent("FileMode")},
+		},
 		"SyscallError": stdlib.HostType("os.SyscallError", func() any { return &os.SyscallError{} }),
 		"NewSyscallError": &runtime.BuiltinFunc{
 			Name:   "os.NewSyscallError",

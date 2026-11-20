@@ -430,7 +430,10 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 		a = n.V
 	}
 	if n, ok := b.(*runtime.Named); ok {
-		if aTd != nil && !sameTypeDef(aTd, n.Typ) {
+		// a `type A = B` alias operand is the target type itself —
+		// `var m os.FileMode` compares equal to an `fs.FileMode`
+		// value, like gc.
+		if aTd != nil && !sameTypeDef(v.peelAlias(aTd), v.peelAlias(n.Typ)) {
 			// equality is lawful between differently-typed dynamic
 			// values — `any(u64) != any(u32)` is true in Go; the
 			// ordered ops and arithmetic stay a type error.
