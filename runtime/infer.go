@@ -17,10 +17,11 @@ import (
 type Inferer struct {
 	// Underlying follows declared chains to the shape-giving typedef.
 	Underlying func(td *TypeDef) *TypeDef
-	// expandDepth caps UnifyIndices's underlying-expression expansion:
-	// a recursive typedef (map[string]Graph[T]) re-enters the fallback
-	// indefinitely otherwise.
-	expandDepth int
+	// expanding marks UnifyIndices's one-shot underlying-expression
+	// expansion: gc expands a pattern's named type once, so a named
+	// instantiation nested inside that expansion (a recursive typedef's
+	// own Name[T], or a deeper chain) gets no fallback of its own.
+	expanding bool
 	// ElemOf resolves a container's element typedef, including the
 	// caller's own evidence (frame locals, first-element typedefs) and
 	// interning; nil means "unresolvable".
@@ -188,15 +189,24 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 		if j >= len(bt.TParams) {
 			break
 		}
-		id, ok := x.(*ast.Ident)
-		if !ok || !tset[id.Name] {
+		bv, hasBv := conc.Binds[bt.TParams[j]]
+		if hasBv {
+			bound = true
+		}
+		if id, ok := x.(*ast.Ident); ok && tset[id.Name] {
+			if hasBv {
+				if _, done := binds[id.Name]; !done {
+					binds[id.Name] = bv
+				}
+			}
 			continue
 		}
-		if bv, ok := conc.Binds[bt.TParams[j]]; ok {
-			bound = true
-			if _, done := binds[id.Name]; !done {
-				binds[id.Name] = bv
-			}
+		// a non-ident index (func() Y, []T, *T) is a pattern itself:
+		// unify it against the concrete type's binding for the base's
+		// parameter at this position — Mapper[X, func() Y] over
+		// Mapper[int, func() string] binds Y=string.
+		if td, ok := bv.(*TypeDef); hasBv && ok && td != nil {
+			i.UnifyDef(ctx, tset, binds, x, td)
 		}
 	}
 	// an unnamed concrete shape (a bare func literal's signature, a
@@ -206,10 +216,11 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	// Skipped when the binds lookup already taught the indices (an
 	// instantiated named arg), when the pattern instantiates only part
 	// of the base's parameters (a leftover tparam name in the underlying
-	// expr could then bind the caller's same-named parameter), and past
-	// the expansion cap (a recursive typedef like map[string]Graph[T]
-	// would re-enter this fallback forever).
-	if bound || len(idxs) != len(bt.TParams) || i.expandDepth >= 8 {
+	// expr could then bind the caller's same-named parameter), or when
+	// this base typedef is already being expanded up-stack (a recursive
+	// typedef like map[string]Graph[T] re-enters through itself; an
+	// alias chain of distinct typedefs unwinds freely).
+	if bound || len(idxs) != len(bt.TParams) || i.expanding {
 		return
 	}
 	if ue := bt.TypeExpr(); ue != nil {
@@ -217,8 +228,12 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 		for j, name := range bt.TParams {
 			subs[name] = idxs[j]
 		}
-		i.expandDepth++
-		defer func() { i.expandDepth-- }()
+		// gc expands the pattern's named type exactly once: a named
+		// instantiation nested in that underlying expr does not
+		// re-expand, which also keeps a recursive typedef
+		// (map[string]Graph[T]) from spinning forever.
+		i.expanding = true
+		defer func() { i.expanding = false }()
 		i.UnifyDef(ctx, tset, binds, substTypeExprs(ue, subs), conc)
 	}
 }
