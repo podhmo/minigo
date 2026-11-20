@@ -2372,6 +2372,10 @@ func TestHostMapCyclicAndIntKey(t *testing.T) {
 	e.Bind("example.com/hostwb", map[string]runtime.Value{
 		"Cyc":  &runtime.GoValue{V: func(m map[string]any) {}},
 		"Peek": &runtime.GoValue{V: func(x any) {}},
+		"Alias": &runtime.GoValue{V: func(m map[string]any) {
+			m["a"] = m["b"]
+			m["a"].(map[string]any)["x"] = 1
+		}},
 	})
 	got := run(t, e, "./testdata/hostwriteback", "Cyc")
 	if diff := cmp.Diff("1 true", got); diff != "" {
@@ -2380,6 +2384,10 @@ func TestHostMapCyclicAndIntKey(t *testing.T) {
 	got = run(t, e, "./testdata/hostwriteback", "IntKey")
 	if diff := cmp.Diff("true 2", got); diff != "" {
 		t.Fatalf("IntKey mismatch (-want +got):\n%s", diff)
+	}
+	got = run(t, e, "./testdata/hostwriteback", "Alias")
+	if diff := cmp.Diff("map[k:2 x:1] map[k:2 x:1]", got); diff != "" {
+		t.Fatalf("Alias mismatch (-want +got):\n%s", diff)
 	}
 }
 
