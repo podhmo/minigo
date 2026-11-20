@@ -49,7 +49,9 @@ jobs:
 
     - name: Similarity ratchet (simcheck)
       run: |
-        go install github.com/Songmu/gosimilarity/cmd/gosimilarity@298b2cd
+        GOTOOLCHAIN=auto go install github.com/Songmu/gosimilarity/cmd/gosimilarity@298b2cd
+        # the pinned gosimilarity wants a newer toolchain than go.mod's;
+        # auto lets go fetch it just for the tool build.
         make simcheck
 
     - name: File budgets vs merge base (M1-4)

@@ -89,12 +89,29 @@ func normLines(path string) ([]string, []bool) {
 // across lines via inBlock.
 func stripComments(l string, inBlock *bool) string {
 	var b strings.Builder
+	var str byte // '"', '`', '\'' inside a literal — /* and // are text there
 	for i := 0; i < len(l); i++ {
 		if *inBlock {
 			if l[i] == '*' && i+1 < len(l) && l[i+1] == '/' {
 				*inBlock = false
 				i++
 			}
+			continue
+		}
+		if str != 0 {
+			b.WriteByte(l[i])
+			if l[i] == str {
+				str = 0
+			} else if l[i] == '\\' && str != '`' && i+1 < len(l) {
+				b.WriteByte(l[i+1])
+				i++
+			}
+			continue
+		}
+		switch l[i] {
+		case '"', '`', '\'':
+			str = l[i]
+			b.WriteByte(l[i])
 			continue
 		}
 		if l[i] == '/' && i+1 < len(l) {
@@ -174,7 +191,9 @@ func scanWindows(root string, size int) ([]string, error) {
 			if n > 1 {
 				// the same fragment twice inside one file is a dup
 				// too — gosimilarity compares functions, not spans.
-				out = append(out, h+"@"+f+"|"+f)
+				// The count joins the pair id so pasting a third
+				// copy of an approved dup still surfaces.
+				out = append(out, fmt.Sprintf("%s@%s|%s#%d", h, f, f, n))
 				dup = true
 			}
 		}
