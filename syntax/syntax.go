@@ -9,12 +9,10 @@
 package syntax
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -62,16 +60,8 @@ func ParseFile(fset *token.FileSet, filename string, src []byte) (*File, error) 
 		return nil, err
 	}
 	sf := &File{Name: filename, AST: f, Src: src}
-	for _, spec := range f.Imports {
-		path, err := strconv.Unquote(spec.Path.Value)
-		if err != nil {
-			return nil, fmt.Errorf("invalid import path in %s: %w", filename, err)
-		}
-		var alias string
-		if spec.Name != nil {
-			alias = spec.Name.Name
-		}
-		sf.Imports = append(sf.Imports, &Import{Path: path, Alias: alias, Pos: spec.Pos()})
+	if sf.Imports, err = importTable(f, filename); err != nil {
+		return nil, err
 	}
 	return sf, nil
 }
