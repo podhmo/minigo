@@ -367,6 +367,29 @@ func nested(f fmt.State) fmt.State {
 // %p so rewriteTypeVerbs substitutes this string. Typed nils print 0x0
 // like Go; slices, maps, chans and script pointers print an address;
 // anything else produces Go's %!p(type=value) marker.
+// ptrZeroPadWidth reports whether the flags text is a '0'-flagged
+// literal width (`030`), for gc's pad-inside-0x %p rule — returns the
+// width. A `*` width stays host-side instead.
+func ptrZeroPadWidth(flags string) (int, bool) {
+	i := 0
+	zero := false
+	for i < len(flags) && strings.IndexByte("#+- 0", flags[i]) >= 0 {
+		zero = zero || flags[i] == '0'
+		i++
+	}
+	if !zero {
+		return 0, false
+	}
+	w := 0
+	for ; i < len(flags); i++ {
+		if flags[i] < '0' || flags[i] > '9' {
+			return 0, false
+		}
+		w = w*10 + int(flags[i]-'0')
+	}
+	return w, w > 0
+}
+
 func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 	zs := zeroState{}
 	switch t := x.(type) {
@@ -773,6 +796,8 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		// flags/width survive; the [n] index does not — newArgs is
 		// emitted in directive order, so every operand is implicit.
 		tail := spec[d.start+1 : d.end-1]
+		var fb strings.Builder
+		precAt, precStars := -1, 0
 		for k := 0; k < len(tail); {
 			if tail[k] == '[' {
 				for k < len(tail) && tail[k] != ']' {
@@ -781,20 +806,48 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 				k++
 				continue
 			}
-			sb.WriteByte(tail[k])
+			if tail[k] == '.' && precAt < 0 {
+				precAt = fb.Len()
+			} else if precAt >= 0 && tail[k] == '*' {
+				precStars++
+			}
+			fb.WriteByte(tail[k])
 			k++
 		}
-		for _, sp := range d.stars {
+		flags := fb.String()
+		stars := d.stars
+		if d.verb == 'T' || d.verb == 'p' {
+			// gc ignores a precision on %T/%p — and a * operand inside
+			// it. Rewriting the verb to %s would truncate the rendered
+			// name/address (%.3p → "0x2") or consume a width arg as an
+			// operand, so both come out of the rebuilt directive.
+			if precAt >= 0 {
+				flags = flags[:precAt]
+				stars = stars[:len(stars)-precStars]
+			}
+		}
+		for _, sp := range stars {
 			na = append(na, a[off+sp])
 		}
 		switch d.verb {
 		case 'T':
+			sb.WriteString(flags)
 			sb.WriteByte('s')
 			na = append(na, ScriptTypeString(vals[d.pos]))
 		case 'p':
-			sb.WriteByte('s')
-			na = append(na, ptrSpelling(c, vals[d.pos]))
+			spelling := ptrSpelling(c, vals[d.pos])
+			if w, ok := ptrZeroPadWidth(flags); ok && strings.HasPrefix(spelling, "0x") && len(spelling) < w {
+				// gc's '0' flag pads inside the 0x prefix, which %s
+				// cannot express — pad the spelled address directly.
+				spelling = "0x" + strings.Repeat("0", w-len(spelling)) + spelling[2:]
+				sb.WriteByte('s')
+			} else {
+				sb.WriteString(flags)
+				sb.WriteByte('s')
+			}
+			na = append(na, spelling)
 		default:
+			sb.WriteString(flags)
 			sb.WriteByte(d.verb)
 			na = append(na, a[off+d.pos])
 		}

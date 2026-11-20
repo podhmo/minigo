@@ -197,8 +197,14 @@ func wordOf(v runtime.Value) uint64 {
 	switch n := runtime.Unwrap(v).(type) {
 	case int64:
 		return uint64(n)
+	case uint64:
+		return n
 	case float64:
 		return uint64(n)
+	case *runtime.GoValue:
+		// a boxed host Word (e.g. a nat built through reflect or a
+		// bound constructor) keeps its uint64 payload in .V.
+		return wordOf(n.V)
 	}
 	return 0
 }
