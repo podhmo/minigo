@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"net"
 )
 
 // A declared type over a bound host struct converts both ways: the
@@ -41,11 +42,20 @@ func main() {
 	// a generic callee's `*T` result must not poison the outer call's
 	// arg typing.
 	fmt.Println(*g(pointer(1)))
+	// a value-shaped box (HostNew spells T) takes field writes through
+	// the copy like a plain var — converting does not freeze it.
+	var src net.Interface
+	src.Index = 3
+	dst := NIC(src)
+	dst.Index = 1
+	fmt.Println(dst.Index, src.Index)
 	shadowP()
 }
 
 type P *bytes.Buffer
 type Q P
+
+type NIC net.Interface
 
 func makeBuffer() bytes.Buffer {
 	var b bytes.Buffer
