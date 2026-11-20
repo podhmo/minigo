@@ -116,6 +116,22 @@ func BoxedNilTyp(v Value) *TypeDef {
 	return nil
 }
 
+// NilDeclaredTyp returns the declared typedef of a nil value that still
+// carries a concrete type — a *TypedNil itself, or an [IfaceNil] boxing
+// one for an interface slot (what [BoxedNilTyp] sees). A nil interface
+// — untagged IfaceNil, interface-tagged IfaceNil, or runtime.Nil —
+// reports nil. Use it where both spellings mean "the typed nil",
+// e.g. a value bound for a host error parameter.
+func NilDeclaredTyp(v Value) *TypeDef {
+	if tn, ok := v.(*TypedNil); ok {
+		if tn.Typ != nil && tn.Typ.Kind != KindInterface {
+			return tn.Typ
+		}
+		return nil
+	}
+	return BoxedNilTyp(v)
+}
+
 // IsNilIface reports whether v is the nil interface itself — an
 // [IfaceNil] with no dynamic type: untagged (Typ == nil) or carrying
 // only an interface tag. A boxed typed nil reports false.
