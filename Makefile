@@ -1,4 +1,4 @@
-.PHONY: all test test-spike test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
+.PHONY: all test test-spike test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all simcheck
 
 all:
 	go build ./...
