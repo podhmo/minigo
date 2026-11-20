@@ -49,8 +49,8 @@ func main() {
 	switch cmd {
 	case "help", "-h", "-help", "--help":
 		topic := ""
-		if cmd == "help" && len(args) > 1 {
-			topic = args[1]
+		if cmd == "help" {
+			topic = helpTopic(args)
 		}
 		h, ok := helps[topic]
 		if !ok {
@@ -104,8 +104,24 @@ func usageErrorf(format string, args ...any) error {
 	return &usageError{msg: fmt.Sprintf(format, args...)}
 }
 
+// helpTopic resolves `minigo help [topic]`: a flag-looking argument asks
+// for the general usage, it is not a topic name (`minigo help -h`).
+func helpTopic(args []string) string {
+	if len(args) > 1 && !isHelpFlag(args[1]) {
+		return args[1]
+	}
+	return ""
+}
+
 func isHelpFlag(a string) bool {
 	return a == "-h" || a == "-help" || a == "--help"
+}
+
+// isGoFileArg reports whether a positional names a .go file: like the
+// go command, a ref ending in ".go" starts a named-file list, never an
+// import path.
+func isGoFileArg(a string) bool {
+	return strings.HasSuffix(a, ".go")
 }
 
 // helps maps a command name to its help text; "" is the overview.
@@ -114,6 +130,7 @@ var helps = map[string]string{
 
 usage:
   minigo run <ref> [Func] [flags] [-- script args...]
+  minigo run file.go... [Func] [flags] [-- script args...]
   minigo <ref> [Func] [-- script args...]    shorthand for run
   minigo repl
   minigo vet <ref> [--special import/path.Sym]...
@@ -126,11 +143,13 @@ resolved from the current directory's module.
 Run 'minigo help <command>' or 'minigo <command> -h' for details.
 `,
 	"run": `usage: minigo run <ref> [Func] [flags] [-- script args...]
+       minigo run file.go... [Func] [flags] [-- script args...]
        minigo <ref> [Func] [-- script args...]
 
 Run Func (default: main) in the package <ref> and print its result
-unless it returns nothing. Arguments after -- become the script's
-os.Args[1:]; os.Args[0] is <ref>.
+unless it returns nothing. A list of .go files runs like
+'go run a.go b.go': the named files form one package. Arguments after
+-- become the script's os.Args[1:]; os.Args[0] is <ref>.
 
 flags (accepted before or after <ref>):
   --entry Func     function to run (same as the positional Func)
@@ -271,9 +290,24 @@ func run(ctx context.Context, args []string) error {
 		return usageErrorf("missing package reference")
 	}
 	ref := rest[0]
+	rest = rest[1:]
+	var files []string
+	if isGoFileArg(ref) {
+		// `go run a.go b.go` builds the named files as one package.
+		files = []string{ref}
+		ref = ""
+		for len(rest) > 0 && isGoFileArg(rest[0]) {
+			files = append(files, rest[0])
+			rest = rest[1:]
+		}
+	}
 	fn := entry
-	if fn == "" && len(rest) > 1 {
-		fn = rest[1]
+	if fn == "" && len(rest) > 0 {
+		fn = rest[0]
+		rest = rest[1:]
+	}
+	if len(rest) > 0 {
+		return usageErrorf("unexpected arguments %v", rest)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -286,9 +320,13 @@ func run(ctx context.Context, args []string) error {
 	for _, p := range srcs {
 		modes[p] = minigo.ModeSource
 	}
+	arg0 := ref
+	if len(files) > 0 {
+		arg0 = files[0]
+	}
 	opts := []minigo.Option{
 		minigo.WithOutput(os.Stdout),
-		minigo.WithArgs(append([]string{ref}, scriptArgs...)),
+		minigo.WithArgs(append([]string{arg0}, scriptArgs...)),
 	}
 	if len(modes) > 0 {
 		opts = append(opts, minigo.WithPackageModes(modes))
@@ -310,7 +348,12 @@ func run(ctx context.Context, args []string) error {
 		}
 	}
 	e := minigo.NewEngine(cwd, opts...)
-	r, err := e.Run(ctx, ref, fn)
+	var r runtime.Value
+	if len(files) > 0 {
+		r, err = e.RunFiles(ctx, files, fn)
+	} else {
+		r, err = e.Run(ctx, ref, fn)
+	}
 	// profiles cover failed runs too (a trap, os.Exit(N)): the run is
 	// over either way, and a slow failing script is worth profiling.
 	if perr := stop(); err == nil {

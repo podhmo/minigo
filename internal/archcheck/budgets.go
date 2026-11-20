@@ -139,10 +139,10 @@ var FileBudgets = map[string]int{
 	"repl/repl.go":                                 1259,
 	"replhooks.go":                                 55,
 	"resolve/filescope.go":                         117,
-	"resolve/goscan.go":                            123,
+	"resolve/goscan.go":                            186,
 	"resolve/lang.go":                              87,
 	"resolve/repo.go":                              201,
-	"resolve/resolve.go":                           289,
+	"resolve/resolve.go":                           298,
 	"runtime/arraylen.go":                          158,
 	"runtime/assignable.go":                        159,
 	"runtime/capabilities.go":                      229,
@@ -243,7 +243,7 @@ var FileBudgets = map[string]int{
 var FileBudgetExceptions = map[string]string{
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
-	"minigo.go":                        "M4-6b instM cache check/store + P4-1b verifyChunk + typeIDOf memo map",
+	"minigo.go":                        "M4-6b instM cache check/store + P4-1b verifyChunk + typeIDOf memo map + RunFiles file-list entry",
 	"typeid.go":                        "M4-6b: e.instKey computes the TypeID instantiation key; intern-widen: canonical elem key + carrierUpgrade + per-typedef memo of the computed TypeID deduped through the intern table",
 	"internal/stdlib/bind.go":          "ValueDeclTyp moved here so the errors installer can share it (P2-12)",
 	"intrinsics_os.go":                 "stdlib.OsErrPred moved to internal/stdlib; import line only (P2-12)",
@@ -251,6 +251,8 @@ var FileBudgetExceptions = map[string]string{
 	"internal/archcheck/budgets.go":    "new file budgets for the moved internal/stdlib packages (P2-12) + profiler call counts + lightparse",
 	"internal/archcheck/rules.go":      "allow-list entries for the moved internal/stdlib packages (P2-12)",
 	"syntax/lightparse.go":             "partial import table on an unquotable spec (name + imports returned with the error)",
+	"resolve/goscan.go":                "LocateFiles validates a go-run file list into one package",
+	"resolve/resolve.go":               "FileListResolver optional interface",
 	"internal/stdlib/io/io.go":         "AsReader became an Adapters method so the fmt-box unwrap stays faithful (P2-12)",
 	"intrinsics.go":                    "engineFileOf hook for the moved net installer (P2-12)",
 	"intrinsics_fmt.go":                "stdruntime import line for the moved CleanupHandle type switch (P2-12)",

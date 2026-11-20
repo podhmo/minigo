@@ -65,3 +65,19 @@ func TestSubcommandArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestHelpTopic(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"help"}, ""},
+		{[]string{"help", "run"}, "run"},
+		{[]string{"help", "-h"}, ""},
+		{[]string{"help", "--help"}, ""},
+	} {
+		if got := helpTopic(tc.args); got != tc.want {
+			t.Errorf("helpTopic(%v) = %q, want %q", tc.args, got, tc.want)
+		}
+	}
+}
