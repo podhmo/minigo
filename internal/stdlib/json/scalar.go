@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"go/ast"
 	"math"
 	"strconv"
 	"strings"
@@ -30,7 +29,17 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 			dec = n.String()
 		case un == "float64" || un == "float32":
 			if f, err := n.Float64(); err == nil {
+				// gc's floatType path: a float32 destination rejects
+				// |f| over MaxFloat32, and either float reports the
+				// literal when strconv refuses it (1e309, etc).
+				if un == "float32" && (f > math.MaxFloat32 || f < -math.MaxFloat32) {
+					ectx.fail("number "+n.String(), td, nil)
+					return priorOr(prior, c, td)
+				}
 				dec = f
+			} else {
+				ectx.fail("number "+n.String(), td, nil)
+				return priorOr(prior, c, td)
 			}
 		case jsonIntName(un):
 			lit := n.String()
@@ -213,7 +222,7 @@ func jsonStringOpt(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 		if sok {
 			return stdlib.ScriptVal(s)
 		}
-		return stdlib.ScriptVal(jsonDomDeep(node, ectx.keepNum))
+		return stdlib.ScriptVal(jsonDomDeep(node, ectx))
 	}
 	// A quoted "null" is the null literal, not the word: it follows
 	// normal null semantics (nils nilable kinds, leaves the rest).
@@ -442,32 +451,7 @@ func jsonIntName(name string) bool {
 	return false
 }
 
-// jsonStructChase follows a named typedef's TypeExpr chain to the
-// shape-giving typedef, returning it only when the chain lands on a
-// structural kind — `type TBis T` where T is a struct answers T's
-// typedef. Scalar and unresolvable chains return nil so the caller
-// keeps the declared td (and its name).
-func jsonStructChase(c runtime.ExprResolver, td *runtime.TypeDef) *runtime.TypeDef {
-	for i := 0; td != nil && i < 16; i++ {
-		switch td.Kind {
-		case runtime.KindStruct, runtime.KindSlice, runtime.KindMap, runtime.KindPointer, runtime.KindInterface:
-			return td
-		}
-		var rt *runtime.TypeDef
-		var err error
-		switch e := td.TypeExpr().(type) {
-		case *ast.Ident, *ast.SelectorExpr, *ast.IndexExpr, *ast.IndexListExpr:
-			rt, err = c.ResolveType(td, e)
-		default:
-			return nil
-		}
-		if err != nil || rt == nil || rt == td {
-			return nil
-		}
-		td = rt
-	}
-	return nil
-}
+
 
 // jsonUnderlyingName peels a named typedef to its underlying spelling's
 // bare identifier ("int" for `type MyInt int`) for width checks.
