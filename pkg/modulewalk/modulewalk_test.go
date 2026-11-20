@@ -258,3 +258,38 @@ func TestDiscoverModules(t *testing.T) {
 		t.Errorf("go.work modules (-want +got):\n%s", diff)
 	}
 }
+
+func TestWalkPattern_ExcludesVendorTestdata(t *testing.T) {
+	root := fixture(t)
+	for name, content := range map[string]string{
+		"vendor/example.com/v/v.go": "package v\n",
+		"testdata/golden/x.go":      "package golden\n",
+		"_hidden/h.go":              "package hidden\n",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	loc, err := locator.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &Walker{Locator: loc}
+
+	var seen []string
+	err = w.Walk(context.Background(), VisitorFunc(func(pi *PackageImports) ([]string, error) {
+		seen = append(seen, pi.ImportPath)
+		return nil, nil
+	}), "./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(seen)
+	if diff := cmp.Diff([]string{"example.com/m/a", "example.com/m/b"}, seen); diff != "" {
+		t.Errorf("walk (-want +got):\n%s", diff)
+	}
+}
