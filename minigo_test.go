@@ -2373,10 +2373,13 @@ func TestHostAnyRoundTripTypes(t *testing.T) {
 	e := newEngine(t)
 	e.Bind("example.com/hostanytypes", map[string]runtime.Value{
 		"Make": &runtime.GoValue{V: func() []any {
-			held = []any{int8(5), int64(9), "x", 1.5}
+			held = []any{int8(5), int64(9), "x", 1.5, uint(1) << 63}
 			return held
 		}},
 		"Pass": &runtime.GoValue{V: func(s []any) {}},
+		"Pass2": &runtime.GoValue{V: func(s []any) {
+			notes = append(notes, fmt.Sprintf("%T", s[0]))
+		}},
 		"Types": &runtime.GoValue{V: func() string {
 			out := ""
 			for _, e := range held {
@@ -2388,9 +2391,10 @@ func TestHostAnyRoundTripTypes(t *testing.T) {
 	})
 	run(t, e, "./testdata/hostanytypes", "")
 	want := []string{
-		"in-script: int8 int64 string float64",
-		"float64 string int64 int8 ",
-		"float64 string int64 int8 ",
+		"in-script: int8 int64 string float64 uint",
+		"uint float64 string int64 int8 ",
+		"uint float64 string int64 int8 ",
+		"int",
 	}
 	if diff := cmp.Diff(want, notes); diff != "" {
 		t.Fatalf("round-trip types mismatch (-want +got):\n%s", diff)
