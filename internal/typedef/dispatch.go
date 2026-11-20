@@ -122,7 +122,12 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 				// only fills in when the tag declares none (host box).
 				// Host reflect methods carry no decl signature, so the
 				// func view reports nil for the pure host box.
-				if n.Typ != nil && len(n.Typ.Methods) > 0 {
+				if n.Typ != nil && (len(n.Typ.Methods) > 0 || n.Typ.File != nil || declOverHost(n.Typ)) {
+					// a script-declared typedef (File set, or the
+					// pointee of an anonymous *T over one) reports its
+					// own walk — `type MyBuf bytes.Buffer` inherits
+					// none of the host methods, so its set is just
+					// what the declaration adds.
 					return r.TypeMethodInfoU(n.Typ, ptr)
 				}
 				return &runtime.MethodSet{Names: hostMethodSet(gv.V)}, nil
@@ -214,6 +219,14 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 // hostMethodSet reports a host value's reflect method names — the empty
 // set when the box holds nil (a nil interface boxes no methods, and
 // TypeOf would nil-deref).
+// declOverHost reports whether td is an anonymous pointer typedef
+// (*T) whose pointee is a script-declared type — `&b` for a
+// `type MyBuf bytes.Buffer` reaches here as Named{*MyBuf}.
+func declOverHost(td *runtime.TypeDef) bool {
+	return td.Kind == runtime.KindPointer && td.Spec == nil &&
+		td.Elem != nil && td.Elem.File != nil
+}
+
 func hostMethodSet(x any) map[string]bool {
 	set := map[string]bool{}
 	t := reflect.TypeOf(x)
