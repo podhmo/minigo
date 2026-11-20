@@ -148,7 +148,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			// the %w operand indexes come from the spec as written —
 			// they index the raw args; rewriteTypeVerbs renumbers the
 			// directives and rebuilds the operand list for printing.
-			_, wrapPos, wrapDirs := rewriteWrapVerbs(spec)
+			_, wrapPos, wrapDirs, wrapStars := rewriteWrapVerbs(spec)
 			// gc prints %!w(...) for a %w operand that wraps nothing —
 			// nil, a non-error, or a missing operand — instead of its %v.
 			// Classify once per %w verb; the marker text rides to host fmt
@@ -160,7 +160,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 				case p+1 >= len(a) || p+1 >= len(flat):
 					bad = append(bad, "%!w(MISSING)")
 				default:
-					if lit, isBad := badWrapOperand(v, flat[p+1], wrapDirs[k]); isBad {
+					if lit, isBad := badWrapOperand(v, flat[p+1], wrapDirs[k], wrapStars[k], flat[1:]); isBad {
 						bad = append(bad, lit)
 					} else {
 						bad = append(bad, "")
@@ -205,7 +205,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 // valid error wraps (and prints under %v); nil and non-error operands
 // print %!w(<nil>) / %!w(TYPE=value) literal markers instead — the
 // marker's inner value renders under a markerState built from the
-func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string) (string, bool) {
+func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string, stars []int, vals []runtime.Value) (string, bool) {
 	if stdlib.WrapOperand(v, x) != nil {
 		return "", false
 	}
@@ -216,10 +216,20 @@ func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string) (string, bo
 	// dir is the directive text ("%[flags][width][.prec]w"); its tail
 	// feeds markerInner's flag/width/precision parser — gc applies the
 	// directive's own flags inside the marker while suppressing
-	// Formatter/Stringer methods on the inner value.
-	st, _, _ := markerInner(dir[1:len(dir)-1], nil, nil)
+	// Formatter/Stringer methods on the inner value. stars+vals let a
+	// `*` width/precision read its operand: a non-integer one reports
+	// %!(BADWIDTH)/%!(BADPREC) ahead of the marker like gc.
+	st, badWidth, badPrec := markerInner(dir[1:len(dir)-1], stars, vals)
 	inner := (&fmtValue{c: v, x: x}).render('v', st)
-	return fmt.Sprintf("%%!w(%s=%s)", ScriptTypeString(x), inner), true
+	var b strings.Builder
+	if badWidth {
+		b.WriteString("%!(BADWIDTH)")
+	}
+	if badPrec {
+		b.WriteString("%!(BADPREC)")
+	}
+	fmt.Fprintf(&b, "%%!w(%s=%s)", ScriptTypeString(x), inner)
+	return b.String(), true
 }
 
 // rewriteWrapVerbsOps rewrites each %w like rewriteWrapVerbs: a good
@@ -258,7 +268,10 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		return i
 	}
 	// a verb's operand indexes: the star args plus the value arg.
-	type verbEv struct{ pct, i, arg int }
+	type verbEv struct {
+		pct, i, arg int
+		stars       []int
+	}
 	var evs []verbEv
 	argNums := []int{}
 	i := 0
@@ -272,8 +285,10 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		for i < len(spec) && strings.IndexByte("#+- 0", spec[i]) >= 0 {
 			i++
 		}
+		stars := []int{}
 		i = index(i)
 		if i < len(spec) && spec[i] == '*' {
+			stars = append(stars, argNum)
 			argNum++
 			i++
 		} else {
@@ -282,6 +297,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		if i < len(spec) && spec[i] == '.' {
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
+				stars = append(stars, argNum)
 				argNum++
 				i++
 			} else {
@@ -294,22 +310,35 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		}
 		verb := spec[i]
 		i++
-		evs = append(evs, verbEv{pct, i, argNum})
+		evs = append(evs, verbEv{pct, i, argNum, stars})
 		if verb != '%' {
 			argNums = append(argNums, argNum)
 			argNum++
 		}
 	}
-	// operand indexes a non-%w verb consumes: a %w operand shared with
-	// one of these must keep its value, so the marker prints as text.
+	// operand indexes a surviving directive consumes: every value arg
+	// plus every `*` arg of a non-%w or good-%w verb. A bad %w's own
+	// directive text is replaced, so its arg and stars are consumed
+	// explicitly in the second pass — but a slot already claimed here
+	// must keep its value or the sibling verb misprints (and a `*` of
+	// another directive would read the marker as its width).
 	shared := map[int]bool{}
 	wIdx := map[int]int{}
+	wAtShared := 0
 	for n, ev := range evs {
 		c := spec[ev.i-1]
 		if c == 'w' {
-			wIdx[n] = len(wIdx)
-		} else if c != '%' {
+			wIdx[n] = wAtShared
+			wAtShared++
+			if wIdx[n] < len(bad) && bad[wIdx[n]] != "" {
+				continue
+			}
+		}
+		if c != '%' {
 			shared[ev.arg] = true
+			for _, st := range ev.stars {
+				shared[st] = true
+			}
 		}
 	}
 	last := 0
@@ -333,13 +362,28 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		if lit == "" {
 			sb.WriteString(spec[ev.pct : ev.i-1])
 			sb.WriteByte('v')
-		} else if ev.arg < len(ops) && !shared[ev.arg] && !consumed[ev.arg] {
-			ops[ev.arg] = lit
-			sb.WriteString("%[")
-			sb.WriteString(strconv.Itoa(ev.arg + 1))
-			sb.WriteString("]s")
 		} else {
-			sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
+			// the directive's `*` operands die with it: any slot no
+			// sibling consumes gets an empty string + %[S]s so gc's
+			// silent consumption leaves no EXTRA and nothing reads
+			// the marker text as a width.
+			for _, st := range ev.stars {
+				if st != ev.arg && st < len(ops) && !shared[st] && !consumed[st] {
+					ops[st] = ""
+					sb.WriteString("%[")
+					sb.WriteString(strconv.Itoa(st + 1))
+					sb.WriteString("]s")
+					consumed[st] = true
+				}
+			}
+			if ev.arg < len(ops) && !shared[ev.arg] && !consumed[ev.arg] {
+				ops[ev.arg] = lit
+				sb.WriteString("%[")
+				sb.WriteString(strconv.Itoa(ev.arg + 1))
+				sb.WriteString("]s")
+			} else {
+				sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
+			}
 		}
 		consumed[ev.arg] = true
 	}
@@ -355,13 +399,14 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 // precision consume an operand, and the list may repeat an index
 // (`%[1]w %[1]w`). Indexes past the operands are reported too; the
 // caller drops them (gc prints %!w(MISSING) and records nothing).
-func rewriteWrapVerbs(spec string) (string, []int, []string) {
+func rewriteWrapVerbs(spec string) (string, []int, []string, [][]int) {
 	if !strings.Contains(spec, "w") {
-		return spec, nil, nil
+		return spec, nil, nil, nil
 	}
 	var sb strings.Builder
 	var wrapPos []int
 	var wrapDirs []string
+	var wrapStars [][]int
 	argNum := 0
 	// index parses an explicit `[n]` at spec[i:], moving the cursor.
 	index := func(i int) int {
@@ -394,8 +439,10 @@ func rewriteWrapVerbs(spec string) (string, []int, []string) {
 		for i < len(spec) && strings.IndexByte("#+- 0", spec[i]) >= 0 {
 			i++
 		}
+		stars := []int{}
 		i = index(i)
 		if i < len(spec) && spec[i] == '*' {
+			stars = append(stars, argNum)
 			argNum++
 			i++
 		} else {
@@ -404,6 +451,7 @@ func rewriteWrapVerbs(spec string) (string, []int, []string) {
 		if i < len(spec) && spec[i] == '.' {
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
+				stars = append(stars, argNum)
 				argNum++
 				i++
 			} else {
@@ -425,13 +473,14 @@ func rewriteWrapVerbs(spec string) (string, []int, []string) {
 			sb.WriteByte('v')
 			wrapPos = append(wrapPos, argNum)
 			wrapDirs = append(wrapDirs, spec[pct:i])
+			wrapStars = append(wrapStars, stars)
 			argNum++
 		default:
 			sb.WriteString(spec[pct:i])
 			argNum++
 		}
 	}
-	return sb.String(), wrapPos, wrapDirs
+	return sb.String(), wrapPos, wrapDirs, wrapStars
 }
 
 // ffn wraps a host fmt-style function: each arg becomes fmtArg so host

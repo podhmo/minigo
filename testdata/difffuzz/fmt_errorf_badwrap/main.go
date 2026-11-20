@@ -25,6 +25,15 @@ func main() {
 	fmt.Println(fmt.Errorf("%[1]d %[1]w", 3))
 	fmt.Println(fmt.Errorf("%.2w", "abc"))
 	fmt.Println(fmt.Errorf("x %w", S{}))
+	// a bad %w's `*` width/precision operand reads like gc: integers
+	// pad or cut the inner value, non-integers print a BADWIDTH /
+	// BADPREC marker ahead of it, and a shared star slot keeps its
+	// value for the sibling verb.
+	fmt.Println(fmt.Errorf("%[1]*[1]w", "x"))
+	fmt.Println(fmt.Errorf("%[2]*[1]w", "x", 5))
+	fmt.Println(fmt.Errorf("%[3]*[2]w %[1]d", 7, "x", 4))
+	fmt.Println(fmt.Errorf("%.*w", "x", 5))
+	fmt.Println(fmt.Errorf("%[2]*[1]w %[2]d", "x", 4))
 }
 
 type S struct{}
