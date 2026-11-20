@@ -14,6 +14,7 @@ import (
 	"strconv"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/pkg/astwalk"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -94,40 +95,35 @@ func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) 
 // that reach unregistered stub members, skipping selector bases a local
 // binding hides at the call's position.
 func scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string, locals *syntax.LocalScopes, out *[]Result, deps Deps) {
-	ast.Inspect(root, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
+	for call := range astwalk.Each[*ast.CallExpr](root) {
 		sel, ok := call.Fun.(*ast.SelectorExpr)
 		if !ok {
-			return true
+			continue
 		}
 		x, ok := sel.X.(*ast.Ident)
 		if !ok {
-			return true
+			continue
 		}
 		if locals.At(x.Name, x.Pos()) {
-			return true // a local binding hides the import here
+			continue // a local binding hides the import here
 		}
 		path, ok := imports[x.Name]
 		if !ok {
-			return true // method call or local value selector
+			continue // method call or local value selector
 		}
 		name := sel.Sel.Name
 		if deps.Registered(path, name) {
-			return true
+			continue
 		}
 		if !stubMember(ctx, path, name, deps) {
-			return true
+			continue
 		}
 		*out = append(*out, Result{
 			Pos:      deps.Position(call.Lparen),
 			Call:     x.Name + "." + name,
 			Resolved: path + "." + name,
 		})
-		return true
-	})
+	}
 }
 
 // stubMember reports whether path.Name resolves to a stub declaration: a
