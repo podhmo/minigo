@@ -43,7 +43,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           121,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           642,
-	"internal/archcheck/budgets.go":             305,
+	"internal/archcheck/budgets.go":             306,
 	"internal/archcheck/rules.go":               147,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -133,7 +133,7 @@ var FileBudgets = map[string]int{
 	"pkg/modulewalk/modulewalk.go":              541,
 
 	"repl/complete.go":                             1389,
-	"repl/pkginfo.go":                              149,
+	"repl/pkginfo.go":                              162,
 	"repl/load.go":                                 662,
 	"repl/repl.go":                                 1259,
 	"replhooks.go":                                 55,
@@ -246,7 +246,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/stdlib/bind.go":          "ValueDeclTyp moved here so the errors installer can share it (P2-12)",
 	"intrinsics_os.go":                 "stdlib.OsErrPred moved to internal/stdlib; import line only (P2-12)",
 	"stdlibreg.go":                     "registers the moved stdlib installers (P2-12)",
-	"internal/archcheck/budgets.go":    "new file budgets for the moved internal/stdlib packages (P2-12) + profiler call counts + lightparse + modulewalk + repl/pkginfo",
+	"internal/archcheck/budgets.go":    "new file budgets for the moved internal/stdlib packages (P2-12) + profiler call counts + lightparse + modulewalk + repl/pkginfo + cmd/minigo exception",
 	"internal/archcheck/rules.go":      "allow-list entries for the moved internal/stdlib packages (P2-12) + pkg/modulewalk + repl→pkg/locator+pkg/modulewalk",
 	"syntax/lightparse.go":             "partial import table on an unquotable spec (name + imports returned with the error)",
 	"internal/stdlib/io/io.go":         "AsReader became an Adapters method so the fmt-box unwrap stays faithful (P2-12)",
@@ -301,4 +301,5 @@ var FileBudgetExceptions = map[string]string{
 	"vm/processcaller.go":                "P2-2b: narrowed host callback helper callers",
 	"vm/selectsite.go":                   "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name; the site cache also covers namedMember (selNamedMethod, payload field/path replays) + genCallSlot/instSiteSlot site memos + instSiteEnv/instSiteCacheable",
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
+	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch",
 }
