@@ -14,7 +14,14 @@ import (
 // resolves to, and a failure annotates its error with the walk. The
 // record lives only for the call — nothing persists on the typedefs
 // or the resolver.
-type respath []string
+//
+// keys spell the walk for messages; ids hold the decl identities —
+// two decls sharing a name (a package `type A []int` and a function's
+// `type A B` both spell "m.A") are different hops.
+type respath struct {
+	keys []string
+	ids  map[any]bool
+}
 
 // key names one hop: the declaring package's path and the decl name,
 // or a marker for a typedef with no decl behind it (synthesized or
@@ -36,15 +43,25 @@ func respathKey(td *runtime.TypeDef) string {
 	return name
 }
 
+// identityOf names the decl a typedef carries: its spec when one was
+// declared (fresh typedef objects around the same decl still share it)
+// and the typedef itself otherwise (bound types are interned anyway).
+func identityOf(td *runtime.TypeDef) any {
+	if td.Spec != nil {
+		return td.Spec
+	}
+	return td
+}
+
 // seedPath starts the record at the typedef the public entry was
 // called on. Unnamed typedefs open no record: a real cycle can only
 // revisit a named decl, and two anonymous hops would collide on the
 // "<expr>" marker.
 func seedPath(td *runtime.TypeDef) respath {
 	if key := respathKey(td); key != "<expr>" && key != "<nil>" {
-		return respath{key}
+		return respath{keys: []string{key}, ids: map[any]bool{identityOf(td): true}}
 	}
-	return nil
+	return respath{}
 }
 
 // push appends the typedef a hop resolved to. Unnamed hops are not
@@ -55,21 +72,22 @@ func (p respath) push(td *runtime.TypeDef) respath {
 	if key == "<expr>" || key == "<nil>" {
 		return p
 	}
-	return append(p, key)
-}
-
-// seen reports whether key already appears on the path — a resolution
-// arriving at a decl it already passed is a cycle.
-func (p respath) seen(key string) bool {
-	for _, s := range p {
-		if s == key {
-			return true
-		}
+	if p.ids == nil {
+		p.ids = map[any]bool{}
 	}
-	return false
+	p.ids[identityOf(td)] = true
+	p.keys = append(p.keys, key)
+	return p
 }
 
-func (p respath) String() string { return strings.Join(p, " -> ") }
+// seen reports whether the decl this typedef carries already appears
+// on the path — a resolution arriving at it again is a cycle when the
+// chase would keep walking it.
+func (p respath) seen(td *runtime.TypeDef) bool {
+	return p.ids[identityOf(td)]
+}
+
+func (p respath) String() string { return strings.Join(p.keys, " -> ") }
 
 // errf annotates a resolution failure with the walk that reached it.
 func (p respath) errf(format string, args ...any) error {
@@ -179,8 +197,11 @@ func (r *Resolver) underlying(td *runtime.TypeDef, p respath) (*runtime.TypeDef,
 		if err != nil || next == nil || next == td {
 			return nil, err
 		}
-		if key := respathKey(next); p.seen(key) {
-			return nil, p.errf("type underlying cycle through %s", key)
+		// a revisit only cycles while the revisited decl still peels —
+		// `type T []A; type A = T` walks T -> A -> T and stops: T is
+		// the answer, not a loop.
+		if p.seen(next) && (next.Kind == runtime.KindAlias || next.Kind == runtime.KindNamedBasic) {
+			return nil, p.errf("type underlying cycle through %s", respathKey(next))
 		}
 		p = p.push(next)
 		td = next
@@ -199,15 +220,17 @@ func (r *Resolver) PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
 
 // peelAliasTd is the path-carrying walk: hops append to p so a caller
 // reporting a resolution failure can name the chain, and a chain
-// revisiting a decl reports the cycle instead of truncating silently.
+// revisiting a decl it would keep peeling reports the cycle. Reaching
+// a walked named decl is fine — `type T []A; type A = T` ends at T,
+// which the loop leaves alone.
 func (r *Resolver) peelAliasTd(td *runtime.TypeDef, p respath) (*runtime.TypeDef, error) {
 	for i := 0; td != nil && td.Kind == runtime.KindAlias && i < 32; i++ {
 		next, err := r.aliasOf(td, p)
 		if err != nil || next == nil || next == td {
 			break
 		}
-		if key := respathKey(next); p.seen(key) {
-			return td, p.errf("type alias cycle through %s", key)
+		if next.Kind == runtime.KindAlias && p.seen(next) {
+			return td, p.errf("type alias cycle through %s", respathKey(next))
 		}
 		p = p.push(next)
 		td = next
