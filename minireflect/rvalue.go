@@ -30,6 +30,12 @@ type RValue struct {
 	// (Go's flagEmbedRO): selecting an exported field below it clears
 	// the restriction, as reflect does for `type T struct{ inner }`.
 	embedRO bool
+	// mexpr marks the Func value of a host type's Method(i)/MethodByName:
+	// the method expression's name. Call dispatches the receiver (in[0])
+	// by that name on the concrete value, so a facade's own method —
+	// EngineStdout.Write's output redirect — survives the reflect path
+	// instead of being unwrapped to the API type's real method.
+	mexpr string
 }
 
 // host reports whether this value delegates to a real reflect.Value.
@@ -492,8 +498,11 @@ func (v *RValue) Type() *RType {
 		rt := v.rv.Type()
 		// a host facade reports its API type — reflect.TypeOf(os.Stdout)
 		// is *os.File, not the engine's wrapper, and assert/compare on
-		// the RType sees the same identity (APITypeBox).
-		if v.rv.CanInterface() {
+		// the RType sees the same identity (APITypeBox). An
+		// interface-typed Value keeps its DECLARED type like Go:
+		// FieldByName("Stdout").Type() is io.Writer even when the
+		// stored value is a facade.
+		if rt.Kind() != reflect.Interface && v.rv.CanInterface() {
 			if at, ok := v.rv.Interface().(interface{ APIType() reflect.Type }); ok {
 				rt = at.APIType()
 			}
@@ -2589,6 +2598,33 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 			plain("reflect: Call with too few input arguments")
 		} else if len(in) > n {
 			plain("reflect: Call with too many input arguments")
+		}
+		if v.mexpr != "" && len(in) > 0 {
+			if r := in[0]; r != nil && r.rv.IsValid() && r.rv.CanInterface() {
+				if dm := r.rv.MethodByName(v.mexpr); dm.IsValid() {
+					rest := make([]reflect.Value, len(in)-1)
+					for i, a := range in[1:] {
+						j := i + 1
+						var pt reflect.Type
+						if mt.IsVariadic() && j >= mt.NumIn()-1 {
+							pt = mt.In(mt.NumIn() - 1).Elem()
+						} else {
+							pt = mt.In(j)
+						}
+						rv, err := toHost(a.ifaceVal(), pt, v.e)
+						if err != nil {
+							trap("reflect.Value.Call: %s", err)
+						}
+						rest[i] = rv
+					}
+					out := dm.Call(rest)
+					var res []*RValue
+					for _, o := range out {
+						res = append(res, v.e.wrapHost(v.vc, o))
+					}
+					return res
+				}
+			}
 		}
 		for i, a := range in {
 			var pt reflect.Type

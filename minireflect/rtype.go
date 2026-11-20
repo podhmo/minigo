@@ -1014,9 +1014,11 @@ func (t *RType) NumMethod() int {
 func (t *RType) Method(i int) *Method {
 	if t.rt != nil {
 		m := t.rt.Method(i)
+		f := t.e.wrapHost(nil, m.Func)
+		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
-			Func: t.e.wrapHost(nil, m.Func)}
+			Func: f}
 	}
 	set := t.e.methodSet(t.td)
 	names := exportedMethodNames(set)
@@ -1048,9 +1050,11 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 		if !ok {
 			return &Method{}, false
 		}
+		f := t.e.wrapHost(nil, m.Func)
+		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
-			Func: t.e.wrapHost(nil, m.Func)}, true
+			Func: f}, true
 	}
 	set := t.e.methodSet(t.td)
 	for i, n := range exportedMethodNames(set) {

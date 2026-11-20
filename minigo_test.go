@@ -2584,6 +2584,19 @@ func TestWithOutput(t *testing.T) {
 	}
 }
 
+func TestWithOutputReflectWrite(t *testing.T) {
+	// os.Stdout via the reflect method expression must reach the
+	// engine's configured output like a plain Write — the facade
+	// method dispatches on the concrete value, not the unwrapped
+	// *os.File's.
+	var buf strings.Builder
+	e := minigo.NewEngine("..", minigo.WithOutput(&buf))
+	run(t, e, "./testdata/intrins", "StdoutReflectWrite")
+	if got := buf.String(); got != "reflect 7\n" {
+		t.Fatalf("output: got %q", got)
+	}
+}
+
 func TestResultAs(t *testing.T) {
 	e := newEngine(t)
 	r, err := e.RunResult(context.Background(), "./testdata/decltypes", "TypedNils")
