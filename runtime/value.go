@@ -1077,6 +1077,14 @@ func opaqueKeyOf(v Value) Value {
 				panic(&Panic{Value: &RuntimeError{Msg: err.Error()}})
 			}
 			nv = mv
+			// a predeclared tag on the constant's own default type is
+			// gc's plain type — any(int(5)) == any(5) — so the key
+			// canonicalizes like the bare materialized value. rune is
+			// int32's alias, so it peels for a rune-flavored const too.
+			if n.Typ != nil && n.Typ.Spec == nil && n.Typ.Pkg == nil &&
+				(n.Typ.Name == u.DefaultName() || n.Typ.Name == "rune" && u.DefaultName() == "int32") {
+				return CanonicalKey(nv)
+			}
 		}
 		if unhashableKey(nv) {
 			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(n.Typ)}})
