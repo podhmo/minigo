@@ -240,7 +240,7 @@ func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runt
 			}
 		}
 		if isIfaceSlot {
-			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && jsonIfaceHasMethods(it) {
+			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && jsonIfaceHasMethods(v, it) {
 				// a method-ful interface holding a non-pointer value:
 				// gc refuses the literal outright (NumMethod>0 never
 				// reaches value()) — a fmt.Stringer cell does not
@@ -652,7 +652,11 @@ func jsonCellIsIface(target runtime.Value) bool {
 // unless they are provably empty (`any` or an `interface{}` literal
 // with no methods). A named or inline embed we cannot prove empty is
 // treated as method-ful — matching gc for io.Reader-style embeds.
-func jsonIfaceHasMethods(td *runtime.TypeDef) bool {
+// `any` spells the builtin only until a package or function-local
+// `type any interface{ M() }` shadows it — then the embed does carry
+// methods, so the shadow is resolved through the typedef and the
+// declaring package's index.
+func jsonIfaceHasMethods(v runtime.VMCaller, td *runtime.TypeDef) bool {
 	if len(td.MReqs) != 0 {
 		return true
 	}
@@ -661,6 +665,18 @@ func jsonIfaceHasMethods(td *runtime.TypeDef) bool {
 		case *ast.Ident:
 			if ex.Name != "any" {
 				return true
+			}
+			if lt := td.LocalTypes[ex.Name]; lt != nil && lt != td && jsonIfaceHasMethods(v, lt) {
+				return true
+			}
+			if p := v.Package(); p != nil && p.Index != nil {
+				if tdi := p.Index.Types[ex.Name]; tdi != nil && tdi.Decl != nil {
+					if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+						if it, ok := ts.Type.(*ast.InterfaceType); ok && it.Methods != nil && len(it.Methods.List) != 0 {
+							return true
+						}
+					}
+				}
 			}
 		case *ast.InterfaceType:
 			if ex.Methods != nil && len(ex.Methods.List) != 0 {
