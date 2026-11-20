@@ -293,3 +293,30 @@ func TestWalkPattern_ExcludesVendorTestdata(t *testing.T) {
 		t.Errorf("walk (-want +got):\n%s", diff)
 	}
 }
+
+func TestFindImporters_IncludeTests(t *testing.T) {
+	root := fixture(t)
+	loc, err := locator.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "testing" is a test-file-only import of a: invisible until IncludeTests
+	w := &Walker{Locator: loc}
+	importers, err := w.FindImporters(context.Background(), "testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(importers) != 0 {
+		t.Errorf("importers without IncludeTests = %v", importers)
+	}
+
+	w = &Walker{Locator: loc, IncludeTests: true}
+	importers, err = w.FindImporters(context.Background(), "testing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(importers) != 1 || importers[0].ImportPath != "example.com/m/a" {
+		t.Errorf("importers with IncludeTests = %v", importers)
+	}
+}
