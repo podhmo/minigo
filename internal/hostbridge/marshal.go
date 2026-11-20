@@ -342,6 +342,16 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 	if av.Type().AssignableTo(t) {
 		return av, nil
 	}
+	// a host facade unwraps to the value its API type names — a
+	// *scriptFile fills a *os.File slot (cmd.ExtraFiles) with the file
+	// it wraps.
+	if gv, isGV := v.(*runtime.GoValue); isGV {
+		if uw, ok := gv.V.(interface{ UnwrapHost() any }); ok {
+			if uav := reflect.ValueOf(uw.UnwrapHost()); uav.IsValid() && uav.Type().AssignableTo(t) {
+				return uav, nil
+			}
+		}
+	}
 	// a host-typed composite literal boxes `*T`; placing it inside a
 	// `T` field/element (e.g. []unicode.Range16{{...}}) needs the pointee.
 	if av.Kind() == reflect.Pointer && !av.IsNil() && av.Type().Elem().AssignableTo(t) {
