@@ -256,7 +256,7 @@ var FileBudgetExceptions = map[string]string{
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
 	"minigo.go":                        "M4-6b instM cache check/store + P4-1b verifyChunk + typeIDOf memo map + RunFiles file-list entry",
-	"typeid.go":                        "M4-6b: e.instKey computes the TypeID instantiation key; intern-widen: canonical elem key + carrierUpgrade + per-typedef memo of the computed TypeID deduped through the intern table",
+	"typeid.go":                        "M4-6b: e.instKey computes the TypeID instantiation key; intern-widen: canonical elem key + carrierUpgrade + per-typedef memo of the computed TypeID deduped through the intern table; anon composites keep len/map-key in the elem-composed key",
 	"internal/stdlib/bind.go":          "ValueDeclTyp moved here so the errors installer can share it (P2-12)",
 	"intrinsics_os.go":                 "stdlib.OsErrPred moved to internal/stdlib; import line only (P2-12)",
 	"stdlibreg.go":                     "registers the moved stdlib installers (P2-12)",
