@@ -3621,14 +3621,10 @@ func normVal(v any) runtime.Value {
 	return &runtime.GoValue{V: v}
 }
 
-// strToBytes builds a script []byte from a string.
+// strToBytes builds a script []byte from a string — the shared shape
+// every string->[]byte projection produces (runtime.BytesOf).
 func strToBytes(s string) *runtime.Slice {
-	elems := make([]runtime.Value, len(s))
-	for i := 0; i < len(s); i++ {
-		elems[i] = int64(s[i])
-	}
-	return &runtime.Slice{Elems: elems, Typ: &runtime.TypeDef{
-		Kind: runtime.KindSlice, Elem: &runtime.TypeDef{Name: "byte"}}}
+	return runtime.BytesOf(s)
 }
 
 // strToRunes builds a script []rune from a string, decoding UTF-8 like
