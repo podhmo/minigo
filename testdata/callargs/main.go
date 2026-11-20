@@ -21,6 +21,8 @@ func Sum64(xs []int64) int64 {
 }
 func Pair(a [2]int) int            { return a[0] + a[1] }
 func Bytes(b []byte) int           { return len(b) }
+func MutateB(b []byte)             { b[0] = 'i' }
+func MutateS(s []string)           { s[0] = "x" }
 func Anys(xs []any) int            { return len(xs) }
 func IsNil(xs []string) bool       { return xs == nil }
 func Num(n int) int                { return n + 1 }

@@ -192,6 +192,18 @@ func TestCallArgs(t *testing.T) {
 	if got := run(t, e, "./testdata/callargs", "SliceMapSelf", cycm["s"].([]any)); got != "[]interface {}" {
 		t.Errorf("SliceMapSelf: got %v (%T)", got, got)
 	}
+	// a slice arg is a snapshot: callee writes through the alias must
+	// not reach the caller's backing (the Engine.Call arg contract).
+	ab := []byte("hello")
+	run(t, e, "./testdata/callargs", "MutateB", ab)
+	if got := string(ab); got != "hello" {
+		t.Errorf("MutateB: caller slice changed to %q", got)
+	}
+	as := []string{"a", "b"}
+	run(t, e, "./testdata/callargs", "MutateS", as)
+	if got := as[0]; got != "a" {
+		t.Errorf("MutateS: caller slice changed to %q", got)
+	}
 	// a shared (non-cyclic) sub-slice still unboxes at every reference.
 	shs := []int{1}
 	if got := run(t, e, "./testdata/callargs", "SliceShared", []any{shs, shs}); got != int64(2) {
