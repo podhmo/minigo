@@ -28,3 +28,9 @@ a %!w(BADINDEX) b
 %!w(BADINDEX) %!w(string=x) e1
 %!w(string=        x) %!w(int=9) e1
 %!(BADWIDTH)%!w(BADINDEX) %!d(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)%!s(MISSING)
+%!w(BADINDEX) %!s(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)%!s(MISSING)
+%!w(BADINDEX) %!界(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)%!界(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)v %!s(MISSING)

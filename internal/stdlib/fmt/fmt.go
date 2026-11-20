@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
@@ -429,8 +430,35 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 			case fixRest && !ev.indexed && ev.arg >= len(ops):
 				// gc reads past the operand list and prints the
 				// verb's MISSING marker — emit it as text since the
-				// host's cursor may sit earlier.
-				sb.WriteString("%%!" + spec[ev.i-1:ev.i] + "(MISSING)")
+				// host's cursor may sit earlier. The `*` operands are
+				// still consumed: an out-of-range or non-int one adds
+				// its BADWIDTH/BADPREC marker, and the verb name is a
+				// whole rune, not one byte.
+				for k, st := range ev.stars {
+					mk := "%%!(BADWIDTH)"
+					if k == 1 {
+						mk = "%%!(BADPREC)"
+					}
+					if st >= len(ops) {
+						sb.WriteString(mk)
+						continue
+					}
+					if _, ok := starInt(ops[st]); !ok {
+						sb.WriteString(mk)
+					}
+					if st != ev.arg && !shared[st] && !consumed[st] {
+						ops[st] = ""
+						sb.WriteString("%[")
+						sb.WriteString(strconv.Itoa(st + 1))
+						sb.WriteString("]s")
+						consumed[st] = true
+					}
+				}
+				_, w := utf8.DecodeRuneInString(spec[ev.i-1:])
+				sb.WriteString("%%!" + spec[ev.i-1:ev.i-1+w] + "(MISSING)")
+				if last < ev.i-1+w {
+					last = ev.i - 1 + w
+				}
 			case fixRest && !ev.indexed && ev.arg < len(ops):
 				// the host's implicit cursor no longer matches the
 				// operand gc reads here — pin it explicitly.

@@ -54,6 +54,12 @@ func main() {
 	fmt.Println(fmt.Errorf("%[9]w %w %w", "x", fmt.Errorf("e1"), fmt.Errorf("e2")))
 	fmt.Println(fmt.Errorf("%[2]*[1]w %w %w", "x", 9, fmt.Errorf("e1"), fmt.Errorf("e2")))
 	fmt.Println(fmt.Errorf("%[2]*w %d", "x"))
+	fmt.Println(fmt.Errorf("%[9]w %*s", "x"))
+	fmt.Println(fmt.Errorf("%[9]w %*s", 7))
+	fmt.Println(fmt.Errorf("%[9]w %*.*s", "x", 3))
+	fmt.Println(fmt.Errorf("%[9]w %界"))
+	fmt.Println(fmt.Errorf("%[9]w %*界"))
+	fmt.Println(fmt.Errorf("%[9]w %*s %s", "x", "v"))
 }
 
 type S struct{}
