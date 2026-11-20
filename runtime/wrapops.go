@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"go/constant"
+	"reflect"
 
 	"github.com/podhmo/minigo/bytecode"
 )
@@ -81,4 +82,28 @@ func WrapReplay(u *UConst, mask func(int64) int64) (int64, bool) {
 		}
 	}
 	return acc, true
+}
+
+// WrapReplayAtKind replays a Wrap value's deferred ops in the domain
+// of the reflect integer kind k — the width the constant takes when
+// it converts to a host integer type like reflect.Kind.
+func WrapReplayAtKind(u *UConst, k reflect.Kind) (int64, bool) {
+	switch k {
+	case reflect.Int, reflect.Int64:
+		return WrapReplay(u, nil)
+	case reflect.Int8:
+		return WrapReplay(u, func(x int64) int64 { return int64(int8(x)) })
+	case reflect.Int16:
+		return WrapReplay(u, func(x int64) int64 { return int64(int16(x)) })
+	case reflect.Int32:
+		return WrapReplay(u, func(x int64) int64 { return int64(int32(x)) })
+	case reflect.Uint8:
+		return WrapReplay(u, func(x int64) int64 { return int64(uint8(x)) })
+	case reflect.Uint16:
+		return WrapReplay(u, func(x int64) int64 { return int64(uint16(x)) })
+	case reflect.Uint32:
+		return WrapReplay(u, func(x int64) int64 { return int64(uint32(x)) })
+	default:
+		return WrapReplay(u, func(x int64) int64 { return int64(uint64(x)) })
+	}
 }
