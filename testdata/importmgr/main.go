@@ -13,3 +13,11 @@ func AliasRun() string {
 }
 
 func main() {}
+
+// ManagerRef names the Manager type explicitly — the bound table must
+// carry it, not only New.
+func ManagerRef() string {
+	var im importmanager.Manager
+	_ = &im
+	return "ok"
+}
