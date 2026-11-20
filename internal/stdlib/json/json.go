@@ -174,15 +174,17 @@ type jsonDecFlags struct {
 }
 
 func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags) (runtime.Value, error) {
-	return jsonInjectLevel(v, data, node, target, flags, true)
+	return jsonInjectLevel(v, data, node, target, flags, true, 0)
 }
 
 // jsonInjectLevel is jsonInject: top marks the slot the caller named,
 // where an interface declaration decides decode-vs-descend; the
 // pointer-descent recursion passes false because a pointer cell can
 // carry a stale interface tag from its `any` assignment while it
-// stores the pointee's value.
-func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags, top bool) (runtime.Value, error) {
+// stores the pointee's value. depth bounds the descent — a
+// self-referencing pointer chain (a = &a) must error, not exhaust
+// the interpreter's stack.
+func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags, top bool, depth int) (runtime.Value, error) {
 	{
 		if prior0, _ := runtime.Deref(target); jsonNilish(prior0) {
 			if ptd := derefTyp(v.TypeOf(target)); ptd != nil && ptd.Kind == runtime.KindPointer {
@@ -216,17 +218,29 @@ func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runt
 			}
 		}
 		if dv, isRef := runtime.Deref(prior); isRef {
-			// gc's indirect: a non-null literal descends into any
-			// held pointer — the decode then addresses the pointee's
-			// own storage at every level — and under `null` descends
-			// only when the pointee is itself a pointer, otherwise
-			// the nil lands at this level.
-			if _, dvIsPtr := runtime.Deref(dv); domVal(node) != nil || dvIsPtr {
-				return jsonInjectLevel(v, data, node, prior, flags, false)
+			// gc's indirect: an interface descends into a held
+			// pointer for any non-null literal — under `null` only
+			// when the pointee is itself a pointer — while a plain
+			// pointer level descends for non-null only and lets the
+			// nil land at this level. depth caps the walk so a
+			// self-referencing chain errors instead of exhausting
+			// the interpreter stack.
+			var descend bool
+			if isIfaceSlot {
+				_, dvIsPtr := runtime.Deref(dv)
+				descend = domVal(node) != nil || dvIsPtr
+			} else {
+				descend = domVal(node) != nil
+			}
+			if descend {
+				if depth >= 64 {
+					return nil, fmt.Errorf("json: pointer indirection exceeds depth limit (self-referencing value?)")
+				}
+				return jsonInjectLevel(v, data, node, prior, flags, false, depth+1)
 			}
 		}
 		if isIfaceSlot {
-			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && (len(it.MReqs) != 0 || len(it.IEmbeds) != 0) {
+			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && jsonIfaceHasMethods(it) {
 				// a method-ful interface holding a non-pointer value:
 				// gc refuses the literal outright (NumMethod>0 never
 				// reaches value()) — a fmt.Stringer cell does not
@@ -631,6 +645,32 @@ type jsonCallErr struct {
 func jsonCellIsIface(target runtime.Value) bool {
 	c, ok := target.(*runtime.Cell)
 	return ok && c.Typ != nil && c.Typ.Kind == runtime.KindInterface
+}
+
+// jsonIfaceHasMethods approximates gc's NumMethod>0 on an interface
+// typedef: declared methods count directly; embedded elements count
+// unless they are provably empty (`any` or an `interface{}` literal
+// with no methods). A named or inline embed we cannot prove empty is
+// treated as method-ful — matching gc for io.Reader-style embeds.
+func jsonIfaceHasMethods(td *runtime.TypeDef) bool {
+	if len(td.MReqs) != 0 {
+		return true
+	}
+	for _, e := range td.IEmbeds {
+		switch ex := e.(type) {
+		case *ast.Ident:
+			if ex.Name != "any" {
+				return true
+			}
+		case *ast.InterfaceType:
+			if ex.Methods != nil && len(ex.Methods.List) != 0 {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // jsonUnmarshalHostVal tries the UnmarshalJSON pointer method on a
