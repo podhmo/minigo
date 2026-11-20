@@ -72,10 +72,16 @@ func (p respath) push(td *runtime.TypeDef) respath {
 	if key == "<expr>" || key == "<nil>" {
 		return p
 	}
-	if p.ids == nil {
-		p.ids = map[any]bool{}
+	// copy-on-write: the walk is value-semantic like go-scan's ctx value,
+	// so a sub-chase's hops never leak into the caller's seen set — a
+	// resolveTypeRef inside aliasOf pushing `int` must not read as a
+	// revisit when the outer Underlying later arrives at `int` itself.
+	ids := make(map[any]bool, len(p.ids)+1)
+	for id := range p.ids {
+		ids[id] = true
 	}
-	p.ids[identityOf(td)] = true
+	ids[identityOf(td)] = true
+	p.ids = ids
 	p.keys = append(p.keys, key)
 	return p
 }

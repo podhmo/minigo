@@ -82,3 +82,26 @@ func TestRespathSameNameDifferentDecls(t *testing.T) {
 		t.Error("the seeded decl did not see itself")
 	}
 }
+
+// `type A = int; type T A` — Underlying(T) reaches int. The inner peel
+// that resolved A visited int too; its hops must not mark int as walked
+// for the outer chase (copy-on-write ids).
+func TestRespathSubwalkDoesNotMarkCaller(t *testing.T) {
+	r := New(Deps{Builtins: runtime.NewEnv()})
+	pkg := &runtime.Package{Path: "example.com/m", Name: "m"}
+	pkg.Globals = runtime.NewEnv()
+	intTd := &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: "int"}
+	pkg.Globals.Set("int", intTd)
+	tdA := &runtime.TypeDef{Kind: runtime.KindAlias, Name: "A", Pkg: pkg, Anon: ast.NewIdent("int")}
+	pkg.Globals.Set("A", tdA)
+	tdT := &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: "T", Pkg: pkg, Anon: ast.NewIdent("A")}
+	pkg.Globals.Set("T", tdT)
+
+	got, err := r.Underlying(tdT)
+	if err != nil {
+		t.Fatalf("Underlying(T) reported a cycle through a legal chain: %v", err)
+	}
+	if got != intTd {
+		t.Errorf("want the int typedef, got %v", got)
+	}
+}
