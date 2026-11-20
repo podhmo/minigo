@@ -194,12 +194,23 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 			}
 		}
 		sargs := make([]runtime.Value, 0, len(in))
+		type resolvedArg struct {
+			rv reflect.Value
+			sv runtime.Value
+		}
+		var resolved []resolvedArg
 		for i, a := range in {
 			if t.IsVariadic() && i == len(in)-1 {
 				// the host packs a ...T call into one slice; the script
 				// callee collects separate args back into its own ...T.
 				for j := range a.Len() {
-					sargs = append(sargs, GoSlotValueOf(a.Index(j)))
+					e := a.Index(j)
+					if sv := m.projectedVal(e); sv != nil {
+						sargs = append(sargs, sv)
+						resolved = append(resolved, resolvedArg{e, sv})
+						continue
+					}
+					sargs = append(sargs, GoSlotValueOf(e))
 				}
 				continue
 			}
@@ -209,6 +220,7 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 				// param reads the script value (typedef + methods),
 				// not the method-less projected map/slice.
 				sargs = append(sargs, sv)
+				resolved = append(resolved, resolvedArg{a, sv})
 				continue
 			}
 			sargs = append(sargs, GoSlotValueOf(a))
@@ -219,6 +231,11 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 				panic(m.funcMapPanicValue(err, vc))
 			}
 			panic(err)
+		}
+		for _, ra := range resolved {
+			// the callee wrote through the script value; mirror the
+			// writes into the host projection the caller still reads.
+			m.syncProjected(ra.sv, ra.rv, vc)
 		}
 		nout := t.NumOut()
 		var rs []runtime.Value

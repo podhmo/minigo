@@ -17,8 +17,12 @@ import (
 // Entries are pushed per host call and dropped when it returns, so a
 // freed host map's address can never resolve to a stale script value.
 type callScopeStack struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	// scopes maps a projected host container's pointer to the script
+	// value it was made from; used tracks the projections a callback
+	// actually consumed so write-back leaves their script value alone.
 	scopes []map[uintptr]runtime.Value
+	used   map[uintptr]bool
 }
 
 // callScopes maps goroutine id -> its stack of projection scopes. The
@@ -47,6 +51,9 @@ func (m *Marshal) pushCallScope() func() {
 	s := st.(*callScopeStack)
 	s.mu.Lock()
 	s.scopes = append(s.scopes, map[uintptr]runtime.Value{})
+	if s.used == nil {
+		s.used = map[uintptr]bool{}
+	}
 	s.mu.Unlock()
 	return func() {
 		s.mu.Lock()
@@ -89,6 +96,9 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	if !ok {
 		return
 	}
+	if rv.Pointer() == 0 {
+		return
+	}
 	s := st.(*callScopeStack)
 	s.mu.Lock()
 	if n := len(s.scopes); n > 0 {
@@ -122,8 +132,86 @@ func (m *Marshal) projectedVal(rv reflect.Value) runtime.Value {
 	defer s.mu.Unlock()
 	for i := len(s.scopes) - 1; i >= 0; i-- {
 		if v, ok := s.scopes[i][p]; ok {
+			// a sub-slice projection shares its parent's leading
+			// address — `{{f (slice . 0 1)}}` — but the script value it
+			// stands for must have the projection's length, else the
+			// callback would see the range it was not given.
+			if ss, ok := v.(*runtime.Slice); ok && rv.Len() != len(ss.Elems) {
+				continue
+			}
+			s.used[p] = true
 			return v
 		}
 	}
 	return nil
+}
+
+// syncProjected writes a callback-held script container's contents
+// back into the host projection the host keeps reading after the call
+// — template {{range}} sees the callback's writes like gc's shared map
+// would. Maps gain and lose keys; a slice resyncs elements it shares
+// length with (a host slice header can't grow).
+func (m *Marshal) syncProjected(v runtime.Value, rv reflect.Value, vc runtime.VMCaller) {
+	for rv.IsValid() && rv.Kind() == reflect.Interface {
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return
+	}
+	switch s := v.(type) {
+	case *runtime.Map:
+		if rv.Kind() != reflect.Map || rv.IsNil() {
+			return
+		}
+		krt, ert := rv.Type().Key(), rv.Type().Elem()
+		for _, mk := range rv.MapKeys() {
+			if _, ok := s.Get(GoSlotValueOf(mk)); !ok {
+				rv.SetMapIndex(mk, reflect.Value{})
+			}
+		}
+		for i := 0; i < s.Len(); i++ {
+			sk, sv := s.At(i)
+			hk, err := m.ToReflect(sk, krt, vc)
+			if err != nil {
+				continue
+			}
+			hv, err := m.ToReflect(sv, ert, vc)
+			if err != nil {
+				continue
+			}
+			rv.SetMapIndex(hk, hv)
+		}
+	case *runtime.Slice:
+		if rv.Kind() != reflect.Slice {
+			return
+		}
+		ert := rv.Type().Elem()
+		for i := 0; i < rv.Len() && i < len(s.Elems); i++ {
+			ev, err := m.ToReflect(s.Elems[i], ert, vc)
+			if err != nil {
+				continue
+			}
+			if el := rv.Index(i); el.CanSet() {
+				el.Set(ev)
+			}
+		}
+	}
+}
+
+// projectedUsed reports whether a callback on this goroutine consumed
+// the projection with this pointer — its script value is authoritative
+// now, so write-back must not restore the host copy's stale contents.
+func (m *Marshal) projectedUsed(p uintptr) bool {
+	gid := m.callGid()
+	if gid == 0 {
+		return false
+	}
+	st, ok := callScopes.Load(gid)
+	if !ok {
+		return false
+	}
+	s := st.(*callScopeStack)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.used[p]
 }
