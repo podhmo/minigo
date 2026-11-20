@@ -186,7 +186,13 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			}
 			spec, tail := rewriteTypeVerbs(spec, a, flat, 0, v)
 			a = append(a[:1], tail...)
-			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], bad)
+			rvalIdx := map[int]bool{}
+			for i, x := range flat[1:] {
+				if isRValueArg(x) {
+					rvalIdx[i] = true
+				}
+			}
+			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], bad, rvalIdx)
 			a = append(a[:1], a2...)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			// like gc: the shape follows the raw count of %w verbs that
@@ -258,7 +264,7 @@ func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string, stars []int
 // goes in as %-escaped literal text and the sibling verb consumes the
 // operand, leaving no EXTRA. bad lists one entry per %w in verb order,
 // "" for a good operand.
-func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
+func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]bool) (string, []any) {
 	if !strings.Contains(spec, "w") {
 		return spec, ops
 	}
@@ -407,12 +413,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	// directive that consumed nothing.
 	pin := func(sb *strings.Builder, spec string, ev verbEv, ops []any, tail string) {
 		sb.WriteString(spec[ev.pct:ev.pos])
-		if len(ev.stars) > 0 && ev.stars[0] < len(ops) {
+		// a `[n]` before a `*` selects that star's operand — it must sit
+		// inside its own slot: the width star's before `*`, the
+		// precision star's between `.` and `*` (`%.[n]*`, not `%[n].*` —
+		// fmt parses the latter as a width index and the verb goes
+		// BADINDEX).
+		if ev.nw > 0 && ev.stars[0] < len(ops) {
 			sb.WriteString("[" + strconv.Itoa(ev.stars[0]+1) + "]")
 		}
 		sb.WriteString(spec[ev.pos:ev.posP])
-		if len(ev.stars) > 1 && ev.stars[1] < len(ops) {
-			sb.WriteString("[" + strconv.Itoa(ev.stars[1]+1) + "]")
+		if len(ev.stars) > ev.nw && ev.stars[ev.nw] < len(ops) {
+			sb.WriteString("[" + strconv.Itoa(ev.stars[ev.nw]+1) + "]")
 		}
 		sb.WriteString(spec[ev.posP:ev.posV])
 		if ev.arg < len(ops) {
@@ -448,7 +459,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 						sb.WriteString(mk)
 						continue
 					}
-					if _, ok := starInt(ops[st]); !ok {
+					if !starOK(ops, st, k >= ev.nw, rvalIdx) {
 						sb.WriteString(mk)
 					}
 					if st != ev.arg && !shared[st] && !consumed[st] {
@@ -466,7 +477,15 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 				}
 			case fixRest && !ev.indexed && ev.arg < len(ops):
 				// the host's implicit cursor no longer matches the
-				// operand gc reads here — pin it explicitly.
+				// operand gc reads here — pin it explicitly. An
+				// rvalue-carried star arg is unboxed for %v already, so
+				// poison its slot: the host's `*` read sees a non-int
+				// and prints its own %!(BADWIDTH)/%!(BADPREC).
+				for _, st := range ev.stars {
+					if st < len(ops) && rvalIdx[st] {
+						ops[st] = ""
+					}
+				}
 				pin(&sb, spec, ev, ops, "")
 			default:
 				sb.WriteString(spec[ev.pct:ev.i])
@@ -796,6 +815,19 @@ func nested(f fmt.State) fmt.State {
 // starInt reads a *-operand value as an int like gc's intFromArg: any
 // integer kind that fits an int (a named int64 like time.Duration
 // qualifies), wrapper boxes and const tokens peeled first.
+// starOK decides whether gc's `*` operand read at ops[st] succeeds: the
+// value must be an in-range signed/unsigned integer, it must not have
+// arrived as a reflect.Value (fmtRValue already flattened it, so
+// provenance rides in rvalIdx), and a precision star rejects negatives
+// while gc happily reads a negative width.
+func starOK(ops []any, st int, prec bool, rvalIdx map[int]bool) bool {
+	wi, ok := starInt(ops[st])
+	if !ok || rvalIdx[st] {
+		return false
+	}
+	return !prec || wi >= 0
+}
+
 func starInt(v runtime.Value) (int, bool) {
 	n := runtime.Unwrap(v)
 	if fv, ok := n.(*fmtValue); ok {
@@ -1728,6 +1760,25 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 	default:
 		return &fmtValue{c: v, x: x}
 	}
+}
+
+// isRValueArg reports whether a script arg was a facade reflect.Value:
+// fmtArg unwraps it to the viewed payload, but Go's `*` width/precision
+// read still sees the reflect.Value box and rejects it with
+// %!(BADWIDTH)/%!(BADPREC) — the caller tracks the provenance so a star
+// operand landing on it stays invalid.
+func isRValueArg(x runtime.Value) bool {
+	if _, ok := x.(*minireflect.RValue); ok {
+		return true
+	}
+	if gv, ok := x.(*runtime.GoValue); ok {
+		_, ok := gv.V.(*minireflect.RValue)
+		return ok
+	}
+	if nv, ok := x.(*runtime.Named); ok {
+		return isRValueArg(nv.V)
+	}
+	return false
 }
 
 // fmtRValue routes a facade reflect.Value to host fmt the way Go routes
