@@ -196,7 +196,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 		}),
 		"IsPathSeparator": h.Fn1("os.IsPathSeparator", func(a []any) (any, error) {
 			return os.IsPathSeparator(uint8(stdlib.IntOf(a[0]))), nil
-		}),
+		}, os.IsPathSeparator),
 		"IsNotExist":   stdlib.OsErrPred("os.IsNotExist", os.IsNotExist),
 		"IsExist":      stdlib.OsErrPred("os.IsExist", os.IsExist),
 		"IsPermission": stdlib.OsErrPred("os.IsPermission", os.IsPermission),
