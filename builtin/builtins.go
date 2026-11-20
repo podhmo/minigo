@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"math"
 	"os"
 	"reflect"
 	"slices"
@@ -769,6 +770,13 @@ func minMax(v runtime.ConvertTyper, name string, args []runtime.Value, isMax boo
 	if err != nil {
 		return nil, err
 	}
+	// Any NaN operand makes the result NaN wherever it sits — the
+	// orderedLess fold alone cannot see it since NaN is never less.
+	for _, a := range args {
+		if isFloatNaN(a) {
+			return a, nil
+		}
+	}
 	m := args[0]
 	for _, a := range args[1:] {
 		if isMax && orderedLess(m, a) || !isMax && orderedLess(a, m) {
@@ -953,10 +961,23 @@ func hostScalarOf(x runtime.Value) (runtime.Value, reflect.Type, bool) {
 	return runtime.HostNamedPayload(x)
 }
 
-// orderedLess implements the builtin min/max comparison over ordered
+// isFloatNaN reports whether x is a NaN float — Named-peeled, since a
+// declared float type propagates NaN the same way.
+func isFloatNaN(x runtime.Value) bool {
+	if n, ok := x.(*runtime.Named); ok {
+		x = n.V
+	}
+	switch f := hostbridge.ConstNative(runtime.Unwrap(x)).(type) {
+	case float64:
+		return math.IsNaN(f)
+	case float32:
+		return math.IsNaN(float64(f))
+	}
+	return false
+}
+
 // values: ints, floats and strings compare naturally; a float NaN is
-// never less (so a NaN argument wins the fold, matching Go's
-// "NaN propagates" rule). Named values compare by their underlying.
+// never less. Named values compare by their underlying.
 func orderedLess(a, b runtime.Value) bool {
 	if pa, pb, ok := hostNamedPayloads(a, b); ok {
 		a, b = pa, pb
