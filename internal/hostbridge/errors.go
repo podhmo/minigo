@@ -545,7 +545,10 @@ func (e *ScriptError) Timeout() bool {
 	if err != nil {
 		return false
 	}
-	b, _ := runtime.Unwrap(r).(bool)
+	// r.(bool), not Unwrap: a script `Timeout() SomeBool` declares a
+	// named result type and does not satisfy the host's
+	// `Timeout() bool` interface — gc ignores it too.
+	b, _ := r.(bool)
 	return b
 }
 
