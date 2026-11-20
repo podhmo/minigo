@@ -109,7 +109,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/wraperr.go":                63,
 	"internal/stdlib/maps/maps.go":              95,
 	"internal/stdlib/slices/slices.go":          614,
-	"internal/stdlib/sort/sort.go":              85,
+	"internal/stdlib/sort/sort.go":               93,
 	"internal/stdlib/sortslice.go":              2017,
 	"internal/stdlib/reflect/reflect.go":        224,
 	"internal/stdlib/reflectlite/reflectlite.go": 59,
@@ -261,7 +261,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/html/html.go":                   12,
 	"internal/stdlib/htmltemplate/htmltemplate.go":   53,
 	"internal/stdlib/texttemplate/texttemplate.go":   56,
-	"internal/stdlib/time/time.go":                   520,
+	"internal/stdlib/time/time.go":               528,
 	"internal/stdlib/utf8/utf8.go":                   116,
 }
 

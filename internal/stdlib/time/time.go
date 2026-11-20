@@ -183,6 +183,14 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"Unix": h.Fn2("time.Unix", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtime.Unix(hostbridge.Int64Of(a[0]), hostbridge.Int64Of(a[1]))}, nil
 		}),
+		"UnixMilli": h.Fn1("time.UnixMilli", func(a []any) (any, error) {
+			return &runtime.GoValue{V: stdtime.UnixMilli(hostbridge.Int64Of(a[0]))}, nil
+		}),
+		"UnixMicro": h.Fn1("time.UnixMicro", func(a []any) (any, error) {
+			return &runtime.GoValue{V: stdtime.UnixMicro(hostbridge.Int64Of(a[0]))}, nil
+		}),
+		// no UnixNano: the name collides with Time.UnixNano and Go never
+		// shipped the package-level func.
 		"FixedZone": h.Fn2("time.FixedZone", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtime.FixedZone(stdlib.Str(a[0]), int(hostbridge.Int64Of(a[1])))}, nil
 		}),
