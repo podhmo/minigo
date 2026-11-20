@@ -340,7 +340,7 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 				if snap == nil {
 					snap = &runtime.Map{}
 				}
-				mb.mapWriteBack(h, vc, sm, snap, rv, map[uintptr]bool{})
+				mb.mapWriteBack(h, vc, sm, snap, rv, map[writeBackEdge]bool{})
 				continue
 			}
 		}
@@ -396,7 +396,7 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 								if i < len(wb.mapSnaps) && wb.mapSnaps[i] != nil {
 									isnap = wb.mapSnaps[i]
 								}
-								mb.mapWriteBack(h, vc, runtime.Unwrap(ss.Elems[i]).(*runtime.Map), isnap, ev, map[uintptr]bool{})
+								mb.mapWriteBack(h, vc, runtime.Unwrap(ss.Elems[i]).(*runtime.Map), isnap, ev, map[writeBackEdge]bool{})
 								continue
 							}
 							ss.Elems[i] = retagElem(ss.Elems[i], SnapshotOf(ev.Interface()))
@@ -451,18 +451,30 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 // a self-referential map. Keys compare at the script-canonical level —
 // the host copy's key spelling (int vs int64) cannot make a live key
 // look absent.
-func (mb *Marshal) mapWriteBack(h *CallHooks, vc runtime.VMCaller, sm, snap *runtime.Map, rv reflect.Value, seen map[uintptr]bool) {
+// writeBackEdge keys the map-write-back recursion guard: one edge per
+// (host copy, script map) pair so aliasing one host map under two
+// script maps still writes back to each.
+type writeBackEdge struct {
+	h uintptr
+	s *runtime.Map
+}
+
+func (mb *Marshal) mapWriteBack(h *CallHooks, vc runtime.VMCaller, sm, snap *runtime.Map, rv reflect.Value, seen map[writeBackEdge]bool) {
 	if rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
 	}
 	if !rv.IsValid() || rv.Kind() != reflect.Map {
 		return
 	}
-	if rv.Pointer() != 0 {
-		if seen[rv.Pointer()] {
+	// seen keys the (host map, script map) pair, not the host map
+	// alone: one host map aliased under two existing script maps must
+	// write back into both.
+	edge := writeBackEdge{h: rv.Pointer(), s: sm}
+	if edge.h != 0 {
+		if seen[edge] {
 			return
 		}
-		seen[rv.Pointer()] = true
+		seen[edge] = true
 	}
 	canonical := func(k runtime.Value) runtime.Value {
 		if sm.IfaceKey {

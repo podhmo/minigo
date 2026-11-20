@@ -58,3 +58,12 @@ func IntKey() string {
 	hostwb.Peek(m)
 	return fmt.Sprintf("%v %d", len(m) == 1, m[1])
 }
+
+// Alias: the host merges m["a"] onto m["b"]'s map then writes through
+// "a" — gc shares the map so "b" sees x too; the write-back must reach
+// both script maps.
+func Alias() string {
+	m := map[string]any{"a": map[string]any{"n": 1}, "b": map[string]any{"k": 2}}
+	hostwb.Alias(m)
+	return fmt.Sprintf("%v %v", m["a"], m["b"])
+}
