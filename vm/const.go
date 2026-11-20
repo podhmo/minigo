@@ -582,9 +582,11 @@ func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value
 		return nil, err // constant not representable — Go's compile error
 	}
 	if !declaredType(td) && u.DefaultName() == name {
-		// `int(c)`/`float64(c)` — the bare constant already
-		// materializes to the target's type.
-		return u, nil
+		// `int(c)`/`float64(c)` — the constant is still a constant,
+		// but a TYPED one: `int(5)/2.0` is gc's integer 2, not the
+		// untyped 2.5. Tagging predeclared basics keys them like the
+		// bare materialized value (opaqueKeyOf peels the tag back).
+		return runtime.Tag(td, u), nil
 	}
 	// a narrower float target rounds the constant's payload: Go
 	// evaluates `float32(c)` in float32 precision, so `float64(float32

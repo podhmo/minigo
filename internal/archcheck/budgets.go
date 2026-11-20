@@ -331,7 +331,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/hostbridge/pointee.go":     "hostptrref: HostPointeeEql — *p pointee contents compare for `r == *p` parity (new file)",
 	"internal/hostbridge/snapshot.go":    "hostslice write-through: detachSliceHost strips Slice.Host on the arg-snapshot tail so Engine.Call writes stay local",
 	"runtime/wrapops.go":                 "wrapops: WrapOp + WrapReplay — deferred ops on a non-constant shift's Wrap value (new file)",
-	"vm/const.go":                        "wrapops: deferWrapOp rides /, % and stacked modular ops on the Wrap value; fitsUConst replays at the named width; tconst-opround: constInKind/roundConstInKind — typed float/complex const ops round to the type per step",
+	"vm/const.go":                        "wrapops: deferWrapOp rides /, % and stacked modular ops on the Wrap value; fitsUConst replays at the named width; tconst-opround: constInKind/roundConstInKind — typed float/complex const ops round to the type per step; tconst-tag: int(c)&co return the typed constant",
 	"runtime/typedef.go":                 "DisplayName prefers a host element's qualified name (through pointer wrappers, chan direction kept) over the bare anon spelling",
 	"minireflect/rtype.go":               "hostElemKey: intern host-element composites by their qualified host spelling",
 	"internal/vet/vet.go":                "stub-call imports resolve the declared package name",
