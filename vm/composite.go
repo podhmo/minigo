@@ -129,10 +129,10 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		case *runtime.GoValue:
 			// a host value stored in a cell (`var mu sync.Mutex`): select on
 			// the boxed value so host methods resolve
-			return v.selectMember(f, e, name)
+			return v.selectMember(f, e, name, site)
 		case *runtime.Package:
 			// an inspect-layer package stored in a var
-			return v.selectMember(f, e, name)
+			return v.selectMember(f, e, name, site)
 		case runtime.Nil:
 			// a nil interface slot (var t hostbridge.Type; t := TypeOf(nil))
 			// — Go's nil itab deref is a recoverable panic, not a trap.
@@ -141,7 +141,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 			// a raw scalar (a bare time.Duration var) or any other
 			// value with no cell-specific dispatch selects on the
 			// element itself.
-			return v.selectMember(f, b.Elem, name)
+			return v.selectMember(f, b.Elem, name, site)
 		}
 	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		dv, ok := runtime.Deref(base)
@@ -198,11 +198,11 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 				f.trap("select %s on cyclic reference %T", name, dv)
 			}
 			f.selSeen[dv] = true
-			r := v.selectMember(f, dv, name)
+			r := v.selectMember(f, dv, name, site)
 			delete(f.selSeen, dv)
 			return r
 		}
-		return v.selectMember(f, dv, name)
+		return v.selectMember(f, dv, name, site)
 	case *runtime.TypeDef:
 		if _, isPtr := b.Anon.(*ast.StarExpr); isPtr {
 			// `(*T).M` — a pointer method expression sees the full
@@ -283,7 +283,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 	case time.Duration:
 		// a raw duration selects host methods (Hours, String, ...) the
 		// same way a GoValue box does.
-		return v.selectMember(f, &runtime.GoValue{V: b}, name)
+		return v.selectMember(f, &runtime.GoValue{V: b}, name, site)
 	case *runtime.Slice:
 		return v.typedMember(f, b.Typ, name, b, "slice")
 	case *runtime.Map:
