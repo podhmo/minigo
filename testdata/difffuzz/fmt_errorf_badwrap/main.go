@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 )
 
 // %w misuse prints gc's bad-verb marker: a nil or non-error operand is
@@ -63,6 +64,9 @@ func main() {
 	fmt.Println(fmt.Errorf("%[9]w %.*s", "x"))
 	fmt.Println(fmt.Errorf("%[9]w %.*s", 3))
 	fmt.Println(fmt.Errorf("%[9]w %*s", N(9)))
+	fmt.Println(fmt.Errorf("%[9]w %.*s", N(-1)))
+	fmt.Println(fmt.Errorf("%[9]w %*s", reflect.ValueOf(9), "v"))
+	fmt.Println(fmt.Errorf("%[9]w %*.*s", 5, -1, "v"))
 }
 
 type N int64
