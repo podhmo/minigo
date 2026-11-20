@@ -3267,9 +3267,16 @@ func (v *RValue) Convert(t *RType) *RValue {
 			}
 			// the result keeps the target's declared type so a named
 			// slice type (`type RS []rune`, `[]R` with `type R rune`)
-			// survives Interface()/type assertions
+			// survives Interface()/type assertions — and the elements
+			// ride the target's element tag so an element read assigns
+			// to a declared `Octet`/`R` slot.
 			if t.td != nil {
 				s.Typ = t.td
+				if etd := v.e.elemOf(t.td); etd != nil {
+					for i, e := range s.Elems {
+						s.Elems[i] = runtime.Tag(etd, runtime.Unwrap(e))
+					}
+				}
 			}
 			out = s
 		} else {
