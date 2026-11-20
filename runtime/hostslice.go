@@ -87,8 +87,18 @@ func (s *Slice) HostReslice3(lo, hi, max int64) reflect.Value {
 // (or element-assignable, the *T-over-T shape). Anything else reports
 // unset — the caller keeps the script store only.
 func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
+	// tag keeps the first basic-type tag the Named chain carries: a
+	// host int8 unboxes as Named{int8, int64(5)}, so writing back into
+	// an interface slot must restore int8, not the gc default int —
+	// the host's dynamic type (%T, type asserts) would otherwise change
+	// on a no-op round-trip. A tag naming a user type (Celsius) is not
+	// basic and falls through to the default.
+	tag := ""
 	for {
 		if n, ok := v.(*Named); ok {
+			if tag == "" && n.Typ != nil && basicIfaceKinds[n.Typ.Name] != reflect.Invalid {
+				tag = n.Typ.Name
+			}
 			v = n.V
 			continue
 		}
@@ -127,16 +137,23 @@ func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
 			case bool:
 				return reflect.ValueOf(x), true
 			case int64:
-				ev := reflect.New(reflect.TypeOf(int(0))).Elem()
-				if !ev.OverflowInt(x) {
+				ev := reflect.New(ifaceKindType(tag, reflect.Int)).Elem()
+				if ev.Kind() >= reflect.Int && ev.Kind() <= reflect.Int64 {
+					if ev.OverflowInt(x) {
+						return reflect.Value{}, false
+					}
 					ev.SetInt(x)
 					return ev, true
 				}
-				return reflect.ValueOf(x), true
+				if ev.OverflowUint(uint64(x)) || x < 0 {
+					return reflect.Value{}, false
+				}
+				ev.SetUint(uint64(x))
+				return ev, true
 			case float64:
-				return reflect.ValueOf(x), true
+				return reflect.ValueOf(x).Convert(ifaceKindType(tag, reflect.Float64)), true
 			case complex128:
-				return reflect.ValueOf(x), true
+				return reflect.ValueOf(x).Convert(ifaceKindType(tag, reflect.Complex128)), true
 			}
 		}
 	case reflect.String:
@@ -185,4 +202,58 @@ func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
 		}
 	}
 	return reflect.Value{}, false
+}
+
+// basicIfaceKinds maps a basic type name to its reflect kind — the
+// subset a Named tag can carry that changes an empty-interface write.
+var basicIfaceKinds = map[string]reflect.Kind{
+	"int": reflect.Int, "int8": reflect.Int8, "int16": reflect.Int16,
+	"int32": reflect.Int32, "int64": reflect.Int64, "rune": reflect.Int32,
+	"uint": reflect.Uint, "uint8": reflect.Uint8, "uint16": reflect.Uint16,
+	"uint32": reflect.Uint32, "uint64": reflect.Uint64, "uintptr": reflect.Uintptr,
+	"byte":    reflect.Uint8,
+	"float32": reflect.Float32, "float64": reflect.Float64,
+	"complex64": reflect.Complex64, "complex128": reflect.Complex128,
+}
+
+// ifaceKindType is the concrete reflect.Type for a tag's kind,
+// defaulting to dflt when the tag named nothing basic.
+func ifaceKindType(tag string, dflt reflect.Kind) reflect.Type {
+	k := basicIfaceKinds[tag]
+	if k == reflect.Invalid {
+		k = dflt
+	}
+	switch k {
+	case reflect.Int:
+		return reflect.TypeOf(int(0))
+	case reflect.Int8:
+		return reflect.TypeOf(int8(0))
+	case reflect.Int16:
+		return reflect.TypeOf(int16(0))
+	case reflect.Int32:
+		return reflect.TypeOf(int32(0))
+	case reflect.Int64:
+		return reflect.TypeOf(int64(0))
+	case reflect.Uint:
+		return reflect.TypeOf(uint(0))
+	case reflect.Uint8:
+		return reflect.TypeOf(uint8(0))
+	case reflect.Uint16:
+		return reflect.TypeOf(uint16(0))
+	case reflect.Uint32:
+		return reflect.TypeOf(uint32(0))
+	case reflect.Uint64:
+		return reflect.TypeOf(uint64(0))
+	case reflect.Uintptr:
+		return reflect.TypeOf(uintptr(0))
+	case reflect.Float32:
+		return reflect.TypeOf(float32(0))
+	case reflect.Float64:
+		return reflect.TypeOf(float64(0))
+	case reflect.Complex64:
+		return reflect.TypeOf(complex64(0))
+	case reflect.Complex128:
+		return reflect.TypeOf(complex128(0))
+	}
+	return reflect.TypeOf(int(0))
 }

@@ -2364,6 +2364,39 @@ func TestHostMapInPlaceWrites(t *testing.T) {
 	}
 }
 
+// TestHostAnyRoundTripTypes: host scalars living in a []any keep their
+// concrete type through script writes — reversing or passing the slice
+// back must not degrade int8/int64 payloads to gc's default int.
+func TestHostAnyRoundTripTypes(t *testing.T) {
+	var held []any
+	var notes []string
+	e := newEngine(t)
+	e.Bind("example.com/hostanytypes", map[string]runtime.Value{
+		"Make": &runtime.GoValue{V: func() []any {
+			held = []any{int8(5), int64(9), "x", 1.5}
+			return held
+		}},
+		"Pass": &runtime.GoValue{V: func(s []any) {}},
+		"Types": &runtime.GoValue{V: func() string {
+			out := ""
+			for _, e := range held {
+				out += fmt.Sprintf("%T ", e)
+			}
+			return out
+		}},
+		"Note": &runtime.GoValue{V: func(s string) { notes = append(notes, s) }},
+	})
+	run(t, e, "./testdata/hostanytypes", "")
+	want := []string{
+		"in-script: int8 int64 string float64",
+		"float64 string int64 int8 ",
+		"float64 string int64 int8 ",
+	}
+	if diff := cmp.Diff(want, notes); diff != "" {
+		t.Fatalf("round-trip types mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestHostMapCyclicAndIntKey: a self-referential map arg survives a
 // read-only host call without hanging, and a map[any]int key marshaled
 // with a different host spelling stays present.
