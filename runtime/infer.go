@@ -184,8 +184,21 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	if err != nil || bt == nil || len(bt.TParams) == 0 {
 		return
 	}
+	// the concrete side's binds are its own instantiation's — only a
+	// conc that IS this decl (Box[T]'s pattern against Box[int]) may
+	// lend them: Wrapper[int] under a Box[T] pattern also keys its
+	// binding "T", and borrowing it would accept the call gc rejects
+	// (the arg's own type args masquerading as the parameter's).
+	// Script typedefs share the TypeSpec node; bound host typedefs
+	// carry no Spec, so they pair on name + package.
+	sameDecl := bt.Spec != nil && conc.Spec == bt.Spec ||
+		bt.Spec == nil && conc.Spec == nil && bt.Name != "" &&
+			conc.Name == bt.Name && conc.Pkg == bt.Pkg
 	var bound bool
 	for j, x := range idxs {
+		if !sameDecl {
+			break
+		}
 		if j >= len(bt.TParams) {
 			break
 		}
@@ -220,7 +233,7 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	// this base typedef is already being expanded up-stack (a recursive
 	// typedef like map[string]Graph[T] re-enters through itself; an
 	// alias chain of distinct typedefs unwinds freely).
-	if bound || len(idxs) != len(bt.TParams) || i.expanding {
+	if bound || len(idxs) != len(bt.TParams) || i.expanding || conc.Name != "" {
 		return
 	}
 	if ue := bt.TypeExpr(); ue != nil {
