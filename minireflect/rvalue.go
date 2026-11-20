@@ -2974,13 +2974,29 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 func (v *RValue) Method(i int) *RValue {
 	v.mustValid("Method")
 	if v.host() {
-		return v.e.wrapHost(v.vc, v.rv.Method(i))
+		return v.e.wrapHost(v.vc, v.methodRecv().Method(i))
 	}
 	names := exportedMethodNames(v.e.methodSet(v.td))
 	if i < 0 || i >= len(names) {
 		panic(&runtime.Panic{Value: "reflect: Method index out of range"})
 	}
 	return v.MethodByName(names[i])
+}
+
+// methodRecv is the host Value a reflected method binds as its receiver.
+// A Value-of-Value box holds the inner facade — gc binds the method to
+// the *content* (the inner reflect.Value), so `IsValid` on a box of a
+// zero Value answers false and `Int` on a box of an int answers 42.
+// The facade's own methods implement exactly those semantics, so bind
+// them on the facade rather than on the box that stores it.
+func (v *RValue) methodRecv() reflect.Value {
+	if fv, ok := v.ifaceVal().(*RValue); ok {
+		return reflect.ValueOf(fv)
+	}
+	if ft, ok := v.ifaceVal().(*RType); ok {
+		return reflect.ValueOf(ft)
+	}
+	return v.rv
 }
 
 func (v *RValue) NumMethod() int {
@@ -2996,7 +3012,7 @@ func (v *RValue) MethodByName(name string) *RValue {
 	// invisible, like Go.
 	v.mustValid("MethodByName")
 	if v.host() {
-		m := v.rv.MethodByName(name)
+		m := v.methodRecv().MethodByName(name)
 		return v.e.wrapHost(v.vc, m)
 	}
 	if !ast.IsExported(name) {
