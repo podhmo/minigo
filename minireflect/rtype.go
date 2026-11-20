@@ -98,7 +98,14 @@ func (e *Env) hostTypeOf(rt reflect.Type) *RType {
 // the typedef's own pointer depth re-applied.
 func (e *Env) hostRTOf(td *runtime.TypeDef) reflect.Type {
 	depth := 0
+	seen := map[*runtime.TypeDef]bool{}
 	for td != nil && td.Kind == runtime.KindPointer {
+		if seen[td] {
+			// a recursive pointer type (`type P *P`) peels forever —
+			// it has no host type to stand for anyway.
+			return nil
+		}
+		seen[td] = true
 		et := td.Elem
 		if et == nil {
 			et = e.elemOf(td)
@@ -1018,7 +1025,18 @@ func (t *RType) methodRT() reflect.Type {
 		return t.rt
 	}
 	if t.td != nil {
-		return t.e.hostRTOf(t.td)
+		rt := t.e.hostRTOf(t.td)
+		base := rt
+		for base != nil && base.Kind() == reflect.Pointer {
+			base = base.Elem()
+		}
+		if base != nil && base.PkgPath() == reflect.TypeOf(RValue{}).PkgPath() {
+			// the facade's own typedefs (reflect.Value → *RValue)
+			// resolve to internal types whose method sets are not
+			// gc's public reflect surface.
+			return nil
+		}
+		return rt
 	}
 	return nil
 }

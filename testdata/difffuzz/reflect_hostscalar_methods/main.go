@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+type P *P
+
 // a bound host scalar typedef's methods live on the host type:
 // reflect.TypeOf sees NumMethod/MethodByName, and the Func calls.
 func main() {
@@ -19,4 +21,10 @@ func main() {
 	fmt.Println(d.NumMethod())
 	var mo time.Month = time.July
 	fmt.Println(reflect.TypeOf(mo).NumMethod())
+	// facade shell types must not leak internal methods, and a
+	// recursive pointer typedef must not hang method probing.
+	tv := reflect.TypeFor[*reflect.Value]()
+	_, ok = tv.MethodByName("APIType")
+	fmt.Println(ok)
+	fmt.Println(reflect.TypeFor[P]().NumMethod())
 }
