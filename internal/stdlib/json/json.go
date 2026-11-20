@@ -184,6 +184,15 @@ type jsonDecFlags struct {
 }
 
 func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags) (runtime.Value, error) {
+	return jsonInjectLevel(v, data, node, target, flags, true)
+}
+
+// jsonInjectLevel is jsonInject: top marks the slot the caller named,
+// where an interface declaration decides decode-vs-descend; the
+// pointer-descent recursion passes false because a pointer cell can
+// carry a stale interface tag from its `any` assignment while it
+// stores the pointee's value.
+func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags, top bool) (runtime.Value, error) {
 	{
 		if prior0, _ := runtime.Deref(target); jsonNilish(prior0) {
 			if ptd := derefTyp(v.TypeOf(target)); ptd != nil && ptd.Kind == runtime.KindPointer {
@@ -210,16 +219,19 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 		// decodes into the interface itself (a string literal replaces
 		// the time.Time a `var a any` holds), while a pointer inside it
 		// (any = &t) is descended into — both land below.
-		if !jsonCellIsIface(target) {
+		isIfaceSlot := top && jsonCellIsIface(target)
+		if !isIfaceSlot {
 			if r, done, err := jsonUnmarshalHostVal(v, data, prior, prior, target); done || err != nil {
 				return r, err
 			}
 		} else if dv, isRef := runtime.Deref(prior); isRef {
-			// pointer content of an interface cell: gc's indirect
-			// descends into it — the write goes through the shared
-			// pointee cell, not the interface slot.
-			if r, done, err := jsonUnmarshalHostVal(v, data, dv, dv, prior); done || err != nil {
-				return r, err
+			// an interface holding a pointer: gc's indirect descends
+			// for any non-null literal — the decode then addresses the
+			// pointee's own storage — and under `null` only when the
+			// pointee is itself a pointer; a value inside an interface
+			// is replaced, never consulted.
+			if _, dvIsPtr := runtime.Deref(dv); domVal(node) != nil || dvIsPtr {
+				return jsonInjectLevel(v, data, node, prior, flags, false)
 			}
 		}
 		ectx := &jsonErrCtx{keepNum: flags.Number, strict: flags.Strict}
@@ -228,8 +240,8 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 		// held value's type (time.Time), where gc replaces the cell's
 		// content by the literal's shape.
 		decTyp := derefTyp(v.TypeOf(target))
-		if c, ok := target.(*runtime.Cell); ok && c.Typ != nil && c.Typ.Kind == runtime.KindInterface {
-			decTyp = c.Typ
+		if isIfaceSlot {
+			decTyp = target.(*runtime.Cell).Typ
 		}
 		if std := decTyp; std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
 			ectx.strct = jsonBareName(std)

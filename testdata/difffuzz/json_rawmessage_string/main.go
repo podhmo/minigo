@@ -53,4 +53,16 @@ func main() {
 	} else {
 		fmt.Println(t.Format("2006"))
 	}
+	x := 1
+	var q any = &x
+	if err := json.Unmarshal([]byte("5"), &q); err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println(x)
+	}
+	if err := json.Unmarshal([]byte("null"), &q); err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println(q)
+	}
 }
