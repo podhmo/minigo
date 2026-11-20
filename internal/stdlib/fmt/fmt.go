@@ -224,10 +224,13 @@ func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string) (string, bo
 
 // rewriteWrapVerbsOps rewrites each %w like rewriteWrapVerbs: a good
 // operand keeps the directive as %v; a bad one (non-error, nil or
-// missing) emits %[K]s over its appended %!w marker literal, flags and
-// index dropped — gc prints the marker bare, the directive's own
-// width/precision already folded into the marker text. bad lists one
-// entry per %w in verb order, "" for a good operand.
+// missing) emits its %!w marker. gc's bad verb still consumes the
+// operand — so when the operand index feeds no other directive the
+// marker is substituted into the operand slot and %[P]s prints and
+// consumes it; when the index is shared (`%[1]d %[1]w`), the marker
+// goes in as %-escaped literal text and the sibling verb consumes the
+// operand, leaving no EXTRA. bad lists one entry per %w in verb order,
+// "" for a good operand.
 func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	if !strings.Contains(spec, "w") {
 		return spec, ops
@@ -235,7 +238,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	var sb strings.Builder
 	argNum := 0
 	wAt := 0
-	var lits []string
+	consumed := map[int]bool{}
 	// index mirrors rewriteWrapVerbs' cursor handling for `[n]`.
 	index := func(i int) int {
 		if i < len(spec) && spec[i] == '[' {
@@ -254,16 +257,18 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		}
 		return i
 	}
-	for i := 0; i < len(spec); {
+	// a verb's operand indexes: the star args plus the value arg.
+	type verbEv struct{ pct, i, arg int }
+	var evs []verbEv
+	argNums := []int{}
+	i := 0
+	for i < len(spec) {
 		j := strings.IndexByte(spec[i:], '%')
 		if j < 0 {
-			sb.WriteString(spec[i:])
 			break
 		}
-		sb.WriteString(spec[i : i+j])
-		i += j
-		pct := i
-		i++
+		pct := i + j
+		i = pct + 1
 		for i < len(spec) && strings.IndexByte("#+- 0", spec[i]) >= 0 {
 			i++
 		}
@@ -285,40 +290,61 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		}
 		i = index(i)
 		if i >= len(spec) {
-			sb.WriteString(spec[pct:])
 			break
 		}
 		verb := spec[i]
 		i++
-		switch verb {
-		case '%':
-			sb.WriteString(spec[pct:i])
-		case 'w':
-			lit := ""
-			if wAt < len(bad) {
-				lit = bad[wAt]
-			} else if argNum >= len(ops) {
-				lit = "%!w(MISSING)"
-			}
-			wAt++
-			if lit != "" {
-				lits = append(lits, lit)
-				sb.WriteString("%[")
-				sb.WriteString(strconv.Itoa(len(ops) + len(lits)))
-				sb.WriteString("]s")
-			} else {
-				sb.WriteString(spec[pct : i-1])
-				sb.WriteByte('v')
-			}
-			argNum++
-		default:
-			sb.WriteString(spec[pct:i])
+		evs = append(evs, verbEv{pct, i, argNum})
+		if verb != '%' {
+			argNums = append(argNums, argNum)
 			argNum++
 		}
 	}
-	for _, lit := range lits {
-		ops = append(ops, lit)
+	// operand indexes a non-%w verb consumes: a %w operand shared with
+	// one of these must keep its value, so the marker prints as text.
+	shared := map[int]bool{}
+	wIdx := map[int]int{}
+	for n, ev := range evs {
+		c := spec[ev.i-1]
+		if c == 'w' {
+			wIdx[n] = len(wIdx)
+		} else if c != '%' {
+			shared[ev.arg] = true
+		}
 	}
+	last := 0
+	for n, ev := range evs {
+		sb.WriteString(spec[last:ev.pct])
+		last = ev.i
+		c := spec[ev.i-1]
+		if c != 'w' {
+			sb.WriteString(spec[ev.pct:ev.i])
+			continue
+		}
+		_ = n
+		_ = wIdx
+		lit := ""
+		if wAt < len(bad) {
+			lit = bad[wAt]
+		} else if ev.arg >= len(ops) {
+			lit = "%!w(MISSING)"
+		}
+		wAt++
+		if lit == "" {
+			sb.WriteString(spec[ev.pct : ev.i-1])
+			sb.WriteByte('v')
+		} else if ev.arg < len(ops) && !shared[ev.arg] && !consumed[ev.arg] {
+			ops[ev.arg] = lit
+			sb.WriteString("%[")
+			sb.WriteString(strconv.Itoa(ev.arg + 1))
+			sb.WriteString("]s")
+		} else {
+			sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
+		}
+		consumed[ev.arg] = true
+	}
+	_ = argNums
+	sb.WriteString(spec[last:])
 	return sb.String(), ops
 }
 
