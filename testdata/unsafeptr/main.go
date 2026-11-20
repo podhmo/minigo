@@ -306,3 +306,15 @@ func UintptrToPtr() int {
 	a := uintptr(unsafe.Pointer(&n))
 	return *(*int)(unsafe.Pointer(a))
 }
+
+// a pointer minted on one goroutine revives on another — the mint
+// table is process-wide like gc's address space.
+func UintptrAcrossGoroutines() int {
+	var n = 11
+	a := uintptr(unsafe.Pointer(&n))
+	ch := make(chan int, 1)
+	go func() {
+		ch <- *(*int)(unsafe.Pointer(a))
+	}()
+	return <-ch
+}

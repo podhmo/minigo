@@ -734,18 +734,23 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 	if _, ok := runtime.Deref(x); !ok && srcUnsafe {
 		// an address-valued pointer (uintptr -> unsafe.Pointer): revive
 		// the referent the mint recorded, like gc dereferencing a still-
-		// valid address. An unrecorded integer stays a dead pointer.
+		// valid address. Only an integer payload addresses the table —
+		// a host pointer box is already the pointer, not an address.
+		// An unrecorded integer stays a dead pointer.
 		var addr uint64
+		isInt := true
 		switch n := runtime.Unwrap(x).(type) {
 		case int64:
 			addr = uint64(n)
 		case uint64:
 			addr = n
 		default:
-			addr = 0
+			isInt = false
 		}
-		if ref, ok := v.unsafePtrMint[addr]; ok {
-			x = ref
+		if isInt {
+			if ref, ok := v.reviveUnsafePtr(addr); ok {
+				x = ref
+			}
 		}
 	}
 	if _, ok := runtime.Deref(x); !ok && !(srcUnsafe && hostPtrBox(x)) {
