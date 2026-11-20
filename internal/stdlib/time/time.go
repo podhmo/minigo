@@ -72,6 +72,12 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			f := newChanFeed(vc, t.C, false)
 			return &TickerChanBox{t: t, C: f.C, feed: f}, nil
 		}),
+		"Tick": h.Fnvc("time.Tick", func(vc runtime.VMCaller, a []any) (any, error) {
+			// Tick's channel is gc-deprecated but never stops — the proxy
+			// feed keeps liveness armed like NewTicker's.
+			f := newChanFeed(vc, stdtime.Tick(durOf(a[0])), false)
+			return (<-chan stdtime.Time)(f.C), nil
+		}),
 		"AfterFunc": &runtime.BuiltinFunc{Name: "time.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 2 {
 				return nil, errors.New("time.AfterFunc needs 2 args")
@@ -126,8 +132,12 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"Friday":    weekdayConst(stdtime.Friday),
 		"Saturday":  weekdayConst(stdtime.Saturday),
 		"Location":  stdlib.HostType("time.Location", func() any { return stdtime.Local }),
-		"UTC":       &runtime.GoValue{V: stdtime.UTC},
-		"Local":     &runtime.GoValue{V: stdtime.Local},
+		"LoadLocation": h.Fn("time.LoadLocation", func(a []any) (any, error) {
+			loc, err := stdtime.LoadLocation(stdlib.Str(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(loc), stdlib.ErrVal(err)}}, nil
+		}),
+		"UTC":   &runtime.GoValue{V: stdtime.UTC},
+		"Local": &runtime.GoValue{V: stdtime.Local},
 		"Since": h.Fn("time.Since", func(a []any) (any, error) {
 			if t, ok := a[0].(stdtime.Time); ok {
 				return stdtime.Since(t), nil
