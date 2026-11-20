@@ -205,18 +205,17 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 			// errors alike — competes by input position; gc reports
 			// whichever member the input reached first, not the
 			// method's error unconditionally.
-			pos := jsonErrOrder(data)
 			best := -1
 			var pickErr error
 			var pickCall runtime.Value
 			for _, e := range ectx.errs {
-				if pp, ok := jsonErrPos(pos, e.path); ok && (best == -1 || pp < best) {
-					best, pickErr, pickCall = pp, e.err, nil
+				if e.pos >= 0 && (best == -1 || e.pos < best) {
+					best, pickErr, pickCall = e.pos, e.err, nil
 				}
 			}
 			for _, ce := range ectx.callErrs {
-				if pp, ok := jsonErrPos(pos, ce.path); ok && (best == -1 || pp < best) {
-					best, pickErr, pickCall = pp, nil, ce.ev
+				if ce.pos >= 0 && (best == -1 || ce.pos < best) {
+					best, pickErr, pickCall = ce.pos, nil, ce.ev
 				}
 			}
 			if pickCall != nil {
@@ -229,7 +228,7 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 			// stands, matching decode order.
 			return ectx.callErrs[0].ev, nil
 		}
-		return stdlib.ErrVal(jsonInputErr(data, ectx.errs)), nil
+		return stdlib.ErrVal(jsonInputErr(ectx.errs)), nil
 	}
 }
 
@@ -595,6 +594,11 @@ type jsonErrCtx struct {
 	// so each call error competes against the by-shape candidates by
 	// position — a second failing member must not replace the first.
 	callErrs []jsonCallErr
+	// poss tracks the input position of the member pair / array
+	// element currently being decoded — each error inherits the
+	// innermost enclosing pair's stream ordinal, which is what gc's
+	// sequential decoder would report as "first".
+	poss []int
 	// fatal records a failed METHOD CALL itself (a script panic
 	// surfacing as a call error) — gc lets it propagate, so it must
 	// not be swallowed into by-shape decoding.
@@ -799,7 +803,7 @@ func jsonCallMethod(c runtime.ScriptCaller, m runtime.Value, lit []byte, ectx *j
 		return false
 	}
 	if ev := jsonErrResult(r); ev != runtime.NIL {
-		ectx.callErrs = append(ectx.callErrs, jsonCallErr{ev: ev, path: append([]string{}, ectx.path...)})
+		ectx.callErrs = append(ectx.callErrs, jsonCallErr{ev: ev, path: append([]string{}, ectx.path...), pos: ectx.posTop()})
 	}
 	return true
 }
@@ -810,6 +814,7 @@ func jsonCallMethod(c runtime.ScriptCaller, m runtime.Value, lit []byte, ectx *j
 type jsonCallErr struct {
 	ev   runtime.Value
 	path []string
+	pos  int
 }
 
 // jsonUnmarshalShape reports whether m spells func([]byte) error —
@@ -892,89 +897,33 @@ func jsonErrResult(r runtime.Value) runtime.Value {
 type jsonErrAt struct {
 	err  error
 	path []string
+	pos  int
 }
 
-// jsonErrOrder maps each object's member path ("\x00"-joined) to its
-// stream position by walking the raw input's tokens once — position 0
-// is the first pair gc's streaming decoder would decode.
-func jsonErrOrder(data []byte) map[string][]int {
-	pos := map[string][]int{}
-	n := 0
-	var walk func(d *json.Decoder, path []string)
-	walk = func(d *json.Decoder, path []string) {
-		t, err := d.Token()
-		if err != nil {
-			return
-		}
-		switch t {
-		case json.Delim('{'):
-			for d.More() {
-				kt, err := d.Token()
-				if err != nil {
-					return
-				}
-				key, _ := kt.(string)
-				p := append(append(make([]string, 0, len(path)+1), path...), key)
-				k0 := strings.Join(p, "\x00")
-				pos[k0] = append(pos[k0], n)
-				n++
-				walk(d, p)
-			}
-			d.Token() // '}'
-		case json.Delim('['):
-			for i := 0; d.More(); i++ {
-				p := append(append(make([]string, 0, len(path)+1), path...), strconv.Itoa(i))
-				k0 := strings.Join(p, "\x00")
-				pos[k0] = append(pos[k0], n)
-				n++
-				walk(d, p)
-			}
-			d.Token() // ']'
-		}
+// posTop answers the stream ordinal of the innermost pair or element
+// currently decoding; -1 outside any member (a root-level failure has
+// no input position, so it competes only through record order).
+func (x *jsonErrCtx) posTop() int {
+	if len(x.poss) == 0 {
+		return -1
 	}
-	walk(json.NewDecoder(bytes.NewReader(data)), nil)
-	return pos
-}
-
-// jsonErrPos looks up a member path's position in the raw input,
-// walking up to the nearest recorded ancestor (a nested failure
-// inherits its member's slot). Paths carry the input's member
-// spelling already (the codec records inKey — the exact key, or the
-// case-folded key it matched — not the Go field name), so the lookup
-// is exact.
-func jsonErrPos(pos map[string][]int, path []string) (int, bool) {
-	for p := path; ; p = p[:len(p)-1] {
-		key := strings.Join(p, "\x00")
-		if ps, ok := pos[key]; ok {
-			// duplicate keys share a path: each error takes the next
-			// occurrence's ordinal, in the order they were recorded.
-			pp := ps[0]
-			if len(ps) > 1 {
-				pos[key] = ps[1:]
-			}
-			return pp, true
-		}
-		if len(p) == 0 {
-			return 0, false
-		}
-	}
+	return x.poss[len(x.poss)-1]
 }
 
 // jsonInputErr picks the error whose path is earliest in the raw
 // input, falling back to the first recorded when a path never matched
 // a member position (e.g. a root-level failure).
-func jsonInputErr(data []byte, errs []jsonErrAt) error {
+func jsonInputErr(errs []jsonErrAt) error {
 	if len(errs) == 0 {
 		return nil
 	}
 	if len(errs) == 1 {
 		return errs[0].err
 	}
-	pos := jsonErrOrder(data)
 	best, pick := -1, errs[0]
 	for _, e := range errs {
-		if pp, ok := jsonErrPos(pos, e.path); ok && (best == -1 || pp < best) {
-			best, pick = pp, e
+		if e.pos >= 0 && (best == -1 || e.pos < best) {
+			best, pick = e.pos, e
 		}
 	}
 	return pick.err
@@ -1510,6 +1459,7 @@ func jsonShapeWalk(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 					ectx.errs = append(ectx.errs, jsonErrAt{
 						err:  fmt.Errorf("json: unknown field %q", mb.key),
 						path: append(append([]string{}, ectx.path...), mb.key),
+						pos:  mb.node.pos,
 					})
 				}
 				continue
@@ -1518,6 +1468,7 @@ func jsonShapeWalk(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 			// errors path on the input's member spelling like gc's
 			// UnmarshalTypeError (.a, not the Go field name A).
 			ectx.path = append(ectx.path, mb.key)
+			ectx.poss = append(ectx.poss, mb.node.pos)
 			cur, curTd, curPf := z, td, pf
 			reach := true
 			for h := 0; h < len(e.path)-1 && reach; h++ {
@@ -1578,6 +1529,7 @@ func jsonShapeWalk(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 				seen[i] = true
 			}
 			ectx.path = ectx.path[:len(ectx.path)-1]
+			ectx.poss = ectx.poss[:len(ectx.poss)-1]
 		}
 		return z
 	case runtime.KindSlice:
@@ -1627,8 +1579,10 @@ func jsonShapeWalk(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 			for i := range el {
 				if i < len(arr) {
 					ectx.path = append(ectx.path, strconv.Itoa(i))
+					ectx.poss = append(ectx.poss, arr[i].pos)
 					el[i] = jsonShape(c, arr[i], et, stdlib.ElemAt(pe, i), ectx)
 					ectx.path = ectx.path[:len(ectx.path)-1]
+					ectx.poss = ectx.poss[:len(ectx.poss)-1]
 				} else {
 					el[i] = c.ElemZero(td)
 				}
@@ -1642,8 +1596,10 @@ func jsonShapeWalk(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 		}
 		for i := range arr {
 			ectx.path = append(ectx.path, strconv.Itoa(i))
+			ectx.poss = append(ectx.poss, arr[i].pos)
 			el[i] = jsonShape(c, arr[i], et, stdlib.ElemAt(pe, i), ectx)
 			ectx.path = ectx.path[:len(ectx.path)-1]
+			ectx.poss = ectx.poss[:len(ectx.poss)-1]
 		}
 		return &runtime.Slice{Elems: el, Typ: td}
 	case runtime.KindMap:
@@ -1669,10 +1625,12 @@ func jsonShapeWalk(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 			// shape runs only after the key is known to fit. Members go
 			// in input order — a duplicate key's later value wins.
 			ectx.path = append(ectx.path, mb.key)
+			ectx.poss = append(ectx.poss, mb.node.pos)
 			if kv, kok := jsonMapKey(c, mb.key, kt, ectx); kok {
 				rm.Insert(kv, jsonShape(c, mb.node, et, nil, ectx))
 			}
 			ectx.path = ectx.path[:len(ectx.path)-1]
+			ectx.poss = ectx.poss[:len(ectx.poss)-1]
 		}
 		return rm
 	case runtime.KindPointer:
@@ -1839,7 +1797,7 @@ func (x *jsonErrCtx) fail(value string, td *runtime.TypeDef, cause error) {
 		typ:   runtime.DisplayName(td),
 		cause: cause,
 	}
-	x.errs = append(x.errs, jsonErrAt{err: err, path: append([]string{}, x.path...)})
+	x.errs = append(x.errs, jsonErrAt{err: err, path: append([]string{}, x.path...), pos: x.posTop()})
 	if x.err == nil {
 		x.err = err
 	}
@@ -1849,7 +1807,7 @@ func (x *jsonErrCtx) fail(value string, td *runtime.TypeDef, cause error) {
 // text is not an UnmarshalTypeError (e.g. the inner-literal syntax
 // error of a `,string` decode into an interface field).
 func (x *jsonErrCtx) failErr(err error) {
-	x.errs = append(x.errs, jsonErrAt{err: err, path: append([]string{}, x.path...)})
+	x.errs = append(x.errs, jsonErrAt{err: err, path: append([]string{}, x.path...), pos: x.posTop()})
 	if x.err == nil {
 		x.err = err
 	}
