@@ -44,8 +44,8 @@ var FileBudgets = map[string]int{
 	"inspect/stub.go":                           390,
 	"installbound.go":                           120,
 	"internal/archcheck/all.go":                 57,
-	"internal/archcheck/archcheck.go":           643,
-	"internal/archcheck/budgets.go": 383,
+	"internal/archcheck/archcheck.go":           642,
+	"internal/archcheck/budgets.go":             381,
 	"internal/archcheck/rules.go":               151,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -68,7 +68,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/maketype.go":           145,
 	"internal/hostbridge/marshal.go":            1154,
 	"internal/hostbridge/pointee.go":            48,
-	"internal/hostbridge/argas.go":              124,
+	"internal/hostbridge/argas.go":              148,
 	"internal/hostbridge/spell.go":              88,
 	"internal/hostbridge/callhost.go": 579,
 	"internal/hostbridge/snapshot.go":           147,
@@ -268,7 +268,10 @@ var FileBudgets = map[string]int{
 // FileBudgetExceptions records paths whose budget may grow vs the merge
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
-var FileBudgetExceptions = map[string]string{
+var FileBudgetExceptions = map[string]string{"compile/expr.go": "#162: checkTypeExprMembers walks a type expression and traps on a missing package member",
+	"internal/stdlib/atomic/atomic.go":           "stores retag the value with the cell declared type",
+	"internal/stdlib/math/math.go":               "math.Sincos tuple bind",
+	"internal/hostbridge/argas.go":               "funcmap-typedef-slice: Lift lifts a host-projected slice's elements (Slice.Host set) and unboxes a host-map GoValue pair-wise so []Level / map[Level]T FuncMap params get tagged elements (TODO #187)",
 	"internal/hostbridge/adapt.go":               "panicstruct: funcMapPanicValue derefs a struct projection to the struct value the script panicked with",
 	"vm/deferred_gate.go": "the opCmpGate typedef compare peels alias typedefs the way binop does",
 
