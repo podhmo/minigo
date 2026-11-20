@@ -372,12 +372,14 @@ func nested(f fmt.State) fmt.State {
 // width. A `*` width stays host-side instead.
 func ptrZeroPadWidth(flags string) (int, bool) {
 	i := 0
-	zero := false
+	zero, minus := false, false
 	for i < len(flags) && strings.IndexByte("#+- 0", flags[i]) >= 0 {
 		zero = zero || flags[i] == '0'
+		minus = minus || flags[i] == '-'
 		i++
 	}
-	if !zero {
+	// a left-justified field pads trailing spaces; the 0 flag is inert.
+	if !zero || minus {
 		return 0, false
 	}
 	w := 0
@@ -387,6 +389,9 @@ func ptrZeroPadWidth(flags string) (int, bool) {
 		}
 		w = w*10 + int(flags[i]-'0')
 	}
+	// gc counts the width over the hex digits inside the 0x prefix,
+	// not over the whole spelling: %015p of a 12-digit address is
+	// "0x" + "000" + addr.
 	return w, w > 0
 }
 
@@ -792,7 +797,6 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	prev := 0
 	for _, d := range dirs {
 		sb.WriteString(spec[prev:d.start])
-		sb.WriteByte('%')
 		// flags/width survive; the [n] index does not — newArgs is
 		// emitted in directive order, so every operand is implicit.
 		tail := spec[d.start+1 : d.end-1]
@@ -816,6 +820,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		}
 		flags := fb.String()
 		stars := d.stars
+		badPrec := false
 		if d.verb == 'T' || d.verb == 'p' {
 			// gc ignores a precision on %T/%p — and a * operand inside
 			// it. Rewriting the verb to %s would truncate the rendered
@@ -824,11 +829,31 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			if precAt >= 0 {
 				flags = flags[:precAt]
 				stars = stars[:len(stars)-precStars]
+				// a star precision is still validated first: negative or
+				// non-int operands print %!(BADPREC) ahead of the value,
+				// which still formats. Emit it as escaped literal text.
+				for _, sp := range d.stars[len(d.stars)-precStars:] {
+					n := runtime.Unwrap(vals[sp])
+					if uc, ok := n.(*runtime.UConst); ok {
+						if nv, err := runtime.UConstNative(uc); err == nil {
+							n = nv
+						}
+					}
+					if i, ok := n.(int64); !ok || i < 0 {
+						badPrec = true
+					}
+				}
 			}
 		}
 		for _, sp := range stars {
 			na = append(na, a[off+sp])
 		}
+		if badPrec {
+			// gc's marker precedes the formatted directive: write it
+			// as escaped text before the directive's '%' opens.
+			sb.WriteString("%%!(BADPREC)")
+		}
+		sb.WriteByte('%')
 		switch d.verb {
 		case 'T':
 			sb.WriteString(flags)
@@ -836,10 +861,14 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			na = append(na, ScriptTypeString(vals[d.pos]))
 		case 'p':
 			spelling := ptrSpelling(c, vals[d.pos])
-			if w, ok := ptrZeroPadWidth(flags); ok && strings.HasPrefix(spelling, "0x") && len(spelling) < w {
-				// gc's '0' flag pads inside the 0x prefix, which %s
-				// cannot express — pad the spelled address directly.
-				spelling = "0x" + strings.Repeat("0", w-len(spelling)) + spelling[2:]
+			if strings.HasPrefix(spelling, "%!") {
+				// a badVerb spelling skips flag/width processing.
+				sb.WriteByte('s')
+			} else if w, ok := ptrZeroPadWidth(flags); ok && strings.HasPrefix(spelling, "0x") && len(spelling)-2 < w {
+				// gc's '0' flag pads the digits inside the 0x prefix
+				// to the width, which %s cannot express — pad the
+				// spelled address directly.
+				spelling = "0x" + strings.Repeat("0", w-(len(spelling)-2)) + spelling[2:]
 				sb.WriteByte('s')
 			} else {
 				sb.WriteString(flags)
