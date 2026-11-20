@@ -5,11 +5,12 @@ chunk Spread (params=1 locals=1 results=1)
   0003  OpGlobal k1 site0
   0004  OpLocal slot0
   0005  OpCall 1 flags=1 csite0
-  0006  OpGlobal k2 site1
-  0007  OpLocalType
-  0008  OpCoerceTop
-  0009  OpReturn 1
+  0006  OpRejectTuple
+  0007  OpGlobal k2 site1
+  0008  OpLocalType
+  0009  OpCoerceTop
   0010  OpReturn 1
+  0011  OpReturn 1
 consts:
   k0: <*runtime.TypeDef>
   k1: "Variadic" (string)

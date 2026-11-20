@@ -32,7 +32,13 @@ func (c *compiler) stmt(s ast.Stmt) {
 		}
 		c.fs.popBlock()
 	case *ast.ExprStmt:
+		if _, isCall := ast.Unparen(st.X).(*ast.CallExpr); isCall {
+			// an expression statement discards its value — `f()`
+			// — so a result tuple is legal here.
+			c.spreadTuple = true
+		}
 		c.expr(st.X)
+		c.spreadTuple = false
 		c.emit(bytecode.OpPop, 0, 0, st.Pos())
 	case *ast.DeclStmt:
 		gd := st.Decl.(*ast.GenDecl)
@@ -96,7 +102,14 @@ func (c *compiler) stmt(s ast.Stmt) {
 					// most once — its shape doubles as the typing decision.
 					isCommaOk := !isConst && len(vs.Names) == 2 && c.commaOkRhs(vals[0])
 					if !isCommaOk {
+						if _, isCall := ast.Unparen(vals[0]).(*ast.CallExpr); isCall {
+							// `var v, w = f()`: a legal result-tuple
+							// spread — the call must not append
+							// OpRejectTuple.
+							c.spreadTuple = true
+						}
 						c.expr(vals[0])
+						c.spreadTuple = false
 					}
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 					for i := len(vs.Names) - 1; i >= 0; i-- {
@@ -948,7 +961,11 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 		// `return pair()`: one expr produces N results — push every
 		// declared result type and coerce the tuple element-wise, so an
 		// `any` slot still boxes a typed nil into an IfaceNil.
+		if _, isCall := ast.Unparen(st.Results[0]).(*ast.CallExpr); isCall {
+			c.spreadTuple = true
+		}
 		c.expr(st.Results[0])
+		c.spreadTuple = false
 		for _, rt := range c.results {
 			c.sigTypeExpr(rt)
 		}
