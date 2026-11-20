@@ -92,9 +92,13 @@ type Hooks struct {
 // anonymous types intern by structure. Entries are never evicted, so a
 // type redeclared under the same name keeps its first RType.
 type Env struct {
-	h     Hooks
-	types sync.Map     // canonical key -> *RType
-	vc    atomic.Value // runtime.VMCaller — the engine that bound this Env
+	h          Hooks
+	types      sync.Map                          // canonical key -> *RType
+	vc         atomic.Value                      // runtime.VMCaller — the engine that bound this Env
+	facadeTyp  map[reflect.Type]*runtime.TypeDef // facade host type -> public typedef
+	facadePub  map[reflect.Type]reflect.Type     // internal facade type -> real gc type
+	facadeRT   map[*runtime.TypeDef]reflect.Type // public typedef -> real gc type
+	facadeMeth map[reflect.Type]reflect.Type     // real gc type -> internal type (method sets)
 }
 
 // note records the engine's caller context on every builtin entry. One
@@ -201,6 +205,66 @@ func Symbols(h Hooks) map[string]runtime.Value {
 			Kind:    runtime.KindStruct,
 			HostNew: func() any { return &MapIter{} },
 		},
+	}
+	// Host types that stand in for the facade's public types map back
+	// to their typedefs, so a signature or field spelled with one
+	// (`func() reflect.Value`, `reflect.Kind`) reports the public type
+	// rather than the internal implementation's.
+	e.facadeTyp = map[reflect.Type]*runtime.TypeDef{}
+	for _, s := range syms {
+		if td, ok := s.(*runtime.TypeDef); ok && td.HostNew != nil {
+			e.facadeTyp[reflect.TypeOf(td.HostNew())] = td
+		}
+	}
+	// ...and the real gc types the internals stand in for, so a host
+	// signature already spelled with them resolves to the same typedef.
+	for pub, name := range map[reflect.Type]string{
+		reflect.TypeOf(reflect.Value{}):       "Value",
+		reflect.TypeOf(reflect.MapIter{}):     "MapIter",
+		reflect.TypeOf(reflect.StructField{}): "StructField",
+	} {
+		if td, ok := syms[name].(*runtime.TypeDef); ok {
+			e.facadeTyp[pub] = td
+			e.facadeTyp[reflect.PointerTo(pub)] =
+				&runtime.TypeDef{Kind: runtime.KindPointer, Elem: td}
+		}
+	}
+	if td, ok := syms["Type"].(*runtime.TypeDef); ok {
+		e.facadeTyp[reflect.TypeOf(&RType{})] = td
+		e.facadeTyp[reflect.TypeOf((*reflect.Type)(nil)).Elem()] = td
+	}
+	// The public typedefs' real gc counterparts: rtypeOf attaches one
+	// to the facade's RType so field/kind/spelling ops see the real
+	// type (reflect.Value's abi fields, MapIter's methods), while
+	// methodRT maps it back to the internal type — its methods are
+	// the ones callable on facade receivers.
+	e.facadeRT = map[*runtime.TypeDef]reflect.Type{}
+	e.facadeMeth = map[reflect.Type]reflect.Type{}
+	for name, pub := range map[string]reflect.Type{
+		"Value":       reflect.TypeOf(reflect.Value{}),
+		"Type":        reflect.TypeOf((*reflect.Type)(nil)).Elem(),
+		"MapIter":     reflect.TypeOf(reflect.MapIter{}),
+		"StructField": reflect.TypeOf(reflect.StructField{}),
+		"StructTag":   reflect.TypeOf(reflect.StructTag("")),
+		"Kind":        reflect.TypeOf(reflect.Invalid),
+		"ChanDir":     reflect.TypeOf(reflect.ChanDir(0)),
+	} {
+		if td, ok := syms[name].(*runtime.TypeDef); ok {
+			e.facadeRT[td] = pub
+		}
+	}
+	e.facadeMeth[reflect.TypeOf(reflect.Value{})] = reflect.TypeOf(&RValue{})
+	e.facadeMeth[reflect.TypeOf((*reflect.Type)(nil)).Elem()] = reflect.TypeOf(&RType{})
+	e.facadeMeth[reflect.TypeOf(reflect.MapIter{})] = reflect.TypeOf(&MapIter{})
+	e.facadeMeth[reflect.TypeOf(reflect.StructField{})] = reflect.TypeOf(&StructField{})
+	// The internal types' real gc counterparts — publicRT rewrites
+	// host signatures with them so `Method.Type` spells
+	// `func(*reflect.MapIter) reflect.Value`.
+	e.facadePub = map[reflect.Type]reflect.Type{
+		reflect.TypeOf(&RValue{}):      reflect.TypeOf(reflect.Value{}),
+		reflect.TypeOf(&RType{}):       reflect.TypeOf((*reflect.Type)(nil)).Elem(),
+		reflect.TypeOf(&MapIter{}):     reflect.TypeOf(&reflect.MapIter{}),
+		reflect.TypeOf(&StructField{}): reflect.TypeOf(&reflect.StructField{}),
 	}
 	// Kind constants are the real reflect.Kind values: they format as
 	// "int"/"struct" and compare equal to RValue.Kind() results.

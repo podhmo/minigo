@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -31,5 +32,10 @@ func main() {
 	mi := reflect.TypeFor[*reflect.MapIter]()
 	_, ok = mi.MethodByName("Next")
 	fmt.Println(mi.NumMethod(), ok)
+	m, _ = mi.MethodByName("Key")
+	fmt.Println(m.Index, m.Type)
+	fmt.Println(mi.Method(m.Index).Name)
+	et := reflect.TypeOf(errors.New).Out(0)
+	fmt.Println(et.Method(9).Name == "")
 	fmt.Println(reflect.TypeFor[P]().NumMethod())
 }
