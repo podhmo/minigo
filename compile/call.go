@@ -585,14 +585,32 @@ func substCallArg(e ast.Expr, subs map[ast.Expr]string) ast.Expr {
 // panic — but a slice's bounds check happens eagerly:
 // fmt.Sprintf("%d", s[10:0], f()) reports the slice's panic.
 func (c *compiler) callArgs(args []ast.Expr) {
+	// a call used as one argument among others is gc's `multiple-value
+	// f() in single-value context` rejection: the lone-argument case
+	// (`f(g())`) is the only legal tuple spread, handled by the call
+	// op's mode-2 splice — every other call arg must land as a single
+	// value. The check keys on the SOURCE arg's shape: hoisting may
+	// rewrite a call arg into a scratch ident that still reads the
+	// tuple.
+	lone := len(args) == 1
+	check := func(a ast.Expr) bool {
+		_, isCall := ast.Unparen(a).(*ast.CallExpr)
+		return isCall && !lone
+	}
+	emit := func(a ast.Expr, chk bool, pos token.Pos) {
+		c.expr(a)
+		if chk {
+			c.emit(bytecode.OpRejectTuple, 0, 0, pos)
+		}
+	}
 	if subs, ok := c.hoistEagerOps(args, "$arg"); ok {
-		for _, a := range subs {
-			c.expr(a)
+		for i, a := range subs {
+			emit(a, i < len(args) && check(args[i]), a.Pos())
 		}
 		return
 	}
 	for _, a := range args {
-		c.expr(a)
+		emit(a, check(a), a.Pos())
 	}
 }
 

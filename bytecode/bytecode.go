@@ -66,6 +66,7 @@ const (
 	OpGo            // A: argc; B: spread flag; pop args, pop callee -> spawn a goroutine in the current process
 	OpPack          // pop A values -> push Tuple
 	OpUnpack        // pop Tuple -> push A values (multi-assign)
+	OpRejectTuple   // peek: a result Tuple on top means a multi-valued call fed a single-value argument — trap
 	OpMakeComposite // A: nelems, B: flags(1=kv pairs); pop elems, pop *TypeDef -> push composite
 	OpMakeClosure   // A: const idx of *Function; captures per fn.UpvalDescs -> push Closure
 	OpEvalFragment  // A: const idx of *ASTFragment; compile fragment at run time -> push result
