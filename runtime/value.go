@@ -2636,6 +2636,17 @@ func ellipsisPos(x Value) (int64, bool) {
 			return iv, true
 		}
 		return 0, false
+	case *GoValue:
+		// a host scalar key (`reflect.Bool` in gob's decOpTable) arrives
+		// boxed — read its integer kind like litKeyIndex's HostInt64.
+		rv := reflect.ValueOf(v.V)
+		switch rv.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return rv.Int(), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+			return int64(rv.Uint()), true
+		}
+		return 0, false
 	}
 	return SmallIntOf(Unwrap(x))
 }
