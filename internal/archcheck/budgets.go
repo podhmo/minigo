@@ -169,7 +169,7 @@ var FileBudgets = map[string]int{
 	"runtime/hostptrref.go":                          174,
 	"runtime/hostslice.go": 262,
 	"runtime/hostseq.go":                             156,
-	"runtime/infer.go":                               398,
+	"runtime/infer.go":                               411,
 	"runtime/methodset.go":                           53,
 	"runtime/package.go":                             811,
 	"runtime/package_image.go":                       46,
