@@ -28,12 +28,10 @@
 package runtime
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
-	"go/printer"
 	"go/token"
 	"maps"
 	"math"
@@ -1804,31 +1802,14 @@ func zbTagOf(td *TypeDef) string {
 	if td.Name != "" {
 		return typeTagOf(td)
 	}
+	// an anonymous type spells its full syntax — TypSpelling resolves
+	// local type names, folds array lengths (`[0][N]int` keyed by a
+	// const N evaluates N per scope) and qualifies selectors, where
+	// anonTag would collapse them all.
 	if e := td.TypeExpr(); e != nil {
-		return zbExprTag(td.Pkg, e)
+		return TypSpelling(e, td)
 	}
 	return typeTagOf(td)
-}
-
-// zbExprTag renders an anonymous type expression for the zerobase key.
-// Array lengths go through ArrayLenExpr so `[0][N]int` keyed by a
-// const N folds to its evaluated length — N=1 and N=2 in different
-// scopes are different types with different zerobases.
-func zbExprTag(p *Package, e ast.Expr) string {
-	if at, ok := e.(*ast.ArrayType); ok {
-		if l := ArrayLenExpr(p, at); l != nil {
-			var b bytes.Buffer
-			if printer.Fprint(&b, token.NewFileSet(), l) == nil {
-				return "[" + b.String() + "]" + zbExprTag(p, at.Elt)
-			}
-		}
-		return "[]" + zbExprTag(p, at.Elt)
-	}
-	var b bytes.Buffer
-	if printer.Fprint(&b, token.NewFileSet(), e) == nil {
-		return b.String()
-	}
-	return ""
 }
 
 // Map is a map value: a header over a [mapStore]. Pairs is keyed by the
