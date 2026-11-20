@@ -361,7 +361,11 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 		case *runtime.GoValue:
 			if fv := hostbridge.RVOf(c.V); fv.IsValid() && fv.Kind() == hostbridge.KindFunc {
 				name := fmt.Sprintf("%v", fv.Type())
-				margs, err := v.matBuiltinArgs(expandSpread(v.inPlaceArgs(f, winArgs, args)), c.V, false)
+				iargs := v.inPlaceArgs(f, winArgs, args)
+				if err := spreadArityErr(fv.Type(), iargs, name); err != nil {
+					return nil, err
+				}
+				margs, err := v.matBuiltinArgs(expandSpread(iargs), c.V, false)
 				if err != nil {
 					return nil, fmt.Errorf("%s %w", name, err)
 				}
@@ -393,6 +397,13 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 // the panic-annotating defer open-codes: inside the for {} it allocated
 // a heap closure on every builtin call.
 func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.Value, error) {
+	if c.Target != nil {
+		if ft := hostbridge.TypeOf(c.Target); ft != nil && ft.Kind() == hostbridge.KindFunc {
+			if err := spreadArityErr(ft, args, c.Name); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if !c.Forwards {
 		args = expandSpread(args)
 	}
@@ -730,6 +741,11 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 	if ch.IsVararg {
 		want = n - 1 // the last slot collects the rest; zero extras is fine
 	}
+	if !ch.IsVararg && len(args) > 0 {
+		if _, ok := args[len(args)-1].(*runtime.Spread); ok {
+			return nil, fmt.Errorf("cannot use ... in call to non-variadic %s", fn.Name)
+		}
+	}
 	if len(args) < want {
 		return nil, fmt.Errorf("not enough arguments to %s: %d given, want %d", fn.Name, len(args), want)
 	}
@@ -746,32 +762,19 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 			if i < len(args) {
 				if sp, ok := args[len(args)-1].(*runtime.Spread); ok {
 					// `f(xs...)` binds the variadic parameter to the
-					// passed slice itself (Go's no-copy special case).
-					// A virtual spread stays virtual: every element is
-					// the type's single zero-size value either way.
-					if len(args) == i+1 {
-						// sharing the *Slice is safe because slice
-						// headers are never mutated in place: a
-						// callee's `xs = append(xs, …)` or `xs =
-						// xs[1:]` stores a fresh header in its own
-						// cell, while element writes reach the
-						// shared backing array as in Go.
-						rest = sp.S
-					} else if !sp.S.Virtual() {
-						// Go rejects extra variadic args in front of
-						// `xs...`, so valid Go never reaches this arm;
-						// minigo accepts `sum(5, xs...)` as an
-						// extension (testdata/features SpreadTail),
-						// which concatenates into a fresh pack — no
-						// aliasing, since no single caller slice
-						// matches the parameter.
-						pack := &runtime.Slice{Elems: append(append([]runtime.Value{}, args[i:len(args)-1]...), sp.S.Elems...)}
-						fr.vpack = pack
-						rest = pack
-					} else {
-						rn := int64(len(args)-i-1) + sp.S.Len()
-						rest = &runtime.Slice{N: rn, CapN: rn, Zero: sp.S.Zero, Typ: sp.S.Typ}
+					// passed slice itself (Go's no-copy special case);
+					// extras in front of the spread are a compile
+					// error in gc (`too many arguments in call`).
+					if len(args) > i+1 {
+						return nil, fmt.Errorf("too many arguments in call to %s", fn.Name)
 					}
+					// sharing the *Slice is safe because slice
+					// headers are never mutated in place: a
+					// callee's `xs = append(xs, …)` or `xs =
+					// xs[1:]` stores a fresh header in its own
+					// cell, while element writes reach the
+					// shared backing array as in Go.
+					rest = sp.S
 				} else {
 					pack := &runtime.Slice{Elems: append([]runtime.Value{}, args[i:]...)}
 					fr.vpack = pack
@@ -805,6 +808,26 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 		v.H.Prof.countCall(fn, ch)
 	}
 	return fr, nil
+}
+
+// spreadArityErr enforces gc's `xs...` arity rules where the callee's
+// signature is known: a spread never targets a non-variadic callee, and
+// nothing may sit between the fixed params and the spread — `f(p, xs...)`
+// is legal, `f(p, extra, xs...)` is `too many arguments in call to f`.
+func spreadArityErr(ft hostbridge.Type, args []runtime.Value, name string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if _, ok := args[len(args)-1].(*runtime.Spread); !ok {
+		return nil
+	}
+	if !ft.IsVariadic() {
+		return fmt.Errorf("cannot use ... in call to non-variadic %s", name)
+	}
+	if fixed := ft.NumIn() - 1; len(args)-1 > fixed {
+		return fmt.Errorf("too many arguments in call to %s", name)
+	}
+	return nil
 }
 
 // expandSpread replaces a trailing `xs...` marker over a real slice with
