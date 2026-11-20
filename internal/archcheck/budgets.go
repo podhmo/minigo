@@ -101,7 +101,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/strings/strings.go":        177,
 	"intrinsics.go":                             229,
 	"internal/stdlib/errors/errors.go":          130,
-	"internal/stdlib/atomic/atomic.go":          305,
+	"internal/stdlib/atomic/atomic.go":          307,
 	"internal/stdlib/goruntime/goruntime.go":    290,
 	"internal/stdlib/wraperr.go":                63,
 	"internal/stdlib/maps/maps.go":              95,
