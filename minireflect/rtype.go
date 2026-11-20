@@ -1009,16 +1009,30 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 	return result, ok
 }
 
-func (t *RType) NumMethod() int {
+// methodRT returns the reflect.Type whose method set this Type
+// reports: the host type itself, or the host type a bound typedef
+// stands for (time.Weekday's methods live on the host type, not in
+// the script method set).
+func (t *RType) methodRT() reflect.Type {
 	if t.rt != nil {
-		return t.rt.NumMethod()
+		return t.rt
+	}
+	if t.td != nil {
+		return t.e.hostRTOf(t.td)
+	}
+	return nil
+}
+
+func (t *RType) NumMethod() int {
+	if rt := t.methodRT(); rt != nil {
+		return rt.NumMethod()
 	}
 	return len(exportedMethodNames(t.e.methodSet(t.td)))
 }
 
 func (t *RType) Method(i int) *Method {
-	if t.rt != nil {
-		m := t.rt.Method(i)
+	if rt := t.methodRT(); rt != nil {
+		m := rt.Method(i)
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
@@ -1050,8 +1064,8 @@ func (t *RType) Method(i int) *Method {
 }
 
 func (t *RType) MethodByName(name string) (*Method, bool) {
-	if t.rt != nil {
-		m, ok := t.rt.MethodByName(name)
+	if rt := t.methodRT(); rt != nil {
+		m, ok := rt.MethodByName(name)
 		if !ok {
 			return &Method{}, false
 		}
