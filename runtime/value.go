@@ -852,6 +852,11 @@ func Copy(v Value) Value {
 			if cp, ok := HostStructCopy(x.V); ok {
 				return Tag(x.Typ, cp)
 			}
+			// a `*p` read of a named non-struct host type boxes *T the
+			// same way — `x := *p` must detach from p's storage.
+			if cp, ok := HostPointeeCopy(x.V); ok {
+				return Tag(x.Typ, cp)
+			}
 		}
 		// an immutable scalar payload needs no new box: a Named is never
 		// mutated in place, so the copy can share x (make/copy/append

@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // `*p` where p is a boxed host pointer resolves the pointee: reads box
@@ -11,6 +13,7 @@ import (
 // writes go to the host object.
 
 func main() {
+	equality()
 	r := *strings.NewReader("abc")
 	fmt.Println(r.Len())
 
@@ -40,4 +43,23 @@ func main() {
 	qb := bytes.NewBufferString("b")
 	*pb = *qb
 	fmt.Println(pb.String(), qb.String())
+}
+
+// r := *p snapshots the pointee: reads stay put as p's buffer advances,
+// and `r == *p` compares the structs' contents like gc, not the boxes'
+// storage addresses.
+func equality() {
+	p := strings.NewReader("abc")
+	r := *p
+	fmt.Println(r == *p)
+	p.ReadByte()
+	fmt.Println(r == *p)
+
+	// a named non-struct pointee boxes *T: methods dispatch and a copy
+	// detaches.
+	d := flag.Duration("d", time.Second, "")
+	x := *d
+	fmt.Println((*d).String(), x == *d)
+	*d = 2 * time.Second
+	fmt.Println(x, *d, x == *d)
 }

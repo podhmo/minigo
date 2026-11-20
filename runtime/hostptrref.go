@@ -58,16 +58,17 @@ func (r *HostPtrRef) elem() (reflect.Value, bool) {
 	return rv.Elem(), true
 }
 
-// hostStructTyp mints the value-side typedef of a host struct's
-// pointee — KindStruct with the reflect identity carried so the intern
-// key lands on the same descriptor the bound type's typedef keys, and
-// a HostNew so assignment copies like `var b bytes.Buffer` does. One
-// descriptor per reflect type, interned here since runtime cannot
-// reach the engine's table.
-var hostStructTyps sync.Map // reflect.Type -> *TypeDef
+// hostNamedTyps interns the value-side typedefs `*p` mints — one per
+// reflect type, here since runtime cannot reach the engine's table.
+// Each carries the reflect identity (so the intern key lands on the
+// same descriptor the bound type's typedef keys) and a HostNew so
+// assignment copies like `var b T` does.
+var hostNamedTyps sync.Map // reflect.Type -> *TypeDef
 
+// hostStructTyp mints the value-side typedef of a host struct's
+// pointee — KindStruct + HostIdent + HostNew.
 func hostStructTyp(rt reflect.Type) *TypeDef {
-	if td, ok := hostStructTyps.Load(rt); ok {
+	if td, ok := hostNamedTyps.Load(rt); ok {
 		return td.(*TypeDef)
 	}
 	td := &TypeDef{
@@ -76,16 +77,49 @@ func hostStructTyp(rt reflect.Type) *TypeDef {
 		HostIdent: rt,
 		HostNew:   func() any { return reflect.New(rt).Interface() },
 	}
-	got, _ := hostStructTyps.LoadOrStore(rt, td)
+	got, _ := hostNamedTyps.LoadOrStore(rt, td)
 	return got.(*TypeDef)
+}
+
+// hostNamedBasicTyp mints the same box for a named non-struct host
+// type — `type Counter int` — so `*p` keeps the host identity and
+// ptr-receiver methods can dispatch on the *T box.
+func hostNamedBasicTyp(rt reflect.Type) *TypeDef {
+	if td, ok := hostNamedTyps.Load(rt); ok {
+		return td.(*TypeDef)
+	}
+	td := &TypeDef{
+		Name:      rt.String(),
+		Kind:      KindNamedBasic,
+		HostIdent: rt,
+		HostNew:   func() any { return reflect.New(rt).Interface() },
+	}
+	got, _ := hostNamedTyps.LoadOrStore(rt, td)
+	return got.(*TypeDef)
+}
+
+// hostBasicKind reports whether k is a basic scalar kind — the kinds a
+// named host type's pointee can carry.
+func hostBasicKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128,
+		reflect.String:
+		return true
+	}
+	return false
 }
 
 // Get boxes the pointee for a script read: the `*p` value. A struct
 // pointee comes back as Named{td(T), GoValue{*T over the pointee's
 // storage}} — the shape a `var t T` carries — so `r := *p` copies the
 // struct, `(*p).f` member writes and pointer-receiver methods reach
-// the host storage, and `%T` spells T. A non-struct pointee returns
-// its value outright.
+// the host storage, and `%T` spells T. A named non-struct pointee
+// (`type Counter int`) boxes the same way so its ptr-receiver methods
+// dispatch; an unnamed scalar returns its value outright — no methods
+// exist to dispatch and a *T box would misread as a pointer.
 func (r *HostPtrRef) Get() (Value, bool) {
 	el, ok := r.elem()
 	if !ok {
@@ -93,6 +127,9 @@ func (r *HostPtrRef) Get() (Value, bool) {
 	}
 	if el.Kind() == reflect.Struct {
 		return &Named{Typ: hostStructTyp(el.Type()), V: &GoValue{V: el.Addr().Interface()}}, true
+	}
+	if el.Type().Name() != "" && el.CanAddr() && hostBasicKind(el.Kind()) {
+		return &Named{Typ: hostNamedBasicTyp(el.Type()), V: &GoValue{V: el.Addr().Interface()}}, true
 	}
 	return &GoValue{V: el.Interface()}, true
 }
