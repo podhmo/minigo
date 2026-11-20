@@ -121,7 +121,21 @@ func (m *Marshal) funcMapPanicValue(err error, vc runtime.VMCaller) any {
 	if s, ok := runtime.IfaceCallString(vc, p.Value, "String"); ok {
 		return s
 	}
-	return m.DeepHost(p.Value, vc, m.NewWalk())
+	hv := m.DeepHost(p.Value, vc, m.NewWalk())
+	// a plain script struct deep-hosts to a *projection pointer;
+	// the script panicked with the struct VALUE — hand the host the
+	// pointee so template's %v reads `{x}` like gc, not `&{x}`. Keep
+	// the pointer when it carries error/Stringer — the method set
+	// lives on it (e.g. a boundsError projection's Error).
+	if rv := reflect.ValueOf(hv); rv.IsValid() &&
+		rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
+		if _, isErr := hv.(error); !isErr {
+			if _, isStr := hv.(fmt.Stringer); !isStr {
+				return rv.Elem().Interface()
+			}
+		}
+	}
+	return hv
 }
 
 // adaptFunc wraps a script callable as a host-typed func so methods taking
