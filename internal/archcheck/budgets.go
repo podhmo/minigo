@@ -200,7 +200,7 @@ var FileBudgets = map[string]int{
 	"vm/binop.go":                                    1668,
 	"vm/call.go":                                     947,
 	"vm/composite.go":                                3418,
-	"vm/const.go":                                    1349,
+	"vm/const.go":                                    1328,
 	"vm/convert.go":                                  1226,
 	"vm/convert_basic.go":                            39,
 	"vm/convert_host.go":                             82,
