@@ -98,3 +98,12 @@ func TestRunREPLLoad(t *testing.T) {
 		}
 	}
 }
+
+// `minigo run a.go b.go` runs the file list as one program.
+func TestRunFileList(t *testing.T) {
+	dir := filepath.Join("testdata", "multifile")
+	files := []string{filepath.Join(dir, "a.go"), filepath.Join(dir, "b.go")}
+	if err := run(context.Background(), append([]string{}, files...)); err != nil {
+		t.Fatal(err)
+	}
+}

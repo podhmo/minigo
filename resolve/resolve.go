@@ -156,6 +156,15 @@ type Resolver interface {
 	LocateDir(ctx context.Context, dir string) (*PackageMeta, error)
 }
 
+// FileListResolver can turn a go-run-style list of named .go files
+// into a single package meta, like `go run a.go b.go`. Resolvers that
+// cannot answer simply do not implement it.
+type FileListResolver interface {
+	// LocateFiles resolves a list of .go file paths into one package
+	// meta (all files in one directory, same package clause).
+	LocateFiles(ctx context.Context, files []string) (*PackageMeta, error)
+}
+
 // ReadPackageFiles lists the files of the package in dir as
 // importPath, without a [Resolver]. Files are filtered with go/build's
 // match rules for cfg (//go:build constraints, _GOOS/_GOARCH suffixes,

@@ -4065,3 +4065,49 @@ func TestHostSeqElemSpelling(t *testing.T) {
 		t.Errorf("mismatch (-want +got):\n%s", diff)
 	}
 }
+
+// `minigo run a.go b.go` — the file-list form runs a multi-file package.
+func TestRunFiles(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{
+		"a.go": `package main
+
+func main() string {
+	return greet()
+}
+`,
+		"b.go": `package main
+
+func greet() string {
+	return "hello"
+}
+`,
+	}
+	var names []string
+	for name, src := range files {
+		abs := filepath.Join(root, name)
+		if err := os.WriteFile(abs, []byte(src), 0644); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, abs)
+	}
+	sort.Strings(names)
+
+	e := minigo.NewEngine(root, minigo.WithAllowedRoots(root))
+	got, err := e.RunFiles(context.Background(), names, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hello" {
+		t.Fatalf("got %v, want hello", got)
+	}
+
+	// different package clauses in the list are rejected
+	if err := os.WriteFile(names[1], []byte("package other\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e2 := minigo.NewEngine(root, minigo.WithAllowedRoots(root))
+	if _, err := e2.RunFiles(context.Background(), names, "main"); err == nil || !strings.Contains(err.Error(), "found packages") {
+		t.Fatalf("expected a package-mismatch error, got %v", err)
+	}
+}

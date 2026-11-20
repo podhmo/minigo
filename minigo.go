@@ -1537,6 +1537,39 @@ func packageName(fset *token.FileSet, abs string) (string, error) {
 	return f.Name.Name, nil
 }
 
+// RunFiles loads a go-run-style list of named .go files as a single
+// command-line-arguments package — `go run a.go b.go` semantics — and
+// calls fnName(args...) with [Engine.Call]. An empty fnName calls main.
+// A single file behaves like [Engine.Run] on it.
+func (e *Engine) RunFiles(ctx context.Context, files []string, fnName string, args ...runtime.Value) (runtime.Value, error) {
+	if fnName == "" {
+		fnName = "main"
+	}
+	pkg, err := e.packageFiles(ctx, files)
+	if err != nil {
+		return nil, err
+	}
+	if e.mainPkg == nil {
+		e.mainPkg = pkg
+	}
+	return e.Call(ctx, pkg, fnName, args...)
+}
+
+func (e *Engine) packageFiles(ctx context.Context, files []string) (*runtime.Package, error) {
+	if len(files) == 1 {
+		return e.Package(ctx, files[0])
+	}
+	fr, ok := e.resolver.(resolve.FileListResolver)
+	if !ok {
+		return nil, fmt.Errorf("minigo: cannot load a file list: resolver %T lacks LocateFiles", e.resolver)
+	}
+	meta, err := fr.LocateFiles(ctx, files)
+	if err != nil {
+		return nil, err
+	}
+	return e.buildPackage(meta, false)
+}
+
 // RunFile is [Engine.LoadFile] followed by [Engine.Call]. An empty fnName
 // calls main. Unlike [Engine.Run], which also accepts a .go file, it does
 // not set the main package that runtime/debug.ReadBuildInfo reports.
