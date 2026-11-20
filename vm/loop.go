@@ -357,7 +357,7 @@ func (v *VM) loop(f *frame) {
 				// pointee for the receiver coerce, which a `*G` spelling
 				// alone loses.
 				f.push(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: &ast.StarExpr{X: instExprFor(td)}, Elem: td, Pkg: td.Pkg, File: td.File})
-			} else if dv, ok := runtime.Deref(x); ok {
+			} else if dv, ok := runtime.DerefValue(x); ok {
 				// a pointer value typed *Declared dereferences to the
 				// declared pointee type — `*s` on `(*T)(p)` reads as T,
 				// so method calls and `:=`-inferred vars keep the tag.
@@ -415,6 +415,12 @@ func (v *VM) loop(f *frame) {
 				}
 				f.trap("deref of non-pointer %T", x)
 			} else {
+				if gv, isGV := x.(*runtime.GoValue); isGV {
+					// a nil host pointer panics like a nil script one.
+					if rv := hostbridge.RVOf(gv.V); rv.IsValid() && rv.Kind() == hostbridge.KindPtr {
+						panic(runtime.NilDerefPanic())
+					}
+				}
 				f.trap("deref of non-pointer %T", x)
 			}
 		case bytecode.OpSetInd:

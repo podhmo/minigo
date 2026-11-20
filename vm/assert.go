@@ -34,6 +34,11 @@ import (
 // equality means: the container behind any Cell/Named wrappers.
 func refBase(v runtime.Value) runtime.Value {
 	for {
+		if _, isGV := v.(*runtime.GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return v
+		}
 		if dv, ok := runtime.Deref(v); ok {
 			v = dv
 			continue

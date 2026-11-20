@@ -1058,6 +1058,12 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			base = n.V
 			continue
 		}
+		if _, isGV := base.(*runtime.GoValue); isGV {
+			// a host value is the peel's leaf — the GoValue case
+			// below writes into its box; dereferencing a *T box
+			// would mint an endless chain of pointee boxes.
+			break
+		}
 		dv, ok := runtime.Deref(base)
 		if !ok {
 			break

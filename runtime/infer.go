@@ -287,6 +287,11 @@ func typedefOfBind(v Value) *TypeDef {
 		if td, ok := v.(*TypeDef); ok {
 			return td
 		}
+		if _, isGV := v.(*GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return nil
+		}
 		dv, ok := Deref(v)
 		if !ok {
 			return nil

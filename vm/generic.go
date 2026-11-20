@@ -41,6 +41,11 @@ func typedefOf(v runtime.Value) *runtime.TypeDef {
 		if td, ok := v.(*runtime.TypeDef); ok {
 			return td
 		}
+		if _, isGV := v.(*runtime.GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return nil
+		}
 		dv, ok := runtime.Deref(v)
 		if !ok {
 			return nil
