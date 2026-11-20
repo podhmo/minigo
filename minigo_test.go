@@ -2364,6 +2364,25 @@ func TestHostMapInPlaceWrites(t *testing.T) {
 	}
 }
 
+// TestHostMapCyclicAndIntKey: a self-referential map arg survives a
+// read-only host call without hanging, and a map[any]int key marshaled
+// with a different host spelling stays present.
+func TestHostMapCyclicAndIntKey(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/hostwb", map[string]runtime.Value{
+		"Cyc":  &runtime.GoValue{V: func(m map[string]any) {}},
+		"Peek": &runtime.GoValue{V: func(x any) {}},
+	})
+	got := run(t, e, "./testdata/hostwriteback", "Cyc")
+	if diff := cmp.Diff("1 true", got); diff != "" {
+		t.Fatalf("Cyc mismatch (-want +got):\n%s", diff)
+	}
+	got = run(t, e, "./testdata/hostwriteback", "IntKey")
+	if diff := cmp.Diff("true 2", got); diff != "" {
+		t.Fatalf("IntKey mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestSessionInheritsBinds: user-bound host packages must resolve in a
 // NewSession the same as on the parent engine.
 func TestSessionInheritsBinds(t *testing.T) {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"example.com/hostwb"
 )
@@ -39,4 +40,21 @@ func Touch() string {
 		return "err: " + err.Error()
 	}
 	return string(b) + " " + string(b2)
+}
+
+// Cyc passes a self-referential map through a read-only host call: the
+// write-back must not loop forever and the map keeps its entries.
+func Cyc() string {
+	m := map[string]any{"a": 1}
+	m["self"] = m
+	hostwb.Cyc(m)
+	return fmt.Sprintf("%v %v", m["a"], m["self"] != nil)
+}
+
+// IntKey passes a map whose canonical int key must survive a read-only
+// host call (the host copy's key spelling differs).
+func IntKey() string {
+	m := map[any]int{1: 2}
+	hostwb.Peek(m)
+	return fmt.Sprintf("%v %d", len(m) == 1, m[1])
 }
