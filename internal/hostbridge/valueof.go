@@ -15,8 +15,11 @@ import (
 
 // sizedIntTyp names the builtin typedef for a sized int kind — the
 // reflect kind string spells the Go name exactly ("int8", "uint32").
+// The shared basic typedef keeps tag identity cheap and allocates
+// nothing per host-scalar result (basicTypeNames covers every int and
+// uint kind, uintptr included).
 func sizedIntTyp(k reflect.Kind) *runtime.TypeDef {
-	return &runtime.TypeDef{Name: k.String(), Kind: runtime.KindNamedBasic}
+	return runtime.BasicTypedef(k.String())
 }
 
 // hostRValueType is the facade's host type: a host []*RValue (MapKeys,
