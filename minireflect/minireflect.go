@@ -92,13 +92,12 @@ type Hooks struct {
 // anonymous types intern by structure. Entries are never evicted, so a
 // type redeclared under the same name keeps its first RType.
 type Env struct {
-	h          Hooks
-	types      sync.Map                          // canonical key -> *RType
-	vc         atomic.Value                      // runtime.VMCaller — the engine that bound this Env
-	facadeTyp  map[reflect.Type]*runtime.TypeDef // facade host type -> public typedef
-	facadePub  map[reflect.Type]reflect.Type     // internal facade type -> real gc type
-	facadeRT   map[*runtime.TypeDef]reflect.Type // public typedef -> real gc type
-	facadeMeth map[reflect.Type]reflect.Type     // real gc type -> internal type (method sets)
+	h         Hooks
+	types     sync.Map                          // canonical key -> *RType
+	vc        atomic.Value                      // runtime.VMCaller — the engine that bound this Env
+	facadeTyp map[reflect.Type]*runtime.TypeDef // facade host type -> public typedef
+	facadePub map[reflect.Type]reflect.Type     // internal facade type -> real gc type
+	facadeRT  map[*runtime.TypeDef]reflect.Type // public typedef -> real gc type
 }
 
 // note records the engine's caller context on every builtin entry. One
@@ -239,7 +238,6 @@ func Symbols(h Hooks) map[string]runtime.Value {
 	// methodRT maps it back to the internal type — its methods are
 	// the ones callable on facade receivers.
 	e.facadeRT = map[*runtime.TypeDef]reflect.Type{}
-	e.facadeMeth = map[reflect.Type]reflect.Type{}
 	for name, pub := range map[string]reflect.Type{
 		"Value":       reflect.TypeOf(reflect.Value{}),
 		"Type":        reflect.TypeOf((*reflect.Type)(nil)).Elem(),
@@ -253,10 +251,10 @@ func Symbols(h Hooks) map[string]runtime.Value {
 			e.facadeRT[td] = pub
 		}
 	}
-	e.facadeMeth[reflect.TypeOf(reflect.Value{})] = reflect.TypeOf(&RValue{})
-	e.facadeMeth[reflect.TypeOf((*reflect.Type)(nil)).Elem()] = reflect.TypeOf(&RType{})
-	e.facadeMeth[reflect.TypeOf(reflect.MapIter{})] = reflect.TypeOf(&MapIter{})
-	e.facadeMeth[reflect.TypeOf(reflect.StructField{})] = reflect.TypeOf(&StructField{})
+	// Value-type method sets come from the real gc types themselves —
+	// enumeration matches gc exactly (the facade cannot call through
+	// Method.Func anyway; a facade receiver never marshals to a real
+	// reflect.Value).
 	// The internal types' real gc counterparts — publicRT rewrites
 	// host signatures with them so `Method.Type` spells
 	// `func(*reflect.MapIter) reflect.Value`.
