@@ -130,8 +130,14 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 // containers get the same strip because they arrive through the
 // recursive snapshotValue calls above.
 func detachSliceHost(v runtime.Value) runtime.Value {
-	if s, ok := v.(*runtime.Slice); ok {
-		s.Host = reflect.Value{}
+	// copy the header, don't clear in place: when the caller's
+	// *runtime.Slice itself reaches an arg (GoValueOf returns it
+	// unchanged), mutating it would kill its write-through for every
+	// later script write.
+	if s, ok := v.(*runtime.Slice); ok && s.Host.IsValid() {
+		d := *s
+		d.Host = reflect.Value{}
+		return &d
 	}
 	return v
 }
