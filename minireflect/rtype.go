@@ -111,41 +111,52 @@ func (e *Env) hostTypeOf(rt reflect.Type) *RType {
 // `func(*minireflect.MapIter) *minireflect.RValue`. Composites are
 // rebuilt when an element changed.
 func (e *Env) publicRT(rt reflect.Type) reflect.Type {
+	return e.publicRTSeen(rt, map[reflect.Type]bool{})
+}
+
+// publicRTSeen is publicRT with a guard against host types that recur
+// through their own shape — `type Nodes []Nodes` has no facade
+// substitution but walks its element forever without one.
+func (e *Env) publicRTSeen(rt reflect.Type, seen map[reflect.Type]bool) reflect.Type {
 	if pub, ok := e.facadePub[rt]; ok {
 		return pub
 	}
+	if seen[rt] {
+		return rt
+	}
+	seen[rt] = true
 	switch rt.Kind() {
 	case reflect.Pointer:
-		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
 			return reflect.PointerTo(el)
 		}
 	case reflect.Slice:
-		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
 			return reflect.SliceOf(el)
 		}
 	case reflect.Array:
-		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
 			return reflect.ArrayOf(rt.Len(), el)
 		}
 	case reflect.Map:
-		k, el := e.publicRT(rt.Key()), e.publicRT(rt.Elem())
+		k, el := e.publicRTSeen(rt.Key(), seen), e.publicRTSeen(rt.Elem(), seen)
 		if k != rt.Key() || el != rt.Elem() {
 			return reflect.MapOf(k, el)
 		}
 	case reflect.Chan:
-		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
 			return reflect.ChanOf(rt.ChanDir(), el)
 		}
 	case reflect.Func:
 		changed := false
 		ins := make([]reflect.Type, rt.NumIn())
 		for i := range ins {
-			ins[i] = e.publicRT(rt.In(i))
+			ins[i] = e.publicRTSeen(rt.In(i), seen)
 			changed = changed || ins[i] != rt.In(i)
 		}
 		outs := make([]reflect.Type, rt.NumOut())
 		for i := range outs {
-			outs[i] = e.publicRT(rt.Out(i))
+			outs[i] = e.publicRTSeen(rt.Out(i), seen)
 			changed = changed || outs[i] != rt.Out(i)
 		}
 		if changed {
@@ -1086,13 +1097,8 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 // the script method set).
 func (t *RType) methodRT() reflect.Type {
 	if t.rt != nil {
-		// a real gc type standing in for the facade (reflect.Value)
-		// reports the internal type's method set — those methods
-		// dispatch on facade receivers, and the internal names are
-		// filtered out by hostMethodNames.
-		if mt, ok := t.e.facadeMeth[t.rt]; ok {
-			return mt
-		}
+		// the real gc type's own method set — enumeration matches gc
+		// exactly (reflect.Value reports 79, reflect.MapIter 0)
 		return t.rt
 	}
 	if t.td != nil {
@@ -1150,6 +1156,13 @@ func (t *RType) Method(i int) *Method {
 			panic(&runtime.Panic{Value: "reflect: Method index out of range"})
 		}
 		m, _ := rt.MethodByName(names[i])
+		if rt.Kind() == reflect.Interface {
+			// Interface requirements carry no receiver in Type and
+			// gc reports a zero Func — no implementation to call.
+			return &Method{Name: m.Name, PkgPath: m.PkgPath,
+				Type: t.e.hostTypeOf(m.Type), Index: i,
+				Func: &RValue{e: t.e}}
+		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
@@ -1203,6 +1216,11 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 				idx = i
 				break
 			}
+		}
+		if rt.Kind() == reflect.Interface {
+			return &Method{Name: m.Name, PkgPath: m.PkgPath,
+				Type: t.e.hostTypeOf(m.Type), Index: idx,
+				Func: &RValue{e: t.e}}, true
 		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name

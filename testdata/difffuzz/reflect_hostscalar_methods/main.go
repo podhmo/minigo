@@ -37,5 +37,14 @@ func main() {
 	fmt.Println(mi.Method(m.Index).Name)
 	et := reflect.TypeOf(errors.New).Out(0)
 	fmt.Println(et.Method(9).Name == "")
+	// value-type method sets report the gc set — MapIter has 0,
+	// StructField's IsExported is the value-receiver exception.
+	fmt.Println(reflect.TypeFor[reflect.MapIter]().NumMethod())
+	fmt.Println(reflect.TypeFor[reflect.StructField]().NumMethod())
+	mv, _ := reflect.TypeFor[reflect.Value]().MethodByName("IsValid")
+	fmt.Println(mv.Type)
+	// interface requirements: zero Func, receiver-free Type.
+	ms, _ := reflect.TypeFor[reflect.Type]().MethodByName("String")
+	fmt.Println(ms.Func.IsValid(), ms.Type)
 	fmt.Println(reflect.TypeFor[P]().NumMethod())
 }

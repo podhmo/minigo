@@ -10,3 +10,7 @@ true
 Key
 true
 0
+1
+func(reflect.Value) bool
+false func() string
+0
