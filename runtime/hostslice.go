@@ -22,7 +22,7 @@ func (s *Slice) SetElem(i int64, v Value) {
 	if !dst.CanSet() {
 		return
 	}
-	if ev, ok := hostScalarOf(v, dst); ok {
+	if ev, ok := hostScalarOf(v, dst.Type()); ok {
 		dst.Set(ev)
 	}
 }
@@ -50,7 +50,7 @@ func (s *Slice) CommitHostRange(hi int64) bool {
 			ok = false
 			continue
 		}
-		if ev, conv := hostScalarOf(s.Elems[i], dst); conv {
+		if ev, conv := hostScalarOf(s.Elems[i], dst.Type()); conv {
 			dst.Set(ev)
 		} else {
 			ok = false
@@ -82,25 +82,11 @@ func (s *Slice) HostReslice3(lo, hi, max int64) reflect.Value {
 	return s.Host.Slice3(int(lo), int(hi), int(max))
 }
 
-// hostScalarOf converts a stored script value for the host slot dst:
+// hostScalarOf converts a stored script value to a host element type:
 // basic kinds assign or convert, a host box hands over when assignable
-// (or element-assignable, the *T-over-T shape). An interface slot keeps
-// the outgoing element's concrete type — the script side stores a host
-// int as int64, so writing int64 back would change the host's dynamic
-// type (%T, type assertions). Anything else reports unset — the caller
-// keeps the script store only.
-func hostScalarOf(v Value, dst reflect.Value) (reflect.Value, bool) {
-	t := dst.Type()
-	if t.Kind() == reflect.Interface && t.NumMethod() == 0 && !dst.IsNil() {
-		if ev, ok := hostScalarToType(v, dst.Elem().Type()); ok {
-			return ev, true
-		}
-	}
-	return hostScalarToType(v, t)
-}
-
-// hostScalarToType is hostScalarOf's conversion against a bare type.
-func hostScalarToType(v Value, t reflect.Type) (reflect.Value, bool) {
+// (or element-assignable, the *T-over-T shape). Anything else reports
+// unset — the caller keeps the script store only.
+func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
 	for {
 		if n, ok := v.(*Named); ok {
 			v = n.V
@@ -129,8 +115,11 @@ func hostScalarToType(v Value, t reflect.Type) (reflect.Value, bool) {
 	}
 	switch t.Kind() {
 	case reflect.Interface:
-		// an empty-interface slot takes the scalar's Go value as-is;
-		// anything else (a script Slice/Map/Struct) stays unwritten.
+		// an empty-interface slot takes the scalar under gc's default
+		// type for it — the script side stores an int literal as int64
+		// where gc boxes `x` in `[]any` as int, so writing int64 back
+		// would change the host's dynamic type (%T, type assertions).
+		// Anything else (a script Slice/Map/Struct) stays unwritten.
 		if t.NumMethod() == 0 {
 			switch x := v.(type) {
 			case string:
@@ -138,6 +127,11 @@ func hostScalarToType(v Value, t reflect.Type) (reflect.Value, bool) {
 			case bool:
 				return reflect.ValueOf(x), true
 			case int64:
+				ev := reflect.New(reflect.TypeOf(int(0))).Elem()
+				if !ev.OverflowInt(x) {
+					ev.SetInt(x)
+					return ev, true
+				}
 				return reflect.ValueOf(x), true
 			case float64:
 				return reflect.ValueOf(x), true
