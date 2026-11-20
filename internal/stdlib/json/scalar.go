@@ -24,6 +24,7 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 		if un == "" {
 			un = td.Name
 		}
+
 		switch {
 		case td.Name == "encoding/json.Number" || un == "json.Number":
 			dec = n.String()
@@ -452,8 +453,6 @@ func jsonIntName(name string) bool {
 	}
 	return false
 }
-
-
 
 // jsonUnderlyingName peels a named typedef to its underlying spelling's
 // bare identifier ("int" for `type MyInt int`) for width checks.
