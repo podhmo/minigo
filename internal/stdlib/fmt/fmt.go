@@ -1645,6 +1645,10 @@ func ScriptTypeString(x runtime.Value) string {
 		case *minireflect.Method:
 			return "reflect.Method"
 		}
+		if at, ok := t.V.(stdlib.APITypeBox); ok {
+			// a facade spells its API type, not the box's name.
+			return at.APIType().String()
+		}
 		if rt := stdtime.ProxyHostTypeOf(t.V); rt != nil {
 			// a proxy box spells its API type, not the box's name.
 			return rt.String()

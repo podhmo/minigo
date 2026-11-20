@@ -387,6 +387,10 @@ func (w *EngineStdout) out() io.Writer {
 	return w.env.Out()
 }
 
+// APIType spells the facade as *os.File under %T — the engine's
+// internal wrapper name is not part of the script's type vocabulary.
+func (w *EngineStdout) APIType() reflect.Type { return reflect.TypeFor[*os.File]() }
+
 // EngineFileOf unwraps the script-visible os.Stdout facade to the real
 // file for net's FileConn/FilePacketConn adapters.
 func EngineFileOf(v any) *os.File {
