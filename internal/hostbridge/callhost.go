@@ -340,11 +340,6 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 			wbp = wbp.Elem()
 		}
 		if wbp.IsValid() && (wbp.Kind() == reflect.Map || wbp.Kind() == reflect.Slice) && mb.projectedUsed(wbp.Pointer()) {
-			if sm := mapArg(wb.arg); sm != nil {
-				mb.pullProjected(sm, wbp, vc)
-			} else if ss := sliceArg(wb.arg); ss != nil {
-				mb.pullProjected(ss, wbp, vc)
-			}
 			continue
 		}
 		if sm := mapArg(wb.arg); sm != nil {
@@ -459,6 +454,10 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 		}
 		runtime.SetRef(ref, val)
 	}
+	// host writes that landed after the last callback — on a consumed
+	// arg the loop above skipped, or on a child only a callback held —
+	// still reach the script value.
+	mb.pullUsedEntries(vc)
 	return goResults(out)
 }
 

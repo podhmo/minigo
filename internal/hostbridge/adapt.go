@@ -194,35 +194,28 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 			}
 		}
 		sargs := make([]runtime.Value, 0, len(in))
-		type resolvedArg struct {
-			rv reflect.Value
-			sv runtime.Value
-		}
-		var resolved []resolvedArg
 		for i, a := range in {
 			if t.IsVariadic() && i == len(in)-1 {
 				// the host packs a ...T call into one slice; the script
 				// callee collects separate args back into its own ...T.
 				for j := range a.Len() {
 					e := a.Index(j)
-					if sv := m.projectedVal(e); sv != nil {
-						m.pullProjected(sv, e, vc)
-						sargs = append(sargs, sv)
-						resolved = append(resolved, resolvedArg{e, sv})
+					if pe := m.projectedVal(e); pe != nil {
+						m.pullProjected(pe, vc, map[runtime.Value]bool{})
+						sargs = append(sargs, pe.sv)
 						continue
 					}
 					sargs = append(sargs, GoSlotValueOf(e))
 				}
 				continue
 			}
-			if sv := m.projectedVal(a); sv != nil {
+			if pe := m.projectedVal(a); pe != nil {
 				// the arg is a host projection a call on this
 				// goroutine made of a script container — the FuncMap
 				// param reads the script value (typedef + methods),
 				// not the method-less projected map/slice.
-				m.pullProjected(sv, a, vc)
-				sargs = append(sargs, sv)
-				resolved = append(resolved, resolvedArg{a, sv})
+				m.pullProjected(pe, vc, map[runtime.Value]bool{})
+				sargs = append(sargs, pe.sv)
 				continue
 			}
 			sargs = append(sargs, GoSlotValueOf(a))
@@ -234,11 +227,11 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 			}
 			panic(err)
 		}
-		for _, ra := range resolved {
-			// the callee wrote through the script value; mirror the
-			// writes into the host projection the caller still reads.
-			m.syncProjected(ra.sv, ra.rv, vc)
-		}
+		// mirror the callee's writes into the host projections the
+		// caller still reads — all of them, not just resolved args:
+		// a no-arg func mutating a captured map has no resolved arg
+		// to push through.
+		m.syncRegistered(vc)
 		nout := t.NumOut()
 		var rs []runtime.Value
 		if tup, ok := r.(*runtime.Tuple); ok {
