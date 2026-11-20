@@ -1855,6 +1855,14 @@ func inlineReaches(s, target *runtime.Struct, depth int) bool {
 type mintEnt struct {
 	refFn  func() runtime.Value
 	liveFn func() bool
+	// pin is the storage the referent reads through (a variable's
+	// cell, a field's owning struct, an index's container); every
+	// attached box roots it while it lives. A box's pin can never be
+	// resolved from the box — the uintptr payload is plain bits — so
+	// the entry keeps it from mint time rather than resolving the
+	// referent again, which would read script storage an unsafe.Pointer
+	// conversion has no business touching.
+	pin    runtime.Value
 	boxes  []weak.Pointer[runtime.Named]
 	pins   []runtime.Value
 	pinned runtime.Value
@@ -2022,7 +2030,7 @@ func (e *mintEnt) attach(box *runtime.Named, pin runtime.Value) {
 func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value, box *runtime.Named) {
 	make_ := func() any {
 		refFn, liveFn, pin := mintWeakRefOf(ref)
-		ent := &mintEnt{refFn: refFn, liveFn: liveFn}
+		ent := &mintEnt{refFn: refFn, liveFn: liveFn, pin: pin}
 		if box != nil {
 			ent.boxes = append(ent.boxes, weak.Make(box))
 			ent.pins = append(ent.pins, pin)
@@ -2034,10 +2042,9 @@ func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value, box *runtime.Named) {
 	// pointer could lose its referent when a temporary box collects.
 	merge := func(e any) {
 		if ent, ok := e.(*mintEnt); ok {
-			var pin runtime.Value
-			ent.refFn, ent.liveFn, pin = mintWeakRefOf(ref)
+			ent.refFn, ent.liveFn, ent.pin = mintWeakRefOf(ref)
 			if box != nil {
-				ent.attach(box, pin)
+				ent.attach(box, ent.pin)
 			}
 		}
 	}
@@ -2113,21 +2120,13 @@ func (v *VM) unsafePtrRoot(box *runtime.Named) {
 		return
 	}
 	// the new box roots the referent's storage, not its own payload —
-	// resolve the referent through the entry and pin what it reads
-	// through, or the last strong hold on it goes when the pin lands.
-	pinOf := func(ent *mintEnt) runtime.Value {
-		if ent.refFn != nil {
-			if ref := ent.refFn(); ref != nil {
-				_, _, pin := mintWeakRefOf(anchorMintRef(ref))
-				return pin
-			}
-		}
-		return nil
-	}
+	// the entry kept the pin it minted with, so no referent read is
+	// needed (or wanted: it would race a concurrent whole-struct
+	// write) to land it.
 	if p := v.proc.Load(); p != nil {
 		p.AttachUintptr(addr, func(e any) {
 			if ent, isEnt := e.(*mintEnt); isEnt {
-				ent.attach(box, pinOf(ent))
+				ent.attach(box, ent.pin)
 			}
 		})
 		return
@@ -2136,7 +2135,7 @@ func (v *VM) unsafePtrRoot(box *runtime.Named) {
 		if ent.Dead() {
 			delete(v.unsafePtrMint, addr)
 		} else {
-			ent.attach(box, pinOf(ent))
+			ent.attach(box, ent.pin)
 		}
 	}
 }
