@@ -368,3 +368,49 @@ func TestScanDir_SameImportPathTwoDirs(t *testing.T) {
 		t.Errorf("d2 (-want +got):\n%s", diff)
 	}
 }
+
+func TestReverseDependencyMap_IncludeTestsNoDup(t *testing.T) {
+	root := fixture(t)
+	loc, err := locator.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &Walker{Locator: loc, IncludeTests: true}
+
+	deps, err := w.ReverseDependencyMap(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a imports b in both a.go and a_test.go: still one entry
+	if diff := cmp.Diff([]string{"example.com/m/a", "example.com/nested/c"}, deps["example.com/m/b"]); diff != "" {
+		t.Errorf("deps[b] (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff([]string{"example.com/m/a"}, deps["testing"]); diff != "" {
+		t.Errorf("deps[testing] (-want +got):\n%s", diff)
+	}
+}
+
+func TestScanDir_SameDirTwoImportPaths(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "p.go"), []byte("package p\n\nimport \"strings\"\n\nvar _ = strings.Repeat\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// a replace can point two import paths at one dir: each spelling
+	// must answer under its own path
+	w := &Walker{}
+	pi, err := w.ScanDir(context.Background(), dir, "x.test/one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pi.ImportPath != "x.test/one" {
+		t.Fatalf("ImportPath = %q", pi.ImportPath)
+	}
+	pi, err = w.ScanDir(context.Background(), dir, "x.test/two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pi.ImportPath != "x.test/two" {
+		t.Errorf("ImportPath = %q", pi.ImportPath)
+	}
+}
