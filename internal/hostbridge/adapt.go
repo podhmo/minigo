@@ -122,16 +122,20 @@ func (m *Marshal) funcMapPanicValue(err error, vc runtime.VMCaller) any {
 		return s
 	}
 	hv := m.DeepHost(p.Value, vc, m.NewWalk())
-	// a plain script struct deep-hosts to a *projection pointer;
-	// the script panicked with the struct VALUE — hand the host the
-	// pointee so template's %v reads `{x}` like gc, not `&{x}`. Keep
-	// the pointer when it carries error/Stringer — the method set
-	// lives on it (e.g. a boundsError projection's Error).
-	if rv := reflect.ValueOf(hv); rv.IsValid() &&
-		rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
-		if _, isErr := hv.(error); !isErr {
-			if _, isStr := hv.(fmt.Stringer); !isStr {
-				return rv.Elem().Interface()
+	// a plain script struct VALUE deep-hosts to a *projection pointer;
+	// the script panicked with the struct, not a pointer to it — hand
+	// the host the pointee so template's %v reads `{x}` like gc, not
+	// `&{x}`. Only a *runtime.Struct payload qualifies: a panic with
+	// `&S{}` arrives as *runtime.Cell and keeps its `&` form. Keep
+	// the pointer too when it carries error/Stringer — the method
+	// set lives on it (e.g. a boundsError projection's Error).
+	if _, isStruct := p.Value.(*runtime.Struct); isStruct {
+		if rv := reflect.ValueOf(hv); rv.IsValid() &&
+			rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
+			if _, isErr := hv.(error); !isErr {
+				if _, isStr := hv.(fmt.Stringer); !isStr {
+					return rv.Elem().Interface()
+				}
 			}
 		}
 	}
