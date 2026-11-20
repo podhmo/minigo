@@ -134,6 +134,7 @@ var FileBudgets = map[string]int{
 	"pkg/locator/locator.go":                       747,
 	"pkg/modulewalk/modulewalk.go":                 541,
 	"repl/complete.go":                             1389,
+	"repl/pkginfo.go":                              149,
 	"repl/load.go":                                 662,
 	"repl/repl.go":                                 1259,
 	"replhooks.go":                                 55,
