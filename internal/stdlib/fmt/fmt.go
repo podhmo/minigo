@@ -465,16 +465,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	// out of range or a reflect.Value gc's intFromArg rejects — so the
 	// star prints its own marker and feeds nothing to the directive.
 	// a star is dead when gc's intFromArg rejects its slot — out of
-	// range, a reflect.Value, or a non-integer — so the rewrite prints
-	// the marker in star order and drops the '*' byte; a live width
-	// left to the host would print BADWIDTH after a dead prec's
-	// BADPREC, inverting gc's diagnostic order.
+	// range, a reflect.Value, a non-integer, or a magnitude past gc's
+	// 1e6 cap — so the rewrite prints the marker in star order and
+	// drops the '*' byte; a live width left to the host would print
+	// BADWIDTH after a dead prec's BADPREC, inverting gc's diagnostic
+	// order.
 	deadStar := func(st int) bool {
 		if st >= opsLen || rvalIdx[st] {
 			return true
 		}
-		_, ok := starInt(ops[st])
-		return !ok
+		w, ok := starInt(ops[st])
+		return !ok || w > 1e6 || w < -1e6
 	}
 	// starMarkers prints the BADWIDTH/BADPREC marker text of every dead
 	// star, before the directive itself opens: %% inside a directive is
@@ -491,6 +492,16 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 				sb.WriteString("%%!(BADPREC)")
 			}
 		}
+	}
+	// wroteIndex records an emitted [n]: any index in the final spec
+	// sets the host's reordered flag, whose side effect is suppressing
+	// gc's %!(EXTRA ...) tail — the rewrite then prints it itself.
+	wroteIndex := false
+	sbIdx := func(sb *strings.Builder, n int) {
+		sb.WriteByte('[')
+		sb.WriteString(strconv.Itoa(n))
+		sb.WriteByte(']')
+		wroteIndex = true
 	}
 	// emitStar writes star k's `*` operand over spec[lo:hi] inside the
 	// directive: an in-range, non-rvalue slot is pinned to [st+1] (an
@@ -513,10 +524,10 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 		}
 		if site[0] >= 0 {
 			sb.WriteString(spec[lo:site[0]])
-			sb.WriteString("[" + strconv.Itoa(st+1) + "]")
+			sbIdx(sb, st+1)
 			sb.WriteString(spec[site[1]:hi])
 		} else {
-			sb.WriteString("[" + strconv.Itoa(st+1) + "]")
+			sbIdx(sb, st+1)
 			sb.WriteString(spec[lo:hi])
 		}
 	}
@@ -557,7 +568,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 			// a [n] at an earlier site already printed verbatim above.
 			sb.WriteString(verb)
 		} else if ev.arg < opsLen {
-			sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
+			sbIdx(sb, ev.arg+1)
 			sb.WriteString(verb)
 		} else {
 			// %!v + literal: after star pins the lone '%' closes the
@@ -650,17 +661,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 			for _, st := range ev.stars {
 				if st != ev.arg && st < opsLen && !shared[st] && !consumed[st] {
 					ops[st] = ""
-					sb.WriteString("%[")
-					sb.WriteString(strconv.Itoa(st + 1))
-					sb.WriteString("]s")
+					sb.WriteByte('%')
+					sbIdx(&sb, st+1)
+					sb.WriteByte('s')
 					consumed[st] = true
 				}
 			}
 			if ev.arg < opsLen && !shared[ev.arg] && !consumed[ev.arg] {
 				ops[ev.arg] = lit
-				sb.WriteString("%[")
-				sb.WriteString(strconv.Itoa(ev.arg + 1))
-				sb.WriteString("]s")
+				sb.WriteByte('%')
+				sbIdx(&sb, ev.arg+1)
+				sb.WriteByte('s')
 			} else {
 				// the slot stays real for the sibling that claims it:
 				// the marker prints as escaped literal text, so it
@@ -679,6 +690,32 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	}
 	_ = argNums
 	sb.WriteString(spec[last:])
+	// gc reports the operands past its final implicit cursor as
+	// %!(EXTRA ...) — but only when no [n] in the format set its
+	// reordered flag. An emitted index suppresses the host's report,
+	// so print it here: T=v pairs over the same marshalled values.
+	if wroteIndex && !hadIndex && argNum < opsLen {
+		sb.WriteString("%%!(EXTRA ")
+		for k := argNum; k < opsLen; k++ {
+			if k > argNum {
+				sb.WriteString(", ")
+			}
+			if ops[k] == nil {
+				sb.WriteString("<nil>")
+				continue
+			}
+			if rvalIdx[k] {
+				sb.WriteString("reflect.Value")
+			} else {
+				sb.WriteString(reflect.TypeOf(ops[k]).String())
+			}
+			sb.WriteByte('=')
+			sb.WriteByte('%')
+			sbIdx(&sb, k+1)
+			sb.WriteByte('v')
+		}
+		sb.WriteByte(')')
+	}
 	// gc prints no EXTRA once any [n] reorders the args. When every
 	// explicit index lived inside a replaced bad-%w directive, keep the
 	// spec reordered by parking a fresh empty operand on %[N]s.
