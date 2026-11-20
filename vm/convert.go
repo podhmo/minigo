@@ -698,9 +698,24 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 		// dereferences, a host pointer arrives as a GoValue box, and an
 		// engine-internal handle IS a pointer. The Named tag carries the
 		// unsafe.Pointer identity while the payload keeps write-through.
-		// uintptr -> unsafe.Pointer cannot mint a ref from an integer
-		// and stays a convert error.
+		// uintptr -> unsafe.Pointer cannot mint a ref from an integer;
+		// it mints an address-valued pointer instead — the integer IS
+		// the pointer's bits (abi.NoEscape relies on the round trip;
+		// dereferencing it is UB in gc too and traps here).
 		if !v.unsafePtrLike(x) {
+			switch n := runtime.Unwrap(x).(type) {
+			case int64, uint64:
+				u, _ := n.(int64)
+				if uv, ok := n.(uint64); ok {
+					u = int64(uv)
+				}
+				if u == 0 {
+					// unsafe.Pointer(uintptr(0)) is the nil pointer:
+					// `p == nil` holds and uintptr(p) round-trips 0.
+					return &runtime.TypedNil{Typ: td}, nil
+				}
+				return runtime.Tag(td, x), nil
+			}
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 		}
 		return runtime.Tag(td, x), nil
@@ -715,6 +730,23 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 			return runtime.Tag(td, x), nil
 		}
 		return x, nil
+	}
+	if _, ok := runtime.Deref(x); !ok && srcUnsafe {
+		// an address-valued pointer (uintptr -> unsafe.Pointer): revive
+		// the referent the mint recorded, like gc dereferencing a still-
+		// valid address. An unrecorded integer stays a dead pointer.
+		var addr uint64
+		switch n := runtime.Unwrap(x).(type) {
+		case int64:
+			addr = uint64(n)
+		case uint64:
+			addr = n
+		default:
+			addr = 0
+		}
+		if ref, ok := v.unsafePtrMint[addr]; ok {
+			x = ref
+		}
 	}
 	if _, ok := runtime.Deref(x); !ok && !(srcUnsafe && hostPtrBox(x)) {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))

@@ -205,6 +205,14 @@ type VM struct {
 	// in between (a package's first method call on this VM).
 	recvBuf []runtime.Value
 
+	// unsafePtrMint records the referent behind each uintptr mint:
+	// `unsafe.Pointer(x)` on an integer payload produces an
+	// address-valued pointer, and converting it back to *T revives the
+	// recorded ref (abi.NoEscape's uintptr(p);unsafe.Pointer(x^0)
+	// idiom). Entries keep their referent alive, so mints are kept
+	// bounded by what programs actually convert back.
+	unsafePtrMint map[uint64]runtime.Value
+
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
 	// vals is the goroutine's contiguous operand stack: each frame's
