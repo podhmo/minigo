@@ -17,6 +17,10 @@ import (
 type Inferer struct {
 	// Underlying follows declared chains to the shape-giving typedef.
 	Underlying func(td *TypeDef) *TypeDef
+	// expandDepth caps UnifyIndices's underlying-expression expansion:
+	// a recursive typedef (map[string]Graph[T]) re-enters the fallback
+	// indefinitely otherwise.
+	expandDepth int
 	// ElemOf resolves a container's element typedef, including the
 	// caller's own evidence (frame locals, first-element typedefs) and
 	// interning; nil means "unresolvable".
@@ -179,6 +183,7 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	if err != nil || bt == nil || len(bt.TParams) == 0 {
 		return
 	}
+	var bound bool
 	for j, x := range idxs {
 		if j >= len(bt.TParams) {
 			break
@@ -188,7 +193,8 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 			continue
 		}
 		if bv, ok := conc.Binds[bt.TParams[j]]; ok {
-			if _, bound := binds[id.Name]; !bound {
+			bound = true
+			if _, done := binds[id.Name]; !done {
 				binds[id.Name] = bv
 			}
 		}
@@ -197,13 +203,22 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	// composite literal's anon type) never records the instantiation's
 	// binds — unify through the base type's own underlying expression
 	// instead: Seq[V] over func(func(int) bool) binds V=int, like gc.
+	// Skipped when the binds lookup already taught the indices (an
+	// instantiated named arg), when the pattern instantiates only part
+	// of the base's parameters (a leftover tparam name in the underlying
+	// expr could then bind the caller's same-named parameter), and past
+	// the expansion cap (a recursive typedef like map[string]Graph[T]
+	// would re-enter this fallback forever).
+	if bound || len(idxs) != len(bt.TParams) || i.expandDepth >= 8 {
+		return
+	}
 	if ue := bt.TypeExpr(); ue != nil {
 		subs := map[string]ast.Expr{}
 		for j, name := range bt.TParams {
-			if j < len(idxs) {
-				subs[name] = idxs[j]
-			}
+			subs[name] = idxs[j]
 		}
+		i.expandDepth++
+		defer func() { i.expandDepth-- }()
 		i.UnifyDef(ctx, tset, binds, substTypeExprs(ue, subs), conc)
 	}
 }
