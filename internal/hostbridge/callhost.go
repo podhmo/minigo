@@ -333,12 +333,18 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 		handled := false
 		// a projection a callback consumed resolves to its script value:
 		// the callback's writes already live there, and the host copy is
-		// stale — applying it back would revert them.
+		// stale — applying it back would revert them. Host writes made
+		// after the last callback still land via a final pull.
 		wbp := wb.rv
 		if wbp.Kind() == reflect.Interface {
 			wbp = wbp.Elem()
 		}
 		if wbp.IsValid() && (wbp.Kind() == reflect.Map || wbp.Kind() == reflect.Slice) && mb.projectedUsed(wbp.Pointer()) {
+			if sm := mapArg(wb.arg); sm != nil {
+				mb.pullProjected(sm, wbp, vc)
+			} else if ss := sliceArg(wb.arg); ss != nil {
+				mb.pullProjected(ss, wbp, vc)
+			}
 			continue
 		}
 		if sm := mapArg(wb.arg); sm != nil {
@@ -399,7 +405,14 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 							// would break index/assign on it
 							// (`rows[0]["a"]`). A map the callee put in its
 							// place lands as a script map, not a box.
-							if i < len(wb.maps) && wb.maps[i] == ev.Pointer() && !mb.projectedUsed(ev.Pointer()) {
+							if mb.projectedUsed(ev.Pointer()) {
+								// a callback holds the script map —
+								// it is authoritative; swapping in a
+								// snapshot would drop the sharing and
+								// the typedef.
+								continue
+							}
+							if i < len(wb.maps) && wb.maps[i] == ev.Pointer() {
 								// the copy is still in place but the
 								// callee may have written into it —
 								// apply the diff to the script map.
@@ -504,7 +517,13 @@ func (mb *Marshal) mapWriteBack(h *CallHooks, vc runtime.VMCaller, sm, snap *run
 			continue
 		}
 		cur, has := sm.Get(sk)
-		if ev.Kind() == reflect.Map && ev.Pointer() != 0 && !mb.projectedUsed(ev.Pointer()) {
+		if ev.Kind() == reflect.Map && ev.Pointer() != 0 {
+			if mb.projectedUsed(ev.Pointer()) {
+				// a callback holds the script map — it is
+				// authoritative; replacing it would drop the sharing
+				// and the typedef.
+				continue
+			}
 			if inner, ok := runtime.Unwrap(cur).(*runtime.Map); ok {
 				isnap, _ := runtime.Unwrap(sv).(*runtime.Map)
 				if isnap == nil {

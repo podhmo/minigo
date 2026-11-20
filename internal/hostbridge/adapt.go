@@ -206,6 +206,7 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 				for j := range a.Len() {
 					e := a.Index(j)
 					if sv := m.projectedVal(e); sv != nil {
+						m.pullProjected(sv, e, vc)
 						sargs = append(sargs, sv)
 						resolved = append(resolved, resolvedArg{e, sv})
 						continue
@@ -219,6 +220,7 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 				// goroutine made of a script container — the FuncMap
 				// param reads the script value (typedef + methods),
 				// not the method-less projected map/slice.
+				m.pullProjected(sv, a, vc)
 				sargs = append(sargs, sv)
 				resolved = append(resolved, resolvedArg{a, sv})
 				continue
