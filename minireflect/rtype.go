@@ -1676,6 +1676,15 @@ func roundUp(off, a uintptr) uintptr {
 // by width, string/interface headers 16, slices 24, arrays elem*N,
 // structs padded to their own alignment; word-sized containers and
 // pointers are 8.
+// Size reports the type's storage size — the host layout when backed by
+// a real reflect.Type, the amd64 estimate otherwise (reflect.Type.Size).
+func (t *RType) Size() uintptr {
+	if t.rt != nil {
+		return t.rt.Size()
+	}
+	return t.sizeOf()
+}
+
 func (t *RType) sizeOf() uintptr {
 	switch t.Kind() {
 	case reflect.Bool, reflect.Int8, reflect.Uint8:
