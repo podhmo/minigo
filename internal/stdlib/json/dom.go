@@ -39,17 +39,26 @@ func jsonDomParse(data []byte) (*jsonDom, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, err
 	}
-	return jsonDomNode(raw)
-}
-
-// jsonDomNode parses one raw value into a node. Members and elements
-// are decoded as RawMessage so each child keeps its own span; the
-// token stream reads numbers as json.Number so scalar conversion sees
-// the literal itself.
-func jsonDomNode(raw []byte) (*jsonDom, error) {
-	n := &jsonDom{raw: raw}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
+	return jsonDomScan(d, raw)
+}
+
+// jsonDomScan consumes one value off the shared decoder and wraps it
+// in a node whose raw is the value's own slice of buf — every node
+// aliases the input buffer, so a deep document costs its input size,
+// not a copy per level. Token/Decode mixing is the host decoder's
+// business: members and elements read via the token stream, numbers
+// arrive as json.Number so scalar conversion sees the literal itself.
+func jsonDomScan(d *json.Decoder, buf []byte) (*jsonDom, error) {
+	// the value's span starts at its first byte: after an object key
+	// the offset sits on ':', after an array element it sits on ','
+	// — skip the separator and any whitespace.
+	start := d.InputOffset()
+	for start < int64(len(buf)) && (buf[start] == ':' || buf[start] == ',' || buf[start] == ' ' || buf[start] == '\t' || buf[start] == '\n' || buf[start] == '\r') {
+		start++
+	}
+	n := &jsonDom{}
 	t, err := d.Token()
 	if err != nil {
 		return nil, err
@@ -62,11 +71,7 @@ func jsonDomNode(raw []byte) (*jsonDom, error) {
 				if err != nil {
 					return nil, err
 				}
-				var r json.RawMessage
-				if err := d.Decode(&r); err != nil {
-					return nil, err
-				}
-				cn, err := jsonDomNode(r)
+				cn, err := jsonDomScan(d, buf)
 				if err != nil {
 					return nil, err
 				}
@@ -76,61 +81,30 @@ func jsonDomNode(raw []byte) (*jsonDom, error) {
 				return nil, err
 			}
 			n.val = ms
-			return n, nil
-		}
-		var a []*jsonDom
-		for d.More() {
-			var r json.RawMessage
-			if err := d.Decode(&r); err != nil {
+		} else {
+			var a []*jsonDom
+			for d.More() {
+				cn, err := jsonDomScan(d, buf)
+				if err != nil {
+					return nil, err
+				}
+				a = append(a, cn)
+			}
+			if _, err := d.Token(); err != nil {
 				return nil, err
 			}
-			cn, err := jsonDomNode(r)
-			if err != nil {
-				return nil, err
-			}
-			a = append(a, cn)
+			n.val = a
 		}
-		if _, err := d.Token(); err != nil {
-			return nil, err
-		}
-		n.val = a
-		return n, nil
+	} else {
+		// scalars arrive as bool/string/json.Number; the null literal
+		// arrives as nil.
+		n.val = t
 	}
-	// scalars arrive as bool/string/json.Number; the null literal
-	// arrives as nil.
-	n.val = t
+	end := d.InputOffset()
+	if start < end && end <= int64(len(buf)) {
+		n.raw = buf[start:end]
+	} else {
+		n.raw = buf
+	}
 	return n, nil
-}
-
-// jsonDomDeep unwraps the DOM into the plain tree `any` targets keep:
-// members collapse last-wins into a map like gc's untyped decode, and
-// json.Number stays only when the caller asked for UseNumber.
-func jsonDomDeep(n *jsonDom, keepNum bool) any {
-	if n == nil {
-		return nil
-	}
-	switch x := n.val.(type) {
-	case []jsonMember:
-		out := make(map[any]any, len(x))
-		for _, m := range x {
-			out[m.key] = jsonDomDeep(m.node, keepNum)
-		}
-		return out
-	case []*jsonDom:
-		out := make([]any, len(x))
-		for i, c := range x {
-			out[i] = jsonDomDeep(c, keepNum)
-		}
-		return out
-	case json.Number:
-		if keepNum {
-			return x
-		}
-		if f, err := x.Float64(); err == nil {
-			return f
-		}
-		return x.String()
-	default:
-		return x
-	}
 }

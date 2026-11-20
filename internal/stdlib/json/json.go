@@ -295,6 +295,15 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 	}
 	switch x := v.(type) {
 	case *runtime.Named:
+		if i, ok := x.V.(int64); ok && i < 0 {
+			// a uint64 value boxed in a signed int64 cell marshals as
+			// its unsigned value, not as a negative number.
+			if un := jsonUnderlyingName(x.Typ); jsonIntName(un) {
+				if _, signed := jsonIntWidth(un); !signed {
+					return goJSONSeen(c, uint64(i), seen)
+				}
+			}
+		}
 		return goJSONSeen(c, x.V, seen)
 	case *runtime.Cell:
 		if jsonSeen(seen, x) {

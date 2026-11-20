@@ -21,6 +21,8 @@ func (b TBis) Tag() string { return "bis" }
 
 type Lit string
 
+type F32 float32
+
 func (l *Lit) UnmarshalJSON(b []byte) error { *l = Lit(string(b)); return nil }
 
 func main() string {
@@ -91,9 +93,63 @@ func main() string {
 	if err := json.Unmarshal([]byte(`{"a":1,"a":2}`), &dup); err != nil {
 		return "err10:" + err.Error()
 	}
+	// a decoded uint64 keeps its unsigned tag through Marshal.
+	var u64 struct {
+		U uint64 `json:"u"`
+	}
+	if err := json.Unmarshal([]byte(`{"u":18446744073709551615}`), &u64); err != nil {
+		return "err11:" + err.Error()
+	}
+	ub, err := json.Marshal(u64)
+	if err != nil {
+		return "err12:" + err.Error()
+	}
+	// a literal float64 cannot hold fails the decode but still stores
+	// the strconv result, like gc's literalStore.
+	var av any
+	aerr := json.Unmarshal([]byte(`1e309`), &av)
+	if aerr == nil {
+		return "err13:no error"
+	}
+	avf, _ := av.(float64)
+	inf := "nan"
+	if avf > 1e308 {
+		inf = "inf"
+	}
+	// a duplicate `any` field decodes through the declared type —
+	// the later literal replaces the earlier tree.
+	var dv struct {
+		A any `json:"a"`
+	}
+	if err := json.Unmarshal([]byte(`{"a":{"x":1},"a":"s"}`), &dv); err != nil {
+		return "err14:" + err.Error()
+	}
+	dvs, _ := dv.A.(string)
+	// a named float32 field rejects a literal past MaxFloat32.
+	var fv struct {
+		F F32 `json:"f"`
+	}
+	ferr := json.Unmarshal([]byte(`{"f":1e300}`), &fv)
+	if ferr == nil {
+		return "err15:no error"
+	}
+	// two occurrences of one unknown key take positions in input
+	// order — the middle type error must not jump the queue.
+	strict3 := json.NewDecoder(bytes.NewReader([]byte(`{"o":{"bad":1,"a":"x"},"o":{"bad":1}}`)))
+	strict3.DisallowUnknownFields()
+	var s3 struct {
+		O struct {
+			A int `json:"a"`
+		} `json:"o"`
+	}
+	serr3 := strict3.Decode(&s3)
+	if serr3 == nil {
+		return "err16:no error"
+	}
 	return string(rune('0'+m1["a"])) + string(rune('0'+m2["b"])) + "|" + string(b) +
 		"|" + serr.Error() + "|" + itoa(big) + "|" + tb.Tag() +
-		"|" + string(sp.K) + "|" + serr2.Error() + "|" + itoa(int64(dup.A)) + "|" + itoa(int64(s2.O.A))
+		"|" + string(sp.K) + "|" + serr2.Error() + "|" + itoa(int64(dup.A)) + "|" + itoa(int64(s2.O.A)) +
+		"|" + string(ub) + "|" + aerr.Error() + "|" + inf + "|" + dvs + "|" + ferr.Error() + "|" + serr3.Error()
 }
 
 func itoa(i int64) string {
