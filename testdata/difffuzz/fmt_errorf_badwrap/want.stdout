@@ -7,3 +7,6 @@ x %!w(*main.P=<nil>)
 x %!w(string=s)
 ok
 e e
+3 %!w(int=3)
+%!w(string=ab)
+x %!w(main.S={})

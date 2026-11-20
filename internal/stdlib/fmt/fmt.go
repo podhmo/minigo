@@ -148,21 +148,28 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			// the %w operand indexes come from the spec as written —
 			// they index the raw args; rewriteTypeVerbs renumbers the
 			// directives and rebuilds the operand list for printing.
-			_, wrapPos := rewriteWrapVerbs(spec)
+			_, wrapPos, wrapDirs := rewriteWrapVerbs(spec)
 			// gc prints %!w(...) for a %w operand that wraps nothing —
-			// nil or a non-error — instead of its %v. Substitute the
-			// literal marker for the operand so %v prints it verbatim.
-			for _, p := range wrapPos {
-				if p+1 >= len(a) || p+1 >= len(flat) {
-					continue
-				}
-				if lit, bad := badWrapOperand(v, flat[p+1], a[p+1]); bad {
-					a[p+1] = lit
+			// nil, a non-error, or a missing operand — instead of its %v.
+			// Classify once per %w verb; the marker text rides to host fmt
+			// as an appended operand under a %[K]s directive, so a shared
+			// operand index stays intact and each %w gets its own marker.
+			var bad []string
+			for k, p := range wrapPos {
+				switch {
+				case p+1 >= len(a) || p+1 >= len(flat):
+					bad = append(bad, "%!w(MISSING)")
+				default:
+					if lit, isBad := badWrapOperand(v, flat[p+1], wrapDirs[k]); isBad {
+						bad = append(bad, lit)
+					} else {
+						bad = append(bad, "")
+					}
 				}
 			}
 			spec, tail := rewriteTypeVerbs(spec, a, flat, 0, v)
 			a = append(a[:1], tail...)
-			spec, a2 := rewriteWrapVerbsOps(spec, a[1:])
+			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], bad)
 			a = append(a[:1], a2...)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			// like gc: the shape follows the raw count of %w verbs that
@@ -197,29 +204,38 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 // badWrapOperand classifies a %w operand like gc's handleMethods: a
 // valid error wraps (and prints under %v); nil and non-error operands
 // print %!w(<nil>) / %!w(TYPE=value) literal markers instead — the
-// marker text is substituted for the operand so %v emits it verbatim.
-func badWrapOperand(v runtime.VMCaller, x runtime.Value, hostArg any) (any, bool) {
+// marker's inner value renders under a markerState built from the
+func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string) (string, bool) {
 	if stdlib.WrapOperand(v, x) != nil {
-		return nil, false
+		return "", false
 	}
 	switch runtime.Unwrap(x).(type) {
 	case nil, runtime.Nil, *runtime.Nil, *runtime.IfaceNil:
 		return "%!w(<nil>)", true
 	}
-	return fmt.Sprintf("%%!w(%s=%v)", ScriptTypeString(x), hostArg), true
+	// dir is the directive text ("%[flags][width][.prec]w"); its tail
+	// feeds markerInner's flag/width/precision parser — gc applies the
+	// directive's own flags inside the marker while suppressing
+	// Formatter/Stringer methods on the inner value.
+	st, _, _ := markerInner(dir[1:len(dir)-1], nil, nil)
+	inner := (&fmtValue{c: v, x: x}).render('v', st)
+	return fmt.Sprintf("%%!w(%s=%s)", ScriptTypeString(x), inner), true
 }
 
-// rewriteWrapVerbsOps rewrites each %w to %v like rewriteWrapVerbs, and
-// for an operand index past the operand list emits %[K]v over an
-// appended "%!w(MISSING)" literal (gc's bad-verb text for a %w with no
-// operand — a bare %v would print %!v(MISSING) instead).
-func rewriteWrapVerbsOps(spec string, ops []any) (string, []any) {
+// rewriteWrapVerbsOps rewrites each %w like rewriteWrapVerbs: a good
+// operand keeps the directive as %v; a bad one (non-error, nil or
+// missing) emits %[K]s over its appended %!w marker literal, flags and
+// index dropped — gc prints the marker bare, the directive's own
+// width/precision already folded into the marker text. bad lists one
+// entry per %w in verb order, "" for a good operand.
+func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	if !strings.Contains(spec, "w") {
 		return spec, ops
 	}
 	var sb strings.Builder
 	argNum := 0
-	var miss []int
+	wAt := 0
+	var lits []string
 	// index mirrors rewriteWrapVerbs' cursor handling for `[n]`.
 	index := func(i int) int {
 		if i < len(spec) && spec[i] == '[' {
@@ -278,17 +294,21 @@ func rewriteWrapVerbsOps(spec string, ops []any) (string, []any) {
 		case '%':
 			sb.WriteString(spec[pct:i])
 		case 'w':
-			if argNum < len(ops) {
+			lit := ""
+			if wAt < len(bad) {
+				lit = bad[wAt]
+			} else if argNum >= len(ops) {
+				lit = "%!w(MISSING)"
+			}
+			wAt++
+			if lit != "" {
+				lits = append(lits, lit)
+				sb.WriteString("%[")
+				sb.WriteString(strconv.Itoa(len(ops) + len(lits)))
+				sb.WriteString("]s")
+			} else {
 				sb.WriteString(spec[pct : i-1])
 				sb.WriteByte('v')
-			} else {
-				// %[K]v reaches the appended literal; flags and any
-				// stale [n] index drop — gc prints %!w(MISSING) for a
-				// missing %w operand regardless.
-				miss = append(miss, argNum)
-				sb.WriteString("%[")
-				sb.WriteString(strconv.Itoa(len(ops) + len(miss)))
-				sb.WriteString("]v")
 			}
 			argNum++
 		default:
@@ -296,25 +316,26 @@ func rewriteWrapVerbsOps(spec string, ops []any) (string, []any) {
 			argNum++
 		}
 	}
-	for range miss {
-		ops = append(ops, "%!w(MISSING)")
+	for _, lit := range lits {
+		ops = append(ops, lit)
 	}
 	return sb.String(), ops
 }
 
 // rewriteWrapVerbs rewrites %w verbs to %v (flags, width and explicit
-// [n] indexes kept) and reports the operand index of every %w, in verb
-// order, the way gc's doPrintf records p.wrappedErrs: explicit indexes
-// move the cursor, `*` width/precision consume an operand, and the list
-// may repeat an index (`%[1]w %[1]w`). Indexes past the operands are
-// reported too; the caller drops them (gc prints %!w(MISSING) and
-// records nothing).
-func rewriteWrapVerbs(spec string) (string, []int) {
+// [n] indexes kept), reports the operand index of every %w, in verb
+// order, the way gc's doPrintf records p.wrappedErrs, and collects each
+// %w directive's text. Explicit indexes move the cursor, `*` width/
+// precision consume an operand, and the list may repeat an index
+// (`%[1]w %[1]w`). Indexes past the operands are reported too; the
+// caller drops them (gc prints %!w(MISSING) and records nothing).
+func rewriteWrapVerbs(spec string) (string, []int, []string) {
 	if !strings.Contains(spec, "w") {
-		return spec, nil
+		return spec, nil, nil
 	}
 	var sb strings.Builder
 	var wrapPos []int
+	var wrapDirs []string
 	argNum := 0
 	// index parses an explicit `[n]` at spec[i:], moving the cursor.
 	index := func(i int) int {
@@ -377,13 +398,14 @@ func rewriteWrapVerbs(spec string) (string, []int) {
 			sb.WriteString(spec[pct : i-1])
 			sb.WriteByte('v')
 			wrapPos = append(wrapPos, argNum)
+			wrapDirs = append(wrapDirs, spec[pct:i])
 			argNum++
 		default:
 			sb.WriteString(spec[pct:i])
 			argNum++
 		}
 	}
-	return sb.String(), wrapPos
+	return sb.String(), wrapPos, wrapDirs
 }
 
 // ffn wraps a host fmt-style function: each arg becomes fmtArg so host

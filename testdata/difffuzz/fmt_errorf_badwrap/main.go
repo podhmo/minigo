@@ -19,4 +19,14 @@ func main() {
 	fmt.Println(fmt.Errorf("x %w", "s"))
 	fmt.Println(fmt.Errorf("%w", fmt.Errorf("ok")))
 	fmt.Println(fmt.Errorf("%[1]w %[1]w", fmt.Errorf("e")))
+	// a shared operand index must not corrupt the sibling verb, and a
+	// Stringer operand's method stays silent inside the marker like
+	// gc's method-suppressed inner %v; precision cuts the inner text.
+	fmt.Println(fmt.Errorf("%[1]d %[1]w", 3))
+	fmt.Println(fmt.Errorf("%.2w", "abc"))
+	fmt.Println(fmt.Errorf("x %w", S{}))
 }
+
+type S struct{}
+
+func (S) String() string { return "STR" }
