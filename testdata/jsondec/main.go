@@ -25,6 +25,10 @@ type F32 float32
 
 func (l *Lit) UnmarshalJSON(b []byte) error { *l = Lit(string(b)); return nil }
 
+type KTxt string
+
+func (k KTxt) MarshalText() ([]byte, error) { return []byte("K:" + string(k)), nil }
+
 func main() string {
 	// bound NewDecoder streams one value off the reader.
 	dec := json.NewDecoder(bytes.NewReader([]byte(`{"a":1} {"b":2}`)))
@@ -146,10 +150,35 @@ func main() string {
 	if serr3 == nil {
 		return "err16:no error"
 	}
+	// an earlier member that decodes fine does not claim the middle
+	// failure's slot — the unknown field precedes it in the stream.
+	strict4 := json.NewDecoder(bytes.NewReader([]byte(`{"o":{"a":"ok","bad":1},"o":{"a":5}}`)))
+	strict4.DisallowUnknownFields()
+	var s4 struct {
+		O struct {
+			A string `json:"a"`
+		} `json:"o"`
+	}
+	serr4 := strict4.Decode(&s4)
+	if serr4 == nil {
+		return "err17:no error"
+	}
+	// 3.4028235e38 is float32's max literal: it rounds into range.
+	var fv2 struct {
+		F F32 `json:"f"`
+	}
+	ferr2 := json.Unmarshal([]byte(`{"f":3.4028235e38}`), &fv2)
+	fv2ok := "ok"
+	if ferr2 != nil {
+		fv2ok = ferr2.Error()
+	}
+	// a named string key's MarshalText names it in the object.
+	ktb, _ := json.Marshal(map[KTxt]int{"k": 1})
 	return string(rune('0'+m1["a"])) + string(rune('0'+m2["b"])) + "|" + string(b) +
 		"|" + serr.Error() + "|" + itoa(big) + "|" + tb.Tag() +
 		"|" + string(sp.K) + "|" + serr2.Error() + "|" + itoa(int64(dup.A)) + "|" + itoa(int64(s2.O.A)) +
-		"|" + string(ub) + "|" + aerr.Error() + "|" + inf + "|" + dvs + "|" + ferr.Error() + "|" + serr3.Error()
+		"|" + string(ub) + "|" + aerr.Error() + "|" + inf + "|" + dvs + "|" + ferr.Error() + "|" + serr3.Error() +
+		"|" + serr4.Error() + "|" + fv2ok + "|" + string(ktb)
 }
 
 func itoa(i int64) string {
