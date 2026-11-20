@@ -47,6 +47,11 @@ jobs:
     - name: Internal import graph (archcheck)
       run: make archcheck
 
+    - name: Similarity ratchet (simcheck)
+      run: |
+        go install github.com/Songmu/gosimilarity/cmd/gosimilarity@298b2cd
+        make simcheck
+
     - name: File budgets vs merge base (M1-4)
       if: github.event_name == 'pull_request'
       run: |

@@ -39,6 +39,13 @@ test-spike:
 archcheck:
 	go run ./internal/cmd/archcheck
 
+# Similarity ratchet (TODO #238): gosimilarity pairs + in-process
+# 8-line fragment windows vs internal/archcheck/similarity-baseline.json.
+# Refresh the baseline with
+#   make simcheck ARGS=-write-baseline
+simcheck:
+	gosimilarity --exclude 'testdata/**' --exclude 'examples/**' --exclude 'tools/**' --exclude '.claude/**' --min-tokens 30 --threshold 0.95 --format json . | go run ./internal/cmd/simcheck -pairs - $(ARGS)
+
 # Classified shared-engine stress; see docs/concurrency-stress.md. Reuses
 # the callback/release fixture introduced with the fix in #1061.
 CONCURRENCY_STRESS_CPU ?= 1,2,4
