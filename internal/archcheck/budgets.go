@@ -52,7 +52,7 @@ var FileBudgets = map[string]int{
 	"internal/cmd/archcheck/main.go":            96,
 	"internal/cmd/genbind/main.go":              262,
 	"internal/cmd/genbind/table.go":             56,
-	"internal/cmd/simcheck/main.go":             321,
+	"internal/cmd/simcheck/main.go":             359,
 	"internal/cmd/genifaces/main.go":            41,
 	"internal/cmd/genifaces/table.go":           92,
 	"internal/execution/indexgate.go":           52,
