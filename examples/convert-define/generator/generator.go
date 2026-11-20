@@ -16,6 +16,7 @@ import (
 
 	"github.com/podhmo/minigo/examples/convert-define/model"
 	xinspect "github.com/podhmo/minigo/inspect"
+	"github.com/podhmo/minigo/pkg/importmanager"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -276,7 +277,7 @@ var baseImports = map[string]string{
 }
 
 func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]byte, error) {
-	im := NewImportManager(info.PackagePath)
+	im := importmanager.New(info.PackagePath)
 	ctx := context.Background()
 
 	// The generated code always may use these; registering them first
@@ -466,7 +467,7 @@ func Generate(res xinspect.Resolver, info *model.ParsedInfo, opts Options) ([]by
 
 // qualifiedStructName spells a struct type in the generated file's
 // terms; types of the generated package itself stay unqualified.
-func qualifiedStructName(im *ImportManager, info *model.ParsedInfo, si *model.StructInfo) string {
+func qualifiedStructName(im *importmanager.Manager, info *model.ParsedInfo, si *model.StructInfo) string {
 	if si == nil || si.Type == nil || si.Type.Package == nil {
 		return "invalid"
 	}
@@ -648,7 +649,7 @@ func normalizeFieldName(name string) string {
 	return strings.ToLower(strings.ReplaceAll(name, "_", ""))
 }
 
-func qualifyFunc(im *ImportManager, info *model.ParsedInfo, funcName string) string {
+func qualifyFunc(im *importmanager.Manager, info *model.ParsedInfo, funcName string) string {
 	parts := strings.Split(funcName, ".")
 	if len(parts) != 2 {
 		return funcName // Not a qualified function name, assume it's in the current package
@@ -666,7 +667,7 @@ func qualifyFunc(im *ImportManager, info *model.ParsedInfo, funcName string) str
 // registerImports qualifies every named type reachable through the
 // TypeExpr — pointers, slices, maps, func types, and generic
 // instantiation bases and arguments, all yielded by Children().
-func registerImports(im *ImportManager, te *xinspect.TypeExpr) {
+func registerImports(im *importmanager.Manager, te *xinspect.TypeExpr) {
 	if te == nil {
 		return
 	}
@@ -755,7 +756,7 @@ func block(head string, body ...string) string {
 // emitter carries what every conversion step needs for one converter
 // function, plus that function's temporary-name allocator.
 type emitter struct {
-	im     *ImportManager
+	im     *importmanager.Manager
 	res    xinspect.Resolver
 	info   *model.ParsedInfo
 	fn     funcNamer
@@ -771,7 +772,7 @@ type emitter struct {
 // top-level identifiers, the fixed imports, and the unqualified (same-package) rule and converter
 // funcs. Import aliases are checked at allocation time (fresh) because
 // the ImportManager keeps growing during the emit pass.
-func newEmitter(im *ImportManager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, diag *genDiags, pair *TemplatePair, packageIdents []string) *emitter {
+func newEmitter(im *importmanager.Manager, res xinspect.Resolver, info *model.ParsedInfo, fn funcNamer, diag *genDiags, pair *TemplatePair, packageIdents []string) *emitter {
 	taken := map[string]bool{"ctx": true, "ec": true, "src": true, "dst": true, "context": true, "errors": true, "fmt": true, "model": true}
 	for _, id := range packageIdents {
 		taken[id] = true
@@ -1063,7 +1064,7 @@ func instDeep(res xinspect.Resolver, te *xinspect.TypeExpr) (*xinspect.TypeExpr,
 
 // castExpr renders `T(x)`; a composite spelling needs parens —
 // `(*int)(x)` parses where `*int(x)` does not.
-func castExpr(im *ImportManager, te *xinspect.TypeExpr, x string) string {
+func castExpr(im *importmanager.Manager, te *xinspect.TypeExpr, x string) string {
 	name := getTypeName(im, te)
 	for _, part := range strings.Split(name, ".") {
 		if !token.IsIdentifier(part) {
@@ -1207,7 +1208,7 @@ func chainPath(chain []model.FieldInfo, n int) string {
 // dstInits emits `if p == nil { p = &T{} }` for every pointer
 // intermediate in a destination path, so writes into `dst.In.X`
 // cannot panic. Depth-1 chains emit nothing.
-func dstInits(im *ImportManager, chain []model.FieldInfo, dstVar string) string {
+func dstInits(im *importmanager.Manager, chain []model.FieldInfo, dstVar string) string {
 	var b strings.Builder
 	for i := 0; i+1 < len(chain); i++ {
 		ft := chain[i].FieldType
@@ -1300,7 +1301,7 @@ func (d *genDiags) warnings() []string {
 // shape branch covers — the raw assignment that follows will not
 // compile. Returns "" when the pair is safely assignable after all
 // (dst accepts any value, or a named src may satisfy a dst interface).
-func leafMismatch(im *ImportManager, res xinspect.Resolver, srcT, dstT *xinspect.TypeExpr) string {
+func leafMismatch(im *importmanager.Manager, res xinspect.Resolver, srcT, dstT *xinspect.TypeExpr) string {
 	if isEmptyIface(res, dstT) {
 		return ""
 	}
@@ -1321,7 +1322,7 @@ func leafMismatch(im *ImportManager, res xinspect.Resolver, srcT, dstT *xinspect
 // assignable type will not compile. An unnamed composite and a named
 // type may still be assignable through their underlying type, which
 // cannot be checked without go/types — that case stays quiet.
-func computeMismatch(im *ImportManager, res xinspect.Resolver, expr string, exprT, dstT *xinspect.TypeExpr) string {
+func computeMismatch(im *importmanager.Manager, res xinspect.Resolver, expr string, exprT, dstT *xinspect.TypeExpr) string {
 	if exprT.SameType(dstT, res) {
 		return ""
 	}
@@ -1402,7 +1403,7 @@ var numericBuiltins = map[string]bool{
 // being numeric builtins, makes a plain conversion legal; string <->
 // []byte/[]rune converts natively; anything else is left to a raw
 // assignment that the compiler will flag if it is truly wrong.
-func leafCast(im *ImportManager, res xinspect.Resolver, srcT, dstT *xinspect.TypeExpr, src string) (string, bool) {
+func leafCast(im *importmanager.Manager, res xinspect.Resolver, srcT, dstT *xinspect.TypeExpr, src string) (string, bool) {
 	// string <-> []byte / []rune — the only builtin leaf/composite
 	// pairs Go can convert directly.
 	if isStringLeaf(dstT) && isByteOrRuneSlice(srcT) {
@@ -1464,7 +1465,7 @@ func isByteOrRuneSlice(te *xinspect.TypeExpr) bool {
 // declared identifiers become im.Qualify'd names; composite shapes that
 // carry no resolvable identity (anonymous struct/func types) keep the
 // written spelling.
-func getTypeName(im *ImportManager, te *xinspect.TypeExpr) string {
+func getTypeName(im *importmanager.Manager, te *xinspect.TypeExpr) string {
 	if te == nil {
 		return "interface{}" // Should not happen in valid code
 	}
@@ -1508,7 +1509,7 @@ func getTypeName(im *ImportManager, te *xinspect.TypeExpr) string {
 	}
 }
 
-func qualifiedName(im *ImportManager, sid runtime.SymbolID) string {
+func qualifiedName(im *importmanager.Manager, sid runtime.SymbolID) string {
 	if xinspect.NoDeclPath(sid.PackagePath) {
 		// builtins and type parameters spell bare — a type
 		// parameter names no importable package.

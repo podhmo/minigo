@@ -20,6 +20,7 @@ import (
 	stdlibhost "github.com/podhmo/minigo/internal/stdlib/host"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
+	stdlibimportmanager "github.com/podhmo/minigo/internal/stdlib/importmanager"
 	stdinspect "github.com/podhmo/minigo/internal/stdlib/inspect"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdjson "github.com/podhmo/minigo/internal/stdlib/json"
@@ -82,6 +83,8 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })
 	e.pending.Register("minigo.dev/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
 	e.pending.Register("github.com/podhmo/minigo/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
+	e.pending.Register("minigo.dev/importmanager", func() { stdlibimportmanager.Install(e.bindBound, h) })
+	e.pending.Register("github.com/podhmo/minigo/pkg/importmanager", func() { stdlibimportmanager.Install(e.bindBound, h) })
 	stdinspectHooks := stdinspect.Hooks{
 		LoadPath:        e.loadPath,
 		LoadPathLenient: e.loadPathLenient,

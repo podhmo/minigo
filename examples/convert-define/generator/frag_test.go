@@ -5,13 +5,14 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/examples/convert-define/model"
+	"github.com/podhmo/minigo/pkg/importmanager"
 )
 
 // TestEmitterFreshAvoidsVisibleNames pins the temporary-name invariant:
 // hoisted temporaries skip every identifier visible in the converter —
 // params, same-package funcs and identifiers, import aliases.
 func TestEmitterFreshAvoidsVisibleNames(t *testing.T) {
-	im := NewImportManager("example.com/self")
+	im := importmanager.New("example.com/self")
 	im.Add("example.com/s", "s")
 	info := &model.ParsedInfo{GlobalRules: []model.TypeRule{{UsingFunc: "item"}}}
 	pair := &TemplatePair{Fields: []FieldMap{{Converter: "v"}}}

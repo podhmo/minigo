@@ -1,4 +1,4 @@
-package generator
+package importmanager
 
 import (
 	"testing"
@@ -91,7 +91,7 @@ func TestImportManagerAdd(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			im := NewImportManager(tt.current)
+			im := New(tt.current)
 			got := make([]string, 0, len(tt.adds))
 			for _, a := range tt.adds {
 				got = append(got, im.Add(a[0], a[1]))
@@ -142,7 +142,7 @@ func TestImportManagerQualify(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			im := NewImportManager(tt.current)
+			im := New(tt.current)
 			for _, a := range tt.adds {
 				im.Add(a[0], a[1])
 			}
@@ -160,7 +160,7 @@ func TestImportManagerQualify(t *testing.T) {
 // TestImportManagerImportsCopy pins that Imports() hands out a
 // snapshot — mutating it must not corrupt later registrations.
 func TestImportManagerImportsCopy(t *testing.T) {
-	im := NewImportManager("")
+	im := New("")
 	im.Add("example.com/m/foo", "")
 	snapshot := im.Imports()
 	snapshot["example.com/m/foo"] = "corrupted"
