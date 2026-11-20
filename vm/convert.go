@@ -176,6 +176,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	srcUnsigned := false
 	srcUnsafe := false
 	peeled := false
+	var unsafeBox *runtime.Named
 	for {
 		n, ok := x.(*runtime.Named)
 		if !ok {
@@ -190,6 +191,12 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 		}
 		if v.unsafePtrTd(n.Typ) {
 			srcUnsafe = true
+			// the peeled-away box is the pointer value itself: record
+			// it on the mint so the referent stays pinned while this
+			// pointer is alive (the payload below roots nothing).
+			if unsafeBox == nil {
+				unsafeBox = n
+			}
 		}
 		x = n.V
 	}
@@ -241,7 +248,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 			// host pointer for a host box. srcUnsafe gates it because
 			// gc only allows *T -> uintptr via unsafe.Pointer.
 			if srcUnsafe && td.Name == "uintptr" {
-				if addr, ok := v.unsafePtrAddr(x); ok {
+				if addr, ok := v.unsafePtrAddr(x, unsafeBox); ok {
 					iv, uv = int64(addr), addr
 					break
 				}

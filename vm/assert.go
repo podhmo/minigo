@@ -1695,14 +1695,51 @@ func hostPtrBox(x runtime.Value) bool {
 // (the cell, the backing-array element, the struct field) so the same
 // location mints the same value across evaluations, and a realloc moves
 // it like gc's; a host box mints the host pointer itself.
-func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
-	box, _ := x.(*runtime.Named)
-	x = runtime.Unwrap(x)
+func (v *VM) unsafePtrAddr(x runtime.Value, box *runtime.Named) (uint64, bool) {
+	x = anchorMintRef(runtime.Unwrap(x))
 	if addr, ok := v.unsafePtrAddrOf(x); ok {
 		v.mintUnsafePtr(addr, x, box)
 		return addr, true
 	}
 	return 0, false
+}
+
+// anchorMintRef resolves a ref to the storage its address names, so a
+// revived pointer keeps addressing the same slot after the path it was
+// minted through is rebound — an embedded pointer swapped, a slice or
+// pointer variable reassigned. Values that already name stable storage
+// (cells, host boxes, address payloads) pass through.
+func anchorMintRef(x runtime.Value) runtime.Value {
+	switch r := x.(type) {
+	case *runtime.FieldRef:
+		// a promoted field resolves through the embedded pointer
+		// CURRENTLY stored — anchor on the resolved owning struct so a
+		// `s.EP = &E{}` store does not retarget the revived pointer.
+		if st, idx, ok := r.Find(); ok {
+			name := r.Name
+			if st.Def != nil && idx < len(st.Def.Fields) {
+				name = st.Def.Fields[idx]
+			}
+			return &runtime.FieldRef{Base: st, Name: name, Def: r.Def, Path: []int{idx}}
+		}
+	case *runtime.IndexRef:
+		// the element's slot lives in the backing array — anchor on the
+		// resolved slice, not the variable that held it.
+		if sl := r.Slice(); sl != nil {
+			return &runtime.IndexRef{Base: sl, Key: r.Key}
+		}
+		if m := r.Map(); m != nil {
+			return &runtime.IndexRef{Base: m, Key: r.Key}
+		}
+	case *runtime.DerefRef:
+		// `&*p` is the pointer value p held at mint — pin that value,
+		// not the cell re-dereferenced on every access. It may itself
+		// be a ref, which anchors the same way.
+		if pv, ok := runtime.Deref(r.Ptr); ok {
+			return anchorMintRef(pv)
+		}
+	}
+	return x
 }
 
 // mintEnt is one recorded uintptr referent. The referent is pinned
@@ -1766,18 +1803,40 @@ func (e *mintEnt) attach(box *runtime.Named) {
 // process — setup work before the first Call — falls back to its own
 // table.
 func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value, box *runtime.Named) {
-	ent := &mintEnt{ref: ref}
-	if box != nil {
-		ent.boxes = append(ent.boxes, weak.Make(box))
+	make_ := func() any {
+		ent := &mintEnt{ref: ref}
+		if box != nil {
+			ent.boxes = append(ent.boxes, weak.Make(box))
+		}
+		return ent
+	}
+	// a second mint of a live address merges: overwriting the entry
+	// would drop the earlier boxes' liveness records, so a still-held
+	// pointer could lose its referent when a temporary box collects.
+	merge := func(e any) {
+		if ent, ok := e.(*mintEnt); ok {
+			ent.ref = ref
+			if box != nil {
+				ent.attach(box)
+			}
+		}
 	}
 	if p := v.proc.Load(); p != nil {
-		p.MintUintptr(addr, ent)
+		p.UpsertUintptr(addr, make_, merge)
 		return
 	}
 	if v.unsafePtrMint == nil {
 		v.unsafePtrMint = map[uint64]*mintEnt{}
 	}
-	v.unsafePtrMint[addr] = ent
+	if old, ok := v.unsafePtrMint[addr]; ok {
+		if old.Dead() {
+			delete(v.unsafePtrMint, addr)
+		} else {
+			merge(old)
+			return
+		}
+	}
+	v.unsafePtrMint[addr] = make_().(*mintEnt)
 }
 
 // mintEntry returns the live entry for addr, or nil.
@@ -1815,7 +1874,7 @@ func (v *VM) reviveUnsafePtr(addr uint64) (runtime.Value, bool) {
 // pointer — like gc rooting the object through the unsafe.Pointer
 // value itself.
 func (v *VM) unsafePtrRoot(box *runtime.Named) {
-	addr, ok := v.unsafePtrAddrOf(runtime.Unwrap(box))
+	addr, ok := v.unsafePtrAddrOf(anchorMintRef(runtime.Unwrap(box)))
 	if !ok {
 		return
 	}
