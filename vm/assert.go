@@ -1611,97 +1611,80 @@ func hostPtrBox(x runtime.Value) bool {
 // location mints the same value across evaluations, and a realloc moves
 // it like gc's; a host box mints the host pointer itself.
 func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
+	box, _ := x.(*runtime.Named)
 	x = runtime.Unwrap(x)
 	if addr, ok := v.unsafePtrAddrOf(x); ok {
-		v.mintUnsafePtr(addr, x)
+		v.mintUnsafePtr(addr, x, box)
 		return addr, true
 	}
 	return 0, false
 }
 
-// mintEnt is one recorded uintptr referent. get hands back a pointer
-// value covering the storage — a weak entry reports nil once the
-// referent became unreachable (gc's rule: a uintptr→unsafe.Pointer
-// revive is only valid while the object stays reachable), and a strong
-// entry is for the rare unweakable payload and lives until swept.
+// mintEnt is one recorded uintptr referent. The referent is pinned
+// while any minted unsafe.Pointer box for the address lives — in gc
+// the unsafe.Pointer value itself roots the object, and the recorded
+// boxes stand in for those values here: the script holding the address
+// as `u := unsafe.Pointer(x)` keeps u alive, so the referent stays
+// revivable; once every box is collected the entry is dead — an
+// unreachable referent can never legally be revived. An entry with no
+// recorded box (the window before the minted uintptr is converted
+// back) rides the table's FIFO bound.
 type mintEnt struct {
-	get func() runtime.Value
+	ref   runtime.Value
+	boxes []weak.Pointer[runtime.Named]
 }
 
-// Dead reports whether the entry's referent is unreachable — the
-// process table sweeps dead entries before evicting live ones.
-func (e *mintEnt) Dead() bool { return e.get() == nil }
+// mintBoxCap bounds the box list per address; past it the entry is
+// pinned for the FIFO to evict rather than lose a live root.
+const mintBoxCap = 16
 
-// mintEntOf records x's referent behind a minted address, weakly where
-// the storage is a known heap object — a cell, a host box, a field's
-// owning struct, a slice's backing — so the entry dies with the
-// referent instead of pinning it (the revive then rebuilds an
-// equivalent ref onto the still-live storage). An unweakable payload
-// falls back to a strong record.
-func mintEntOf(x runtime.Value) *mintEnt {
-	strong := &mintEnt{get: func() runtime.Value { return x }}
-	switch t := x.(type) {
-	case *runtime.Cell:
-		w := weak.Make(t)
-		return &mintEnt{get: func() runtime.Value {
-			if p := w.Value(); p != nil {
-				return p
-			}
-			return nil
-		}}
-	case *runtime.GoValue:
-		w := weak.Make(t)
-		return &mintEnt{get: func() runtime.Value {
-			if p := w.Value(); p != nil {
-				return p
-			}
-			return nil
-		}}
-	case *runtime.FieldRef:
-		// the ref wrapper is ephemeral — the FIELD SLOT's owner is the
-		// live object, so the weak target is the resolved struct and a
-		// revive rebuilds a name ref onto it.
-		st, _, ok := t.Find()
-		if !ok {
-			return strong
+// Dead reports whether the entry has a recorded box and every box is
+// collected. Box-free entries never report dead — they are swept by
+// position.
+func (e *mintEnt) Dead() bool {
+	return len(e.boxes) > 0 && e.liveBoxes() == 0
+}
+
+func (e *mintEnt) liveBoxes() int {
+	n := 0
+	for _, b := range e.boxes {
+		if b.Value() != nil {
+			n++
 		}
-		w := weak.Make(st)
-		return &mintEnt{get: func() runtime.Value {
-			if s := w.Value(); s != nil {
-				return &runtime.FieldRef{Base: s, Name: t.Name}
-			}
-			return nil
-		}}
-	case *runtime.IndexRef:
-		sl := t.Slice()
-		if sl == nil {
-			return strong
-		}
-		w := weak.Make(sl)
-		return &mintEnt{get: func() runtime.Value {
-			if s := w.Value(); s != nil {
-				return &runtime.IndexRef{Base: s, Key: t.Key}
-			}
-			return nil
-		}}
-	case *runtime.DerefRef:
-		// &*p names its pointee's storage — record that referent's
-		// entry so a revive hands back a pointer to the same storage.
-		if pv, ok := runtime.Deref(t.Ptr); ok {
-			return mintEntOf(pv)
-		}
-		return strong
-	default:
-		return strong
 	}
+	return n
 }
 
-// mintUnsafePtr records the referent behind a minted address. The
-// table lives on the process so a pointer minted on one goroutine
-// revives on a sibling (goroutine args); a VM outside any process —
-// setup work before the first Call — falls back to its own table.
-func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value) {
-	ent := mintEntOf(ref)
+// attach records another minted box for the address, reaping
+// collected boxes as it goes.
+func (e *mintEnt) attach(box *runtime.Named) {
+	bs := e.boxes[:0]
+	for _, b := range e.boxes {
+		if b.Value() != nil {
+			bs = append(bs, b)
+		}
+	}
+	e.boxes = bs
+	if len(e.boxes) < mintBoxCap {
+		e.boxes = append(e.boxes, weak.Make(box))
+		return
+	}
+	// over the box cap: drop the liveness record so the entry pins the
+	// referent for the FIFO bound rather than losing a live root.
+	e.boxes = e.boxes[:0]
+}
+
+// mintUnsafePtr records the referent behind a minted address; box is
+// the unsafe.Pointer value being converted to uintptr, when there is
+// one. The table lives on the process so a pointer minted on one
+// goroutine revives on a sibling (goroutine args); a VM outside any
+// process — setup work before the first Call — falls back to its own
+// table.
+func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value, box *runtime.Named) {
+	ent := &mintEnt{ref: ref}
+	if box != nil {
+		ent.boxes = append(ent.boxes, weak.Make(box))
+	}
 	if p := v.proc.Load(); p != nil {
 		p.MintUintptr(addr, ent)
 		return
@@ -1712,33 +1695,60 @@ func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value) {
 	v.unsafePtrMint[addr] = ent
 }
 
-// reviveUnsafePtr reports the referent a mint recorded for addr.
-func (v *VM) reviveUnsafePtr(addr uint64) (runtime.Value, bool) {
+// mintEntry returns the live entry for addr, or nil.
+func (v *VM) mintEntry(addr uint64) *mintEnt {
 	var ref any
 	var ok bool
 	if p := v.proc.Load(); p != nil {
 		ref, ok = p.ReviveUintptr(addr)
 	} else {
-		ent, hit := v.unsafePtrMint[addr]
-		if !hit {
-			return nil, false
+		ref, ok = v.unsafePtrMint[addr]
+		if ok {
+			if ent, isEnt := ref.(*mintEnt); isEnt && ent.Dead() {
+				delete(v.unsafePtrMint, addr)
+				return nil
+			}
 		}
-		if ent.Dead() {
-			delete(v.unsafePtrMint, addr)
-			return nil, false
-		}
-		ref, ok = ent, true
 	}
 	if !ok {
-		return nil, false
+		return nil
 	}
-	if ent, isEnt := ref.(*mintEnt); isEnt {
-		if rv := ent.get(); rv != nil {
-			return rv, true
+	ent, _ := ref.(*mintEnt)
+	return ent
+}
+
+// reviveUnsafePtr reports the referent a mint recorded for addr.
+func (v *VM) reviveUnsafePtr(addr uint64) (runtime.Value, bool) {
+	if ent := v.mintEntry(addr); ent != nil {
+		return ent.ref, true
+	}
+	return nil, false
+}
+
+// unsafePtrRoot links a minted unsafe.Pointer box to its entry, so the
+// referent stays pinned for as long as the script can still hold the
+// pointer — like gc rooting the object through the unsafe.Pointer
+// value itself.
+func (v *VM) unsafePtrRoot(box *runtime.Named) {
+	addr, ok := v.unsafePtrAddrOf(runtime.Unwrap(box))
+	if !ok {
+		return
+	}
+	if p := v.proc.Load(); p != nil {
+		p.AttachUintptr(addr, func(e any) {
+			if ent, isEnt := e.(*mintEnt); isEnt {
+				ent.attach(box)
+			}
+		})
+		return
+	}
+	if ent := v.unsafePtrMint[addr]; ent != nil {
+		if ent.Dead() {
+			delete(v.unsafePtrMint, addr)
+		} else {
+			ent.attach(box)
 		}
-		return nil, false
 	}
-	return ref, true
 }
 
 // unsafePtrAddrOf computes the minted address itself — see unsafePtrAddr
