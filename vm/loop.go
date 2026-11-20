@@ -154,6 +154,7 @@ func (v *VM) loop(f *frame) {
 			}
 			if ins.B == 0 {
 				v.checkAddrBase(base, key)
+				v.checkIndexRefBounds(f, base, key)
 			}
 			if _, isMap := runtime.Unwrap(base).(*runtime.Map); isMap && ins.B == 0 {
 				// Go rejects &m[k] at compile time: map elements are

@@ -391,6 +391,34 @@ func (v *VM) checkAddrBase(base, key runtime.Value) {
 	}
 }
 
+// checkIndexRefBounds enforces `&s[i]`'s bounds at the address-of: the
+// ref defers element access to its first use, but Go panics where the
+// index expression evaluates — and rejects `&str[i]` outright, strings
+// being unaddressable. A non-int key is left to the first use.
+func (v *VM) checkIndexRefBounds(f *frame, base, key runtime.Value) {
+	n := -1
+	switch b := runtime.Unwrap(base).(type) {
+	case *runtime.Slice:
+		n = int(b.Len())
+	case string:
+		f.trap("cannot take the address of string element")
+	case *runtime.GoValue:
+		rv := hostbridge.RVOf(b.V)
+		switch rv.Kind() {
+		case hostbridge.KindSlice, hostbridge.KindArray:
+			n = rv.Len()
+		case hostbridge.KindString:
+			f.trap("cannot take the address of string element")
+		}
+	}
+	if n < 0 {
+		return
+	}
+	if i, ok := hostbridge.IndexSmallInt(key); ok && (i < 0 || i >= int64(n)) {
+		panic(runtime.BoundsPanic(i, n))
+	}
+}
+
 // assignRef stores a value into a resolved assignment target — the
 // phase-2 store of OpSetRefs. The ref carries the target's storage
 // shape: IndexRef/FieldRef go through the typed index/field stores so
