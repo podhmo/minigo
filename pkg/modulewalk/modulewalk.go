@@ -479,7 +479,12 @@ func DiscoverModules(root string, excludeDirs []string) ([]string, error) {
 		}
 		var out []string
 		for _, use := range wf.Use {
-			out = append(out, filepath.Join(root, filepath.FromSlash(use.Path)))
+			// a use path is relative to the go.work dir unless absolute
+			dir := filepath.FromSlash(use.Path)
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(root, dir)
+			}
+			out = append(out, dir)
 		}
 		sort.Strings(out)
 		return out, nil
