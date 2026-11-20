@@ -67,6 +67,10 @@ type Marshal struct {
 	// TemplateCallableNout reports a script func's template-callable
 	// result count (0 when it is not callable or not template-shaped).
 	TemplateCallableNout func(m *runtime.Function) int
+	// GoroutineID reports the running goroutine's id; it scopes the
+	// call-projected container registry (callscope.go) so a host
+	// callback arg crossing back resolves to the script value.
+	GoroutineID func() int64
 }
 
 // NewWalk starts one marshal's walk/budget state.
@@ -487,14 +491,18 @@ func (m *Marshal) DeepHost(v runtime.Value, vc runtime.VMCaller, h *HostMarshal)
 			// an unboxed host slice crosses back as its own backing —
 			// `buf.Bytes()` in a FuncMap arg shares the buffer, so the
 			// callee's element writes reach it like gc's would.
-			return sv.Host.Interface()
+			out := sv.Host.Interface()
+			m.registerProjected(v, out)
+			return out
 		}
 		if out, ok := h.typedContainer(v, vc); ok {
+			m.registerProjected(v, out)
 			return out
 		}
 		out, _ := h.Walk.Container(v, func(e runtime.Value) any {
 			return m.DeepHost(e, vc, h)
 		}, runtime.UnwrapKey)
+		m.registerProjected(v, out)
 		return out
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
 		// a script pointer to a struct can't offer the host its

@@ -226,6 +226,7 @@ func refArg(a runtime.Value) (ref runtime.Value, leaf runtime.Value) {
 // shared by host method values and callable GoValue funcs.
 func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	vc = h.BindCaller(vc)
+	defer mb.pushCallScope()()
 	mt := m.Type()
 	nin := mt.NumIn()
 	if !mt.IsVariadic() && len(args) != nin {
