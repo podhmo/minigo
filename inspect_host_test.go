@@ -494,6 +494,57 @@ func TestBodyNodes(t *testing.T) {
 	}
 }
 
+// TestSpecNodes: SpecOf roots the same typed Node view at a non-func
+// decl's spec — a var's ValueSpec exposes its names, type and values
+// children; a type's TypeSpec exposes its Type — closing the gap where
+// only the raw-node AST path reached const initializers and type-spec
+// internals.
+func TestSpecNodes(t *testing.T) {
+	e := newEngine(t)
+	ctx := context.Background()
+	p, err := e.Package(ctx, "./testdata/inspectpkg")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := xinspect.SpecOf(xinspect.NewDecl(p, p.Index.Vars["Count"]))
+	if err != nil {
+		t.Fatalf("SpecOf(Count): %v", err)
+	}
+	if root.Kind != "ValueSpec" {
+		t.Fatalf("Count root kind = %s", root.Kind)
+	}
+	var roles []string
+	for _, c := range xinspect.NodesOf(root) {
+		roles = append(roles, c.Role+":"+c.Kind)
+	}
+	if diff := cmp.Diff([]string{"Names:Ident", "Type:Ident", "Values:BasicLit"}, roles); diff != "" {
+		t.Errorf("Count children (-want +got):\n%s", diff)
+	}
+
+	troot, err := xinspect.SpecOf(xinspect.NewDecl(p, p.Index.Types["MyInt"].Decl))
+	if err != nil {
+		t.Fatalf("SpecOf(MyInt): %v", err)
+	}
+	if troot.Kind != "TypeSpec" {
+		t.Fatalf("MyInt root kind = %s", troot.Kind)
+	}
+	var troles []string
+	for _, c := range xinspect.NodesOf(troot) {
+		troles = append(troles, c.Role+":"+c.Kind+":"+c.Text)
+	}
+	if diff := cmp.Diff([]string{"Name:Ident:MyInt", "Type:Ident:int"}, troles); diff != "" {
+		t.Errorf("MyInt children (-want +got):\n%s", diff)
+	}
+
+	if _, err := xinspect.SpecOf(xinspect.NewDecl(p, nil)); err == nil {
+		t.Error("want error for a host symbol")
+	}
+	if _, err := xinspect.SpecOf(xinspect.NewDecl(p, p.Index.Funcs["WalkMe"])); err == nil {
+		t.Error("want error for a func decl")
+	}
+}
+
 func rolesOf(ns []*xinspect.Node) []string {
 	var out []string
 	for _, n := range ns {

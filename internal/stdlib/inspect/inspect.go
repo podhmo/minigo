@@ -541,6 +541,17 @@ func Install(bind stdlib.Bind, h Hooks) {
 			}
 			return &runtime.GoValue{V: n}, nil
 		}),
+		"Spec": bf("Spec", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			s, err := declViewOf(args[0])
+			if err != nil {
+				return nil, err
+			}
+			n, err := xinspect.SpecOf(s)
+			if err != nil {
+				return nil, err
+			}
+			return &runtime.GoValue{V: n}, nil
+		}),
 		"Nodes": bf("Nodes", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			n, err := nodeViewOf(args[0])
 			if err != nil {

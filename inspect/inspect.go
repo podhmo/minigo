@@ -2206,6 +2206,22 @@ func BodyOf(s *Decl) (*Node, error) {
 	return n, nil
 }
 
+// SpecOf is [Spec] for Go code, returning an error where Spec traps.
+func SpecOf(s *Decl) (*Node, error) {
+	if s.decl == nil {
+		return nil, fmt.Errorf("inspect.Spec: host symbol %s has no declaration", s.Name)
+	}
+	if s.decl.Spec == nil {
+		return nil, fmt.Errorf("inspect.Spec: %s is a %s, not a var, const or type", s.Name, s.Kind)
+	}
+	n := NewNode(s.decl.Spec, "", s.file, s.Package)
+	if s.file != nil {
+		n.scopes = syntax.NewLocalScopes(s.file.AST)
+	}
+	n.tparams = declTypeParams(s)
+	return n, nil
+}
+
 // NodesOf is [Nodes] for Go code.
 func NodesOf(n *Node) []*Node {
 	// A role-keeping generalization of ast.Walk's enumeration, computed
