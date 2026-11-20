@@ -185,10 +185,11 @@ func (p *Proc) AttachUintptr(addr uint64, fn func(entry any)) bool {
 	return true
 }
 
-// ReviveUintptr reports the referent a mint recorded for addr — the
-// *T-conversion side of the uintptr round trip. A dead entry reports
-// miss and frees its key.
-func (p *Proc) ReviveUintptr(addr uint64) (any, bool) {
+// ReviveUintptr projects the entry a mint recorded for addr — the
+// *T-conversion side of the uintptr round trip. project runs under the
+// table lock so reads it makes of the entry cannot race a concurrent
+// merge rewriting it. A dead entry reports miss and frees its key.
+func (p *Proc) ReviveUintptr(addr uint64, project func(entry any) (any, bool)) (any, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.mints == nil {
@@ -202,7 +203,7 @@ func (p *Proc) ReviveUintptr(addr uint64) (any, bool) {
 		delete(p.mints.m, addr)
 		return nil, false
 	}
-	return ref, true
+	return project(ref)
 }
 
 func New() *Proc { return &Proc{done: make(chan struct{})} }
