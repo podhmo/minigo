@@ -339,6 +339,8 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	}
 	var evs []verbEv
 	argNums := []int{}
+	brokenPct := -1
+	var broken verbEv
 	i := 0
 	for i < len(spec) {
 		j := strings.IndexByte(spec[i:], '%')
@@ -409,6 +411,13 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 			valIdx = [2]int{site, i}
 		}
 		if i >= len(spec) {
+			// a truncated directive: gc consumes its `*` operands
+			// then prints %!(NOVERB) where the verb was due.
+			brokenPct = pct
+			if posP < 0 {
+				posP = i
+			}
+			broken = verbEv{pct, pos, posP, posV, i, argNum, stars, starIdx, valIdx, nw, dirIndexed, dirBad}
 			break
 		}
 		verb := spec[i]
@@ -493,15 +502,13 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 			}
 		}
 	}
-	// wroteIndex records an emitted [n]: any index in the final spec
-	// sets the host's reordered flag, whose side effect is suppressing
-	// gc's %!(EXTRA ...) tail — the rewrite then prints it itself.
-	wroteIndex := false
+	// sbIdx writes an operand's [n] index — any index in the final
+	// spec sets the host's reordered flag, whose side effect is
+	// suppressing its %!(EXTRA ...) tail (emitted by hand below).
 	sbIdx := func(sb *strings.Builder, n int) {
 		sb.WriteByte('[')
 		sb.WriteString(strconv.Itoa(n))
 		sb.WriteByte(']')
-		wroteIndex = true
 	}
 	// emitStar writes star k's `*` operand over spec[lo:hi] inside the
 	// directive: an in-range, non-rvalue slot is pinned to [st+1] (an
@@ -510,10 +517,12 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	// on. A dead star's `*` byte — and its `[n]` site — is dropped:
 	// its marker already printed, and the directive formats its value
 	// anyway.
+	dropped := false
 	emitStar := func(sb *strings.Builder, spec string, ev verbEv, k, lo, hi int) {
 		st := ev.stars[k]
 		site := ev.starIdx[k]
 		if deadStar(st) {
+			dropped = true
 			if site[0] >= 0 {
 				sb.WriteString(spec[lo:site[0]])
 				sb.WriteString(spec[site[1]+1 : hi]) // site[1] holds the '*'
@@ -689,41 +698,75 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 		consumed[ev.arg] = true
 	}
 	_ = argNums
-	sb.WriteString(spec[last:])
+	// text between the last complete directive and a trailing
+	// truncated one (%% at spec end scans as a complete % verb, so
+	// only a mid-directive break leaves a partial).
+	tailEnd := len(spec)
+	if brokenPct >= 0 {
+		tailEnd = brokenPct
+	}
+	sb.WriteString(spec[last:tailEnd])
+	if brokenPct >= 0 {
+		if fixRest {
+			starMarkers(&sb, broken)
+			emitCore(&sb, spec, broken, "%")
+			// the lone '%' that opens this marker text closes the
+			// partial's directive as a % verb (printing '%'), leaving
+			// "!(NOVERB)" literal — the same trick pin uses for
+			// MISSING tails.
+			sb.WriteString("%!(NOVERB)")
+		} else {
+			sb.WriteString(spec[brokenPct:])
+		}
+	}
+	// gc prints no EXTRA once any [n] reorders the args. When every
+	// explicit index lived inside a replaced bad-%w directive — or a
+	// dead star's operand vanished with its '*' — the host would
+	// either report EXTRA for consumed slots or print none where gc
+	// would: park a fresh empty operand on %[N]s so the spec is
+	// reordered and the report below is the only one.
 	// gc reports the operands past its final implicit cursor as
 	// %!(EXTRA ...) — but only when no [n] in the format set its
-	// reordered flag. An emitted index suppresses the host's report,
-	// so print it here: T=v pairs over the same marshalled values.
-	if wroteIndex && !hadIndex && argNum < opsLen {
+	// reordered flag, and it names each extra's Go type, not the
+	// fmtValue wrapper the host would print. Emit the report here and
+	// suppress the host's: park a fresh empty operand on %[N]s when no
+	// index landed yet — needed anyway when every explicit index
+	// lived inside a replaced bad-%w directive or a dead star's
+	// operand vanished with its '*' (the host's argNum then no longer
+	// matches gc's cursor).
+	needExtra := !hadIndex && argNum < opsLen
+	if (hadIndex || dropped || needExtra) && !strings.Contains(sb.String(), "[") {
+		ops = append(ops, "")
+		sb.WriteString("%[")
+		sb.WriteString(strconv.Itoa(len(ops)))
+		sb.WriteString("]s")
+	}
+	if needExtra {
 		sb.WriteString("%%!(EXTRA ")
 		for k := argNum; k < opsLen; k++ {
 			if k > argNum {
 				sb.WriteString(", ")
 			}
-			if ops[k] == nil {
+			var typ string
+			switch {
+			case raws[k] == nil:
+				typ = "<nil>"
+			case rvalIdx[k]:
+				typ = "reflect.Value"
+			default:
+				typ = ScriptTypeString(raws[k])
+			}
+			if typ == "<nil>" {
 				sb.WriteString("<nil>")
 				continue
 			}
-			if rvalIdx[k] {
-				sb.WriteString("reflect.Value")
-			} else {
-				sb.WriteString(reflect.TypeOf(ops[k]).String())
-			}
+			sb.WriteString(typ)
 			sb.WriteByte('=')
 			sb.WriteByte('%')
 			sbIdx(&sb, k+1)
 			sb.WriteByte('v')
 		}
 		sb.WriteByte(')')
-	}
-	// gc prints no EXTRA once any [n] reorders the args. When every
-	// explicit index lived inside a replaced bad-%w directive, keep the
-	// spec reordered by parking a fresh empty operand on %[N]s.
-	if hadIndex && !strings.Contains(sb.String(), "[") {
-		ops = append(ops, "")
-		sb.WriteString("%[")
-		sb.WriteString(strconv.Itoa(len(ops)))
-		sb.WriteString("]s")
 	}
 	return sb.String(), ops
 }
@@ -1587,11 +1630,24 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			}
 		}
 		if i >= len(spec) {
+			// a truncated directive: gc consumes its `*` operands
+			// before printing %!(NOVERB) — keep it in dirs (verb=0)
+			// so those operands still land in the rebuilt list.
+			if len(stars) > 0 {
+				dirs = append(dirs, dir{start: pct, end: i, pos: -1, verb: 0, stars: stars, starIdx: star && indexed})
+			}
 			break
 		}
 		verb := spec[i]
 		i++
 		if verb == '%' {
+			// % takes no value operand — but its `*` operands still
+			// read arguments, so a %*% must sit in dirs for its stars
+			// to land in the rebuilt operand list (pos stays -1: the
+			// verb reads nothing itself).
+			if len(stars) > 0 {
+				dirs = append(dirs, dir{start: pct, end: i, pos: -1, verb: '%', stars: stars, starIdx: star && indexed})
+			}
 			continue
 		}
 		if pos < 0 {
@@ -1607,7 +1663,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 	// no directive mixes * with an index — anything else keeps the
 	// original spec (and operands) so host fmt reports it as before.
 	for _, d := range dirs {
-		if d.starIdx || d.pos < 0 || d.pos >= len(vals) || off+d.pos >= len(a) {
+		if d.starIdx || (d.verb != '%' && d.verb != 0 && (d.pos < 0 || d.pos >= len(vals) || off+d.pos >= len(a))) {
 			return spec, a[off:], vals
 		}
 		for _, sp := range d.stars {
@@ -1624,7 +1680,12 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		sb.WriteString(spec[prev:d.start])
 		// flags/width survive; the [n] index does not — newArgs is
 		// emitted in directive order, so every operand is implicit.
-		tail := spec[d.start+1 : d.end-1]
+		// a verb-less truncated directive's tail runs to spec's end.
+		tailEnd := d.end - 1
+		if d.verb == 0 {
+			tailEnd = d.end
+		}
+		tail := spec[d.start+1 : tailEnd]
 		var fb strings.Builder
 		precAt, precStars := -1, 0
 		for k := 0; k < len(tail); {
@@ -1688,6 +1749,17 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			sb.WriteString("%%!(BADPREC)")
 		}
 		switch d.verb {
+		case 0:
+			// truncated: '%' plus its flags/stars — host fmt prints
+			// %!(NOVERB) where the verb was due.
+			sb.WriteByte('%')
+			sb.WriteString(flags)
+		case '%':
+			// % reads no value operand — its stars were appended
+			// above; the directive itself emits verbatim.
+			sb.WriteByte('%')
+			sb.WriteString(flags)
+			sb.WriteByte('%')
 		case 'T':
 			// %T is %s over the type spelling — every flag, width and
 			// precision applies (%.1T prints "i"), and star operands
