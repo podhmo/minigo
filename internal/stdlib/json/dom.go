@@ -13,6 +13,10 @@ import (
 // gc's indirect() which hands the method the input span.
 type jsonDom struct {
 	raw []byte
+	// pos is the value's stream ordinal: the member pair or element
+	// event that introduced it, counting preorder like gc's streaming
+	// decoder (0 is the first pair). A synthesized node keeps -1.
+	pos int
 	val any // nil (null), bool, string, json.Number, []jsonMember, []*jsonDom
 }
 
@@ -41,7 +45,8 @@ func jsonDomParse(data []byte) (*jsonDom, error) {
 	}
 	d := json.NewDecoder(bytes.NewReader(raw))
 	d.UseNumber()
-	return jsonDomScan(d, raw)
+	n := 0
+	return jsonDomScan(d, raw, &n)
 }
 
 // jsonDomScan consumes one value off the shared decoder and wraps it
@@ -50,7 +55,7 @@ func jsonDomParse(data []byte) (*jsonDom, error) {
 // not a copy per level. Token/Decode mixing is the host decoder's
 // business: members and elements read via the token stream, numbers
 // arrive as json.Number so scalar conversion sees the literal itself.
-func jsonDomScan(d *json.Decoder, buf []byte) (*jsonDom, error) {
+func jsonDomScan(d *json.Decoder, buf []byte, npos *int) (*jsonDom, error) {
 	// the value's span starts at its first byte: after an object key
 	// the offset sits on ':', after an array element it sits on ','
 	// — skip the separator and any whitespace.
@@ -58,7 +63,7 @@ func jsonDomScan(d *json.Decoder, buf []byte) (*jsonDom, error) {
 	for start < int64(len(buf)) && (buf[start] == ':' || buf[start] == ',' || buf[start] == ' ' || buf[start] == '\t' || buf[start] == '\n' || buf[start] == '\r') {
 		start++
 	}
-	n := &jsonDom{}
+	n := &jsonDom{pos: -1}
 	t, err := d.Token()
 	if err != nil {
 		return nil, err
@@ -71,10 +76,13 @@ func jsonDomScan(d *json.Decoder, buf []byte) (*jsonDom, error) {
 				if err != nil {
 					return nil, err
 				}
-				cn, err := jsonDomScan(d, buf)
+				ord := *npos
+				*npos++
+				cn, err := jsonDomScan(d, buf, npos)
 				if err != nil {
 					return nil, err
 				}
+				cn.pos = ord
 				ms = append(ms, jsonMember{key: kt.(string), node: cn})
 			}
 			if _, err := d.Token(); err != nil {
@@ -84,10 +92,13 @@ func jsonDomScan(d *json.Decoder, buf []byte) (*jsonDom, error) {
 		} else {
 			var a []*jsonDom
 			for d.More() {
-				cn, err := jsonDomScan(d, buf)
+				ord := *npos
+				*npos++
+				cn, err := jsonDomScan(d, buf, npos)
 				if err != nil {
 					return nil, err
 				}
+				cn.pos = ord
 				a = append(a, cn)
 			}
 			if _, err := d.Token(); err != nil {
