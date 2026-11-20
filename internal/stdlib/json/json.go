@@ -9,6 +9,7 @@ import (
 	"go/ast"
 	"go/token"
 	"io"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -122,7 +123,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, typeStr fun
 			if len(args) == 1 {
 				var dec any
 				err := json.Unmarshal(stdlib.ByteSlice(hostbridge.GoNative(args[0])), &dec)
-				return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(jsonDeep(dec)), stdlib.ErrVal(err)}}, nil
+				return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(jsonDeep(dec, false)), stdlib.ErrVal(err)}}, nil
 			}
 			if len(args) != 2 {
 				return nil, fmt.Errorf("json.Unmarshal needs 1 or 2 args, got %d", len(args))
@@ -143,7 +144,14 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, typeStr fun
 			if err := json.Unmarshal(data, &dec); err != nil {
 				return stdlib.ErrVal(err), nil
 			}
-			return jsonInject(v, data, dec, args[1])
+			// a float64 DOM drops an int64 literal's low bits — re-read
+			// with UseNumber so jsonScalar parses the literal itself.
+			d2 := json.NewDecoder(bytes.NewReader(data))
+			d2.UseNumber()
+			if err := d2.Decode(&dec); err != nil {
+				return stdlib.ErrVal(err), nil
+			}
+			return jsonInject(v, data, dec, args[1], jsonDecFlags{})
 		}},
 		"Valid": h.Fn("json.Valid", func(a []any) (any, error) { return json.Valid(stdlib.ByteSlice(a[0])), nil }, json.Valid),
 	})
@@ -158,7 +166,15 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, typeStr fun
 // gc's indirect() allocates a nil pointer before the call — without it
 // the method derefs nil. The member probe runs after the realloc so
 // the bound receiver sees the fresh pointee.
-func jsonInject(v runtime.VMCaller, data []byte, dec any, target runtime.Value) (runtime.Value, error) {
+// jsonDecFlags carries the decoder-side flags into jsonInject: Number
+// keeps json.Number on `any` targets (the caller's UseNumber), Strict
+// rejects keys no declared field claims (DisallowUnknownFields).
+type jsonDecFlags struct {
+	Number bool
+	Strict bool
+}
+
+func jsonInject(v runtime.VMCaller, data []byte, dec any, target runtime.Value, flags jsonDecFlags) (runtime.Value, error) {
 	{
 		if prior0, _ := runtime.Deref(target); jsonNilish(prior0) {
 			if ptd := derefTyp(v.TypeOf(target)); ptd != nil && ptd.Kind == runtime.KindPointer {
@@ -175,7 +191,7 @@ func jsonInject(v runtime.VMCaller, data []byte, dec any, target runtime.Value) 
 			return jsonErrResult(r), nil
 		}
 		prior, _ := runtime.Deref(target)
-		ectx := &jsonErrCtx{}
+		ectx := &jsonErrCtx{keepNum: flags.Number, strict: flags.Strict}
 		if std := derefTyp(v.TypeOf(target)); std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
 			ectx.strct = jsonBareName(std)
 		}
@@ -603,6 +619,11 @@ type jsonErrCtx struct {
 	path  []string
 	err   error
 	errs  []jsonErrAt
+	// keepNum leaves json.Number on `any` targets (UseNumber);
+	// strict records an error for input keys no field claims
+	// (DisallowUnknownFields).
+	keepNum bool
+	strict  bool
 	// callErrs records every non-nil error a script UnmarshalJSON /
 	// UnmarshalText returned — script Values (not
 	// *jsonUnmarshalTypeError), each tagged with its member path. gc
@@ -1367,32 +1388,13 @@ func jsonMarshalLive(ents []jsonFieldEntry) []jsonFieldEntry {
 // keeps prior (gc decodes past errors and preserves what was there);
 // null nils pointer/slice/map/interface targets and is a no-op elsewhere.
 func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.Value, ectx *jsonErrCtx) runtime.Value {
-	if td == nil {
-		return stdlib.ScriptVal(jsonDeep(dec))
-	}
-	if dec == nil {
-		switch td.Kind {
-		case runtime.KindPointer, runtime.KindSlice, runtime.KindMap, runtime.KindInterface:
-			if td.Kind == runtime.KindSlice && stdlib.IsArrayTyp(td) {
-				// gc ignores null for fixed arrays: the value stays.
-				return priorOr(prior, c, td)
-			}
-			return c.Zero(td)
-		}
-		return priorOr(prior, c, td)
-	}
-	// gc calls UnmarshalJSON on the addressable decode target: a
-	// non-nil *T through its own pointer, a named value through &v,
-	// and a fresh slot — new field, slice element, map value — through
-	// the addressable value it decodes into before storing. The
-	// receiver's cell is returned rather than the prior so a
-	// whole-value `*u = ...` assignment in the method reaches the
-	// field. The literal handed over is the re-encoded subtree — the
-	// original byte span is gone by the time decode reaches here. The
-	// probe is gated to NAMED types: methods attach to named types
-	// only, so an unnamed container's member walk must not borrow the
-	// element type's methods.
-	if td.Name != "" {
+	// `type TBis T` delegates structure to T's typedef: shape by the
+	// structural typedef, then wrap the produced value in the declared
+	// tag — the same shape `var b TBis` zero takes (Named{TBis, T's
+	// struct}). The declared type keeps its own method set: T's methods
+	// do not promote, and a method on TBis stays callable. prior and
+	// typed nils already carry the declared tag.
+	if td != nil && dec != nil && td.Name != "" {
 		recv, cell := unmarshalRecv(prior, c, td)
 		if m, ok := runtime.IfaceMember(c, recv, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
 			if lit, lerr := json.Marshal(dec); lerr == nil {
@@ -1423,17 +1425,41 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			return prior
 		}
 	}
-	// `type TBis T` carries the declared name but delegates structure:
-	// the shape lives on the typedef its TypeExpr names. Chase the chain
-	// when it lands on a structural kind, keeping the declared name for
-	// failure messages. Scalar delegates (int, string, …) stay on td —
-	// the scalar path already peels spellings by name.
-	if td.Name != "" && (td.Kind == runtime.KindNamedBasic || td.Kind == runtime.KindAlias) {
+	var wrap *runtime.TypeDef
+	if td != nil && td.Name != "" && (td.Kind == runtime.KindNamedBasic || td.Kind == runtime.KindAlias) {
 		if ut := jsonStructChase(c, td); ut != nil && ut != td {
 			cp := *ut
 			cp.Name = td.Name
-			td = &cp
+			wrap, td = td, &cp
 		}
+	}
+	res := jsonShapeWalk(c, dec, td, prior, ectx)
+	if wrap != nil {
+		if n, ok := res.(*runtime.Named); ok && n.Typ == wrap {
+			return res
+		}
+		if tn, ok := res.(*runtime.TypedNil); ok && tn.Typ == wrap {
+			return res
+		}
+		return runtime.Tag(wrap, res)
+	}
+	return res
+}
+
+func jsonShapeWalk(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.Value, ectx *jsonErrCtx) runtime.Value {
+	if td == nil {
+		return stdlib.ScriptVal(jsonDeep(dec, ectx.keepNum))
+	}
+	if dec == nil {
+		switch td.Kind {
+		case runtime.KindPointer, runtime.KindSlice, runtime.KindMap, runtime.KindInterface:
+			if td.Kind == runtime.KindSlice && stdlib.IsArrayTyp(td) {
+				// gc ignores null for fixed arrays: the value stays.
+				return priorOr(prior, c, td)
+			}
+			return c.Zero(td)
+		}
+		return priorOr(prior, c, td)
 	}
 	switch td.Kind {
 	case runtime.KindStruct:
@@ -1448,7 +1474,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			return priorOr(prior, c, td)
 		}
 		var pf []runtime.Value
-		if ps, ok := prior.(*runtime.Struct); ok && ps.Def == td {
+		if ps, ok := runtime.Unwrap(prior).(*runtime.Struct); ok && ps.Def == td {
 			pf = ps.Fields
 		}
 		ents := jsonStructFields(c, td)
@@ -1473,6 +1499,20 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 					foldWin[k] = i
 					break
 				}
+			}
+		}
+		if ectx.strict {
+			for k := range m {
+				if _, ok := exact[k]; ok {
+					continue
+				}
+				if _, ok := foldWin[k]; ok {
+					continue
+				}
+				ectx.errs = append(ectx.errs, jsonErrAt{
+					err:  fmt.Errorf("json: unknown field %q", k),
+					path: append(append([]string{}, ectx.path...), k),
+				})
 			}
 		}
 		for i := range ents {
@@ -1678,7 +1718,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		return &runtime.Cell{Elem: jsonShape(c, dec, c.TypeOf(c.ElemZero(td)), ep, ectx)}
 	case runtime.KindInterface:
-		return stdlib.ScriptVal(jsonDeep(dec))
+		return stdlib.ScriptVal(jsonDeep(dec, ectx.keepNum))
 	}
 	return jsonScalar(c, dec, td, prior, ectx)
 }
@@ -1792,6 +1832,8 @@ func jsonMapKey(c runtime.VMCaller, k string, kt *runtime.TypeDef, ectx *jsonErr
 func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.Value, ectx *jsonErrCtx) runtime.Value {
 	// UseNumber's decoder emits json.Number for every number literal;
 	// a typed target still converts the literal like gc's direct decode.
+	// Integer literals keep their exact int64 so >2^53 values decode
+	// without float64 rounding.
 	if n, ok := dec.(json.Number); ok && td != nil {
 		switch {
 		case td.Name == "encoding/json.Number":
@@ -1800,11 +1842,13 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 			if f, err := n.Float64(); err == nil {
 				dec = f
 			}
-		case jsonIntName(td.Name):
+		case jsonIntName(td.Name) || jsonIntName(jsonUnderlyingName(td)):
 			if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
-				dec = float64(i)
-			} else if u, uerr := strconv.ParseUint(n.String(), 10, 64); uerr == nil {
-				dec = float64(u)
+				dec = i
+			} else if u, uerr := strconv.ParseUint(n.String(), 10, 64); uerr == nil && u <= math.MaxInt64 {
+				dec = int64(u)
+			} else if f, ferr := n.Float64(); ferr == nil {
+				dec = f
 			}
 		}
 	}
@@ -1855,6 +1899,13 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 		return fail()
 	}
 	if jsonIntName(td.Name) {
+		if i, ok := dec.(int64); ok {
+			if i2, ok := jsonIntOfInt64(i, td.Name); ok {
+				return conv(i2)
+			}
+			ectx.fail("number "+strconv.FormatInt(i, 10), td, nil)
+			return priorOr(prior, c, td)
+		}
 		f, ok := dec.(float64)
 		if !ok {
 			return fail()
@@ -1889,11 +1940,19 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 		}
 		return conv(f)
 	case int64:
+		un := jsonUnderlyingName(td)
+		if i, ok := dec.(int64); ok {
+			if i2, ok := jsonIntOfInt64(i, un); ok {
+				return conv(i2)
+			}
+			ectx.fail("number "+strconv.FormatInt(i, 10), td, nil)
+			return priorOr(prior, c, td)
+		}
 		f, ok := dec.(float64)
 		if !ok {
 			return fail()
 		}
-		i, ok := jsonIntOf(f, jsonUnderlyingName(td))
+		i, ok := jsonIntOf(f, un)
 		if !ok {
 			ectx.fail("number "+jsonNumLit(f), td, nil)
 			return priorOr(prior, c, td)
@@ -1921,7 +1980,7 @@ func jsonStringOpt(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runti
 		if sok {
 			return stdlib.ScriptVal(s)
 		}
-		return stdlib.ScriptVal(jsonDeep(dec))
+		return stdlib.ScriptVal(jsonDeep(dec, ectx.keepNum))
 	}
 	// A quoted "null" is the null literal, not the word: it follows
 	// normal null semantics (nils nilable kinds, leaves the rest).
@@ -2194,6 +2253,12 @@ func jsonIntOf(f float64, name string) (int64, bool) {
 	if float64(i) != f {
 		return 0, false
 	}
+	return jsonIntOfInt64(i, name)
+}
+
+// jsonIntOfInt64 range-checks an exact int64 against the spelled
+// integer type — the float64-free path UseNumber's literal keeps.
+func jsonIntOfInt64(i int64, name string) (int64, bool) {
 	bits, signed := jsonIntWidth(name)
 	if bits >= 64 {
 		return i, true
@@ -2224,20 +2289,30 @@ func jsonIntWidth(name string) (bits int, signed bool) {
 }
 
 // jsonDeep rewrites the tree encoding/json produces — map[string]any keys —
-// into the map[any]any shape scriptVal already handles.
-func jsonDeep(v any) any {
+// into the map[any]any shape scriptVal already handles. keepNum leaves
+// a UseNumber decoder's json.Number on `any` targets; without it the
+// literal flattens to float64 like gc's default decode.
+func jsonDeep(v any, keepNum bool) any {
 	switch x := v.(type) {
 	case map[string]any:
 		out := make(map[any]any, len(x))
 		for k, e := range x {
-			out[k] = jsonDeep(e)
+			out[k] = jsonDeep(e, keepNum)
 		}
 		return out
 	case []any:
 		for i, e := range x {
-			x[i] = jsonDeep(e)
+			x[i] = jsonDeep(e, keepNum)
 		}
 		return x
+	case json.Number:
+		if keepNum {
+			return x
+		}
+		if f, err := x.Float64(); err == nil {
+			return f
+		}
+		return x.String()
 	default:
 		return v
 	}

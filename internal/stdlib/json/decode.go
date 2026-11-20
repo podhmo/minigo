@@ -1,6 +1,7 @@
 package stdjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +18,10 @@ import (
 type jsonDecoder struct {
 	dec *json.Decoder
 	buf []byte
+	// num/strict mirror the UseNumber and DisallowUnknownFields
+	// flags: they only steer how jsonInject shapes the DOM.
+	num    bool
+	strict bool
 }
 
 // ScriptMethod routes Decode around the reflect call so the target's
@@ -37,11 +42,24 @@ func (d *jsonDecoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtim
 			return stdlib.ErrVal(fmt.Errorf("json: Decode(non-pointer %s)", runtime.DisplayName(atd))), nil
 		}
 		start := d.dec.InputOffset()
-		var dec any
-		if err := d.dec.Decode(&dec); err != nil {
+		var sink any
+		if err := d.dec.Decode(&sink); err != nil {
 			return stdlib.ErrVal(err), nil
 		}
-		return jsonInject(v, d.buf[start:d.dec.InputOffset()], dec, args[0])
+		span := d.buf[start:d.dec.InputOffset()]
+		dec := sink
+		if !d.num {
+			// a float64 DOM drops an int64 literal's low bits — the
+			// span is re-read with UseNumber so jsonScalar parses the
+			// literal itself; the user's UseNumber only decides whether
+			// `any` targets keep json.Number.
+			var d2 = json.NewDecoder(bytes.NewReader(span))
+			d2.UseNumber()
+			if err := d2.Decode(&dec); err != nil {
+				return stdlib.ErrVal(err), nil
+			}
+		}
+		return jsonInject(v, span, dec, args[0], jsonDecFlags{Number: d.num, Strict: d.strict})
 	}, true
 }
 
@@ -51,8 +69,8 @@ func (d *jsonDecoder) Decode(v any) error {
 	return d.dec.Decode(v)
 }
 
-func (d *jsonDecoder) UseNumber()                 { d.dec.UseNumber() }
-func (d *jsonDecoder) DisallowUnknownFields()     { d.dec.DisallowUnknownFields() }
+func (d *jsonDecoder) UseNumber()                 { d.dec.UseNumber(); d.num = true }
+func (d *jsonDecoder) DisallowUnknownFields()     { d.dec.DisallowUnknownFields(); d.strict = true }
 func (d *jsonDecoder) More() bool                 { return d.dec.More() }
 func (d *jsonDecoder) Buffered() io.Reader        { return d.dec.Buffered() }
 func (d *jsonDecoder) InputOffset() int64         { return d.dec.InputOffset() }
