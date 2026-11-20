@@ -240,7 +240,7 @@ func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runt
 			}
 		}
 		if isIfaceSlot {
-			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && jsonIfaceHasMethods(v, it) {
+			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && jsonIfaceHasMethods(it) {
 				// a method-ful interface holding a non-pointer value:
 				// gc refuses the literal outright (NumMethod>0 never
 				// reaches value()) — a fmt.Stringer cell does not
@@ -652,41 +652,69 @@ func jsonCellIsIface(target runtime.Value) bool {
 // unless they are provably empty (`any` or an `interface{}` literal
 // with no methods). A named or inline embed we cannot prove empty is
 // treated as method-ful — matching gc for io.Reader-style embeds.
-// `any` spells the builtin only until a package or function-local
-// `type any interface{ M() }` shadows it — then the embed does carry
-// methods, so the shadow is resolved through the typedef and the
-// declaring package's index.
-func jsonIfaceHasMethods(v runtime.VMCaller, td *runtime.TypeDef) bool {
+// `any` spells the builtin only until a `type any` declaration shadows
+// it in the embed's scope — the shadow resolves through the typedef's
+// function-local declarations first, then its declaring package's
+// index (never the caller's running package, which shadows nothing).
+func jsonIfaceHasMethods(td *runtime.TypeDef) bool {
+	return jsonIfaceHasMethodsDepth(td, 0)
+}
+
+func jsonIfaceHasMethodsDepth(td *runtime.TypeDef, depth int) bool {
 	if len(td.MReqs) != 0 {
 		return true
 	}
 	for _, e := range td.IEmbeds {
-		switch ex := e.(type) {
-		case *ast.Ident:
-			if ex.Name != "any" {
-				return true
-			}
-			if lt := td.LocalTypes[ex.Name]; lt != nil && lt != td && jsonIfaceHasMethods(v, lt) {
-				return true
-			}
-			if p := v.Package(); p != nil && p.Index != nil {
-				if tdi := p.Index.Types[ex.Name]; tdi != nil && tdi.Decl != nil {
-					if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
-						if it, ok := ts.Type.(*ast.InterfaceType); ok && it.Methods != nil && len(it.Methods.List) != 0 {
-							return true
-						}
-					}
-				}
-			}
-		case *ast.InterfaceType:
-			if ex.Methods != nil && len(ex.Methods.List) != 0 {
-				return true
-			}
-		default:
+		if jsonEmbedHasMethods(td, e, depth+1) {
 			return true
 		}
 	}
 	return false
+}
+
+// jsonEmbedHasMethods reports whether one embedded element carries
+// methods; depth bounds the shadowed-`any` resolution chain.
+func jsonEmbedHasMethods(td *runtime.TypeDef, e ast.Expr, depth int) bool {
+	if depth > 16 {
+		return true
+	}
+	switch ex := e.(type) {
+	case *ast.Ident:
+		// a named embed resolves where the typedef declared it:
+		// function-local decls first, then the declaring package's
+		// index (the running package shadows nothing here).
+		if lt, ok := td.LocalTypes[ex.Name]; ok {
+			return lt != nil && lt != td && jsonIfaceHasMethodsDepth(lt, depth+1)
+		}
+		if p := td.Pkg; p != nil && p.Index != nil {
+			if tdi := p.Index.Types[ex.Name]; tdi != nil && tdi.Decl != nil {
+				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+					return jsonEmbedHasMethods(td, ts.Type, depth+1)
+				}
+			}
+		}
+		// unresolvable: the builtin `any` is empty; a bound or
+		// imported named embed is conservatively method-ful —
+		// matching gc for io.Reader-style embeds.
+		return ex.Name != "any"
+	case *ast.InterfaceType:
+		if ex.Methods == nil {
+			return false
+		}
+		for _, f := range ex.Methods.List {
+			if len(f.Names) != 0 {
+				return true
+			}
+			// an embedded element (no Names) counts only when it is
+			// itself method-ful — `interface{ any }` stays empty.
+			if jsonEmbedHasMethods(td, f.Type, depth+1) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 // jsonUnmarshalHostVal tries the UnmarshalJSON pointer method on a
