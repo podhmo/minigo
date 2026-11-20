@@ -203,6 +203,14 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 				}
 				continue
 			}
+			if sv := m.projectedVal(a); sv != nil {
+				// the arg is a host projection a call on this
+				// goroutine made of a script container — the FuncMap
+				// param reads the script value (typedef + methods),
+				// not the method-less projected map/slice.
+				sargs = append(sargs, sv)
+				continue
+			}
 			sargs = append(sargs, GoSlotValueOf(a))
 		}
 		r, err := call(callee, sargs)

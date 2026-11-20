@@ -70,6 +70,7 @@ func init() {
 		ScriptBytes:          scriptBytes,
 		FuncMapElem:          funcMapElemFor,
 		TemplateCallableNout: templateCallableNout,
+		GoroutineID:          goroutineID,
 	}
 }
 
