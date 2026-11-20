@@ -2,6 +2,7 @@ package stdfmt
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -1636,23 +1637,26 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		// Go's fmt prints maps in sorted-key order (fmtsort), not
 		// insertion order — sort a copy of Order the same way.
 		order, _ := v.SnapshotKeys()
-		var keyLess func(a, b runtime.Value) bool
-		keyLess = func(a, b runtime.Value) bool {
+		// keyCmp is a 3-way compare like fmtsort's — returning the
+		// whole ordering keeps equal prefixes from doubling the
+		// recursion a bool less(...) would need at every level.
+		var keyCmp func(a, b runtime.Value) int
+		keyCmp = func(a, b runtime.Value) int {
 			// Mixed-type keys (map[any]) compare by the concrete
 			// type first, like fmtsort's interface rule.
 			ra, ta := mapKeyRank(a)
 			rb, tb := mapKeyRank(b)
 			if ra != rb {
-				return ra < rb
+				return cmp.Compare(ra, rb)
 			}
 			if ta != tb {
-				return ta < tb
+				return strings.Compare(ta, tb)
 			}
 			if stdlib.LessScript(a, b) {
-				return true
+				return -1
 			}
 			if stdlib.LessScript(b, a) {
-				return false
+				return 1
 			}
 			// composite keys compare element by element on the
 			// underlying values like gc's fmtsort — a key's own
@@ -1662,23 +1666,20 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			if ok {
 				n := min(len(ae), len(be))
 				for i := 0; i < n; i++ {
-					if keyLess(ae[i], be[i]) {
-						return true
-					}
-					if keyLess(be[i], ae[i]) {
-						return false
+					if c := keyCmp(ae[i], be[i]); c != 0 {
+						return c
 					}
 				}
-				return len(ae) < len(be)
+				return cmp.Compare(len(ae), len(be))
 			}
 			// unordered kinds (mixed, unrenderable): order by the
 			// rendered key like fmtsort's fallback.
 			ka := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: a, depth: s.depth + 1}).render('v', nested(f))
 			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', nested(f))
-			return ka < kb
+			return strings.Compare(ka, kb)
 		}
 		sort.SliceStable(order, func(i, j int) bool {
-			return keyLess(order[i], order[j])
+			return keyCmp(order[i], order[j]) < 0
 		})
 		kt, vt := stdlib.MapElemTyps(v.Typ)
 		ev := elemVerb(verb)
@@ -2194,6 +2195,12 @@ func mapKeyRank(v runtime.Value) (int, string) {
 		} else {
 			return 0, ""
 		}
+	case *runtime.Cell, *runtime.FieldRef, *runtime.DerefRef, *runtime.IndexRef:
+		// every pointer representation is a reflect.Ptr to gc's
+		// fmtsort — same type rank regardless of how the pointer
+		// was taken (&x vs &s[i]); order falls to the rendered
+		// address, which sorts like the numeric one.
+		return 47, ""
 	default:
 		// a raw host named scalar (a bound const's payload) spells
 		// like its boxed Named/GoValue forms.
