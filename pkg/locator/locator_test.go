@@ -886,3 +886,52 @@ func TestFindPackageDirFromVendor(t *testing.T) {
 		t.Errorf("expected resolution to fail for a non-GOROOT importer")
 	}
 }
+
+func TestReplacedImportPath(t *testing.T) {
+	// parent module with an in-tree local replace and an out-of-tree one
+	rootDir, start, cleanup := setupTestModuleWithContent(t, `module example.com/mainmodule
+go 1.16
+replace example.com/dep => ./dep
+`, []string{filepath.Join("dep", "pkg"), "mod"})
+	defer cleanup()
+
+	outsideDir := t.TempDir()
+	outsidePkg := filepath.Join(outsideDir, "othermod", "lib")
+	if err := os.MkdirAll(outsidePkg, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// overlay the second replace through a hand-built locator: setup
+	// only writes one go.mod, so rebuild with both replaces present.
+	_ = start
+	loc, err := New(rootDir, WithGoModuleResolver())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// hand-extend replaces: the fixture go.mod has just the in-tree one;
+	// add the out-of-tree entry the way go.mod parsing would.
+	loc.replaces = append(loc.replaces, ReplaceDirective{
+		OldPath: "example.com/other",
+		NewPath: filepath.Join(outsideDir, "othermod"),
+		IsLocal: true,
+	})
+
+	cases := []struct {
+		name string
+		dir  string
+		want string
+	}{
+		{"in-tree replace root", filepath.Join(rootDir, "dep"), "example.com/dep"},
+		{"in-tree replace subdir", filepath.Join(rootDir, "dep", "pkg"), "example.com/dep/pkg"},
+		{"out-of-tree replace", outsidePkg, "example.com/other/lib"},
+		{"plain module dir", filepath.Join(rootDir, "mod"), ""},
+		{"unrelated dir", t.TempDir(), ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if diff := cmp.Diff(c.want, loc.ReplacedImportPath(c.dir)); diff != "" {
+				t.Errorf("ReplacedImportPath mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

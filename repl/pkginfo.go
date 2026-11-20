@@ -8,6 +8,7 @@ package repl
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,11 +46,7 @@ func (r *REPL) Importers(ctx context.Context, ref string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := r.engine.Cwd
-	if root == "" {
-		root = "."
-	}
-	loc, err := locator.New(root, locator.WithGoModuleResolver())
+	loc, err := r.sessionLocator()
 	if err != nil {
 		return nil, fmt.Errorf("importers: %w", err)
 	}
@@ -82,7 +79,11 @@ func (r *REPL) packageImports(ctx context.Context, ref string) (*modulewalk.Pack
 		if p == nil {
 			return nil, fmt.Errorf("imports: no package to inspect — :cd into one first")
 		}
-		ref = scanRefOf(p)
+		loc, err := r.sessionLocator()
+		if err != nil {
+			return nil, fmt.Errorf("imports: %w", err)
+		}
+		ref = scanRefOf(loc, p)
 	}
 	if dir := r.anchor(ref); dirExists(dir) {
 		abs, err := filepath.Abs(dir)
@@ -100,11 +101,7 @@ func (r *REPL) packageImports(ctx context.Context, ref string) (*modulewalk.Pack
 		w := &modulewalk.Walker{Locator: loc}
 		return w.ScanDir(ctx, abs, ip)
 	}
-	root := r.engine.Cwd
-	if root == "" {
-		root = "."
-	}
-	loc, err := locator.New(root, locator.WithGoModuleResolver())
+	loc, err := r.sessionLocator()
 	if err != nil {
 		return nil, fmt.Errorf("imports: %w", err)
 	}
@@ -112,19 +109,70 @@ func (r *REPL) packageImports(ctx context.Context, ref string) (*modulewalk.Pack
 	return w.Imports(ctx, ref)
 }
 
-// scanRefOf resolves the entered package to what a scan chases: a
-// real import path is what importers write and what resolves the
-// package, so it wins over re-deriving the path from p.Dir — a package
-// pulled in through a replace into another module's tree would
+// scanRefOf resolves the entered package to what a scan chases — the
+// spelling importers write. A local replace claims the package's
+// directory first: importers write the replaced (OldPath) spelling.
+// Otherwise a real import path wins over re-deriving it from p.Dir — a
+// package pulled in through a replace into another module's tree would
 // otherwise be spelled by the replacement's module path, which nothing
-// imports. Synthetic <dir>/<file> spellings and pathless packages
-// still go through the directory so the locator can name them inside
-// their own module.
-func scanRefOf(p *runtime.Package) string {
-	if p.Dir == "" || (p.Path != "" && !syntheticImportPath(p.Path)) {
+// imports — unless the directory sits behind a go.mod boundary inside
+// the session's module (a nested module or a workspace member): then
+// p.Path is a parent-relative spelling importers cannot write, and the
+// directory answers so its own module names it. Synthetic <dir>/<file>
+// spellings and pathless packages go through the directory too.
+func scanRefOf(loc *locator.Locator, p *runtime.Package) string {
+	if p.Dir == "" {
+		return p.Path
+	}
+	if rp := loc.ReplacedImportPath(p.Dir); rp != "" {
+		return rp
+	}
+	if p.Path != "" && !syntheticImportPath(p.Path) && !nestedModuleDir(loc.RootDir(), p.Dir) {
 		return p.Path
 	}
 	return p.Dir
+}
+
+// nestedModuleDir reports whether dir sits under a go.mod boundary
+// below root.
+func nestedModuleDir(root, dir string) bool {
+	inside := func(d string) string {
+		rel, err := filepath.Rel(root, d)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return ""
+		}
+		return rel
+	}
+	if root == "" || inside(dir) == "" {
+		return false
+	}
+	// dir's own go.mod is a boundary too (dir is the nested module's
+	// root) — unless dir is the session root itself.
+	if inside(dir) != "." {
+		if st, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	for d := filepath.Dir(dir); ; d = filepath.Dir(d) {
+		rel := inside(d)
+		if rel == "" || rel == "." {
+			return false
+		}
+		if st, err := os.Stat(filepath.Join(d, "go.mod")); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+}
+
+// sessionLocator builds a module locator anchored at the session's
+// start directory — the root the importers scan and path resolution
+// share.
+func (r *REPL) sessionLocator() (*locator.Locator, error) {
+	root := r.engine.Cwd
+	if root == "" {
+		root = "."
+	}
+	return locator.New(root, locator.WithGoModuleResolver())
 }
 
 func syntheticImportPath(path string) bool {
@@ -144,7 +192,11 @@ func (r *REPL) importPathForScan(ref string) (string, error) {
 		if p == nil {
 			return "", fmt.Errorf("importers: no package to inspect — :cd into one first")
 		}
-		ref = scanRefOf(p)
+		loc, err := r.sessionLocator()
+		if err != nil {
+			return "", err
+		}
+		ref = scanRefOf(loc, p)
 	}
 	if dir := r.anchor(ref); dirExists(dir) {
 		abs, err := filepath.Abs(dir)

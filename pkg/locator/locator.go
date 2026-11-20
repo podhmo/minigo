@@ -683,6 +683,36 @@ func (l *Locator) PathToImport(absPath string) (string, error) {
 	return "", fmt.Errorf("could not determine import path for directory %s", absPath)
 }
 
+// ReplacedImportPath spells absPath as the import path a local replace
+// claims it by: source files importing a package inside the replaced
+// directory write the replaced (OldPath) spelling, never the
+// replacement module's own spelling nor the parent module's relative
+// one. It returns "" when no local replace covers absPath.
+func (l *Locator) ReplacedImportPath(absPath string) string {
+	absPath, err := filepath.Abs(absPath)
+	if err != nil {
+		return ""
+	}
+	for _, r := range l.replaces {
+		if !r.IsLocal {
+			continue
+		}
+		base := r.NewPath
+		if !filepath.IsAbs(base) {
+			base = filepath.Join(l.rootDir, base)
+		}
+		rel, err := filepath.Rel(base, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if rel == "." {
+			return r.OldPath
+		}
+		return filepath.ToSlash(filepath.Join(r.OldPath, rel))
+	}
+	return ""
+}
+
 // ResolvePkgPath converts a file path to a full Go package path.
 // If the path exists on the filesystem, it is treated as a file path and resolved.
 // If it does not exist, it's assumed to be a package path unless it has a relative
