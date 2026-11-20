@@ -124,7 +124,10 @@ func (e *Env) publicRTSeen(rt reflect.Type, seen map[reflect.Type]bool) reflect.
 	if seen[rt] {
 		return rt
 	}
+	// in-progress marking only: a completed rewrite stays reusable,
+	// so the same composite in two positions rewrites both.
 	seen[rt] = true
+	defer delete(seen, rt)
 	switch rt.Kind() {
 	case reflect.Pointer:
 		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
@@ -1107,6 +1110,32 @@ func (t *RType) methodRT() reflect.Type {
 	return nil
 }
 
+// methodSigType rewrites a concrete method's signature to its public
+// spelling: facade types map to the real gc types, and the receiver —
+// In(0) — keeps the enumerated type's pointer shape (gc spells
+// TypeFor[*T].Method as func(*T, ...) even for value-receiver
+// methods).
+func (e *Env) methodSigType(recv, mt reflect.Type) reflect.Type {
+	pub := e.publicRT(mt)
+	if mt == nil || recv.Kind() != reflect.Pointer || mt.NumIn() == 0 || mt.In(0) != recv {
+		return pub
+	}
+	pr := e.publicRT(recv)
+	if pr.Kind() != reflect.Pointer {
+		pr = reflect.PointerTo(pr)
+	}
+	ins := make([]reflect.Type, mt.NumIn())
+	ins[0] = pr
+	for i := 1; i < mt.NumIn(); i++ {
+		ins[i] = pub.In(i)
+	}
+	outs := make([]reflect.Type, mt.NumOut())
+	for i := range outs {
+		outs[i] = pub.Out(i)
+	}
+	return reflect.FuncOf(ins, outs, mt.IsVariadic())
+}
+
 // facadeInternalMethods names exported methods of the facade's own
 // types (*RValue, *RType) that are not part of gc's public reflect
 // surface — the other facades (MapIter, StructField) expose exactly
@@ -1166,7 +1195,7 @@ func (t *RType) Method(i int) *Method {
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: i,
+			Type: t.e.hostTypeOf(t.e.methodSigType(rt, m.Type)), Index: i,
 			Func: f}
 	}
 	set := t.e.methodSet(t.td)
@@ -1225,7 +1254,7 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: idx,
+			Type: t.e.hostTypeOf(t.e.methodSigType(rt, m.Type)), Index: idx,
 			Func: f}, true
 	}
 	set := t.e.methodSet(t.td)

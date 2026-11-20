@@ -46,5 +46,11 @@ func main() {
 	// interface requirements: zero Func, receiver-free Type.
 	ms, _ := reflect.TypeFor[reflect.Type]().MethodByName("String")
 	fmt.Println(ms.Func.IsValid(), ms.Type)
+	// the same composite type in two signature positions rewrites
+	// both — []minireflect.RValue must not survive in the public type.
+	mc, _ := tv.MethodByName("Call")
+	fmt.Println(mc.Type)
+	mx, _ := tv.MethodByName("MapIndex")
+	fmt.Println(mx.Type)
 	fmt.Println(reflect.TypeFor[P]().NumMethod())
 }
