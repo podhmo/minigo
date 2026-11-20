@@ -169,6 +169,23 @@ func HostSliceTypOf(rt reflect.Type) *runtime.TypeDef {
 	return td
 }
 
+// HostMapTypOf is the typedef tag for an unnamed host map — the anon
+// spelling for the shape plus the element's package-level identity for
+// display and generic inference (see HostSliceTypOf).
+func HostMapTypOf(rt reflect.Type) *runtime.TypeDef {
+	td := AnonMapTypX(AnonExprOf(rt.Key()), AnonExprOf(rt.Elem()))
+	td.Elem = HostPkgElemTypedef(rt.Elem())
+	return td
+}
+
+// HostArrayTypOf is the typedef tag for an unnamed host array — like
+// HostSliceTypOf, with the length kept in the anon spelling.
+func HostArrayTypOf(rt reflect.Type) *runtime.TypeDef {
+	td := AnonArrayTypX(int(rt.Len()), AnonExprOf(rt.Elem()))
+	td.Elem = HostPkgElemTypedef(rt.Elem())
+	return td
+}
+
 // HostPkgElemTypedef is the element identity a host slice keeps when
 // its element is a type declared in a package, or a pointer to one: the
 // bare name AnonExprOf spells (`[]Stmt`, `[]*Comment`) resolves nowhere,
@@ -524,7 +541,7 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = GoValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: AnonArrayTypX(rv.Len(), AnonExprOf(rv.Type().Elem()))}
+				return &runtime.Slice{Elems: el, Typ: HostArrayTypOf(rv.Type())}
 			}
 		}
 		return &runtime.GoValue{V: x}

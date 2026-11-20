@@ -253,11 +253,12 @@ func (e *Env) bindsKeyOf(td *runtime.TypeDef) string {
 
 // hostElemKey spells a typedef by the host type identity it or its
 // element chain carries — the same words reflect's rt.String() uses —
-// or "" when no host identity is recorded, when the composite is an
-// array (the length lives only in the Anon spelling), or when the
-// Anon element is already package-qualified (a bound facade's stamped
+// or "" when no host identity is recorded, or when the Anon element is
+// already package-qualified (a bound facade's stamped
 // []reflect.Value keys by its own spelling, not the internal
-// *minireflect.RValue element).
+// *minireflect.RValue element). An array's length and a map's key come
+// from the Anon spelling — a named host key has no typedef slot, so a
+// map of named keys still keys by the anon words.
 func (e *Env) hostElemKey(td *runtime.TypeDef) string {
 	if td == nil {
 		return ""
@@ -275,11 +276,21 @@ func (e *Env) hostElemKey(td *runtime.TypeDef) string {
 			return "*" + inner
 		case runtime.KindSlice:
 			if at, isArr := td.Anon.(*ast.ArrayType); isArr {
-				if at.Len != nil || runtime.AnonEltQualified(at.Elt) {
+				if runtime.AnonEltQualified(at.Elt) {
 					return ""
+				}
+				if at.Len != nil {
+					return "[" + runtime.TypLenName(at.Len) + "]" + inner
 				}
 			}
 			return "[]" + inner
+		case runtime.KindMap:
+			if mt, isMap := td.Anon.(*ast.MapType); isMap {
+				if runtime.AnonEltQualified(mt.Value) {
+					return ""
+				}
+				return "map[" + runtime.TypGoSpelling(mt.Key, td) + "]" + inner
+			}
 		case runtime.KindChan:
 			pre := "chan "
 			if ct, isChan := td.Anon.(*ast.ChanType); isChan {
