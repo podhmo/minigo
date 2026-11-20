@@ -51,6 +51,11 @@ func (v *RValue) get() runtime.Value {
 	return v.val
 }
 
+// APIType spells the facade as reflect.Value — the public type the
+// facade stands in for, so a host slot typed reflect.Value (a method
+// expression's receiver) accepts it.
+func (v *RValue) APIType() reflect.Type { return reflect.TypeOf(reflect.Value{}) }
+
 // ifaceVal produces the interface{} payload: raw script values pass
 // through untouched, host values stay boxed one level shallower.
 // Boxing a script value into an interface copies it like a Go

@@ -17,7 +17,12 @@ func (v *RValue) callMethodExpr(mt reflect.Type, in []*RValue) ([]*RValue, bool)
 		return nil, false
 	}
 	if _, err := toHost(r.ifaceVal(), mt.In(0), v.e); err != nil {
-		return nil, false
+		// a facade receiver spells its public API type — reflect.Value's
+		// method expression takes the facade as reflect.Value, though
+		// toHost cannot convert *RValue to the struct.
+		if at, ok := r.ifaceVal().(interface{ APIType() reflect.Type }); !ok || at.APIType() != mt.In(0) {
+			return nil, false
+		}
 	}
 	dm := r.rv.MethodByName(v.mexpr)
 	if !dm.IsValid() {

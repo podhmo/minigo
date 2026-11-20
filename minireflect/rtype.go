@@ -32,6 +32,11 @@ type RType struct {
 	alen    int
 }
 
+// APIType spells the facade as reflect.Type — the public interface the
+// facade stands in for, so a host slot typed reflect.Type (a method
+// expression's receiver) accepts it.
+func (t *RType) APIType() reflect.Type { return reflect.TypeFor[reflect.Type]() }
+
 // StructField is minigo's reflect.StructField. Tag is a real
 // reflect.StructTag.
 type StructField struct {
