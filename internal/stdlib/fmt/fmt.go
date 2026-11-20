@@ -273,6 +273,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 	if !strings.Contains(spec, "w") {
 		return spec, ops
 	}
+
 	var sb strings.Builder
 	argNum := 0
 	wAt := 0
@@ -321,6 +322,13 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 	type verbEv struct {
 		pct, pos, posP, posV, i, arg int
 		stars                        []int
+		// starIdx[i] is the [n] byte range in spec that selects
+		// stars[i]'s operand explicitly, or {-1,-1} when the `*` is
+		// implicit — pin must rewrite an explicit site, not add one.
+		// valIdx is the [n] byte range selecting the value arg, or
+		// {-1,-1} when the value is implicit.
+		starIdx [][2]int
+		valIdx  [2]int
 		// nw counts the leading width stars — stars[nw:] are
 		// precision stars, whose marker is BADPREC, not BADWIDTH.
 		nw              int
@@ -340,30 +348,51 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			i++
 		}
 		stars := []int{}
+		starIdx := [][2]int{}
+		valIdx := [2]int{-1, -1}
 		nw := 0
 		pos := i
+		site := i
 		i = index(i)
 		if i < len(spec) && spec[i] == '*' {
 			stars = append(stars, argNum)
+			if i == site {
+				starIdx = append(starIdx, [2]int{-1, -1})
+			} else {
+				starIdx = append(starIdx, [2]int{site, i})
+			}
 			nw++
 			if argNum < opsLen {
 				argNum++
 			}
 			i++
 		} else {
+			// a [n] that no `*` claimed selects the value operand.
+			if i != site {
+				valIdx = [2]int{site, i}
+			}
 			i = digits(i)
 		}
 		posP := -1
 		if i < len(spec) && spec[i] == '.' {
 			posP = i + 1
+			site = i + 1
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
 				stars = append(stars, argNum)
+				if i == site {
+					starIdx = append(starIdx, [2]int{-1, -1})
+				} else {
+					starIdx = append(starIdx, [2]int{site, i})
+				}
 				if argNum < opsLen {
 					argNum++
 				}
 				i++
 			} else {
+				if i != site {
+					valIdx = [2]int{site, i}
+				}
 				i = digits(i)
 			}
 		}
@@ -371,13 +400,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			posP = i
 		}
 		posV := i
+		site = i
 		i = index(i)
+		if i != site {
+			valIdx = [2]int{site, i}
+		}
 		if i >= len(spec) {
 			break
 		}
 		verb := spec[i]
 		i++
-		evs = append(evs, verbEv{pct, pos, posP, posV, i, argNum, stars, nw, dirIndexed, dirBad})
+		evs = append(evs, verbEv{pct, pos, posP, posV, i, argNum, stars, starIdx, valIdx, nw, dirIndexed, dirBad})
 		if verb != '%' {
 			argNums = append(argNums, argNum)
 			if !dirBad {
@@ -412,41 +445,68 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			}
 		}
 	}
-	// starSub reroutes a `*` operand's pinned index to a fresh operand:
-	// an arg that arrived as a reflect.Value is unboxed for %v already,
-	// so a star that must read non-int indexes a parked "" instead —
-	// the original arg still prints wherever an explicit %[K] shares it.
+	// starSub reroutes a `*` operand's pinned index to a parked ""
+	// operand: an arg that arrived as a reflect.Value is unboxed for %v
+	// already, and a slot gc would read out of range must both make the
+	// host's `*` hit a non-int so it prints its own
+	// %!(BADWIDTH)/%!(BADPREC) — the original arg still prints wherever
+	// an explicit %[K] shares it.
 	starSub := map[int]int{}
 	starPinIdx := func(st int) int {
 		if s, ok := starSub[st]; ok {
 			return s
 		}
-		return st + 1
+		if st < opsLen && !rvalIdx[st] {
+			return st + 1
+		}
+		ops = append(ops, "")
+		starSub[st] = len(ops)
+		return len(ops)
 	}
 	// pin emits a directive with every operand index made explicit —
-	// width and precision stars get theirs at their own index sites —
-	// so the host's cursor lands where gc's argNum stood, even after a
-	// directive that consumed nothing.
-	pin := func(sb *strings.Builder, spec string, ev verbEv, ops []any, tail string) {
+	// width and precision stars get theirs at their own index sites
+	// (an explicit `[n]` the directive already carries is rewritten,
+	// not duplicated) — so the host's cursor lands where gc's argNum
+	// stood, even after a directive that consumed nothing.
+	pin := func(sb *strings.Builder, spec string, ev verbEv, verb byte) {
 		sb.WriteString(spec[ev.pct:ev.pos])
-		// a `[n]` before a `*` selects that star's operand — it must sit
-		// inside its own slot: the width star's before `*`, the
-		// precision star's between `.` and `*` (`%.[n]*`, not `%[n].*` —
-		// fmt parses the latter as a width index and the verb goes
-		// BADINDEX).
-		if ev.nw > 0 && ev.stars[0] < opsLen {
+		if ev.nw > 0 {
+			site := ev.starIdx[0]
+			if site[0] >= 0 {
+				sb.WriteString(spec[ev.pos:site[0]])
+			}
 			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[0])) + "]")
+			if site[0] >= 0 {
+				sb.WriteString(spec[site[1]:ev.posP])
+			} else {
+				sb.WriteString(spec[ev.pos:ev.posP])
+			}
+		} else {
+			sb.WriteString(spec[ev.pos:ev.posP])
 		}
-		sb.WriteString(spec[ev.pos:ev.posP])
-		if len(ev.stars) > ev.nw && ev.stars[ev.nw] < opsLen {
+		if len(ev.stars) > ev.nw {
+			site := ev.starIdx[ev.nw]
+			if site[0] >= 0 {
+				sb.WriteString(spec[ev.posP:site[0]])
+			}
 			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[ev.nw])) + "]")
+			if site[0] >= 0 {
+				sb.WriteString(spec[site[1]:ev.posV])
+			} else {
+				sb.WriteString(spec[ev.posP:ev.posV])
+			}
+		} else {
+			sb.WriteString(spec[ev.posP:ev.posV])
 		}
-		sb.WriteString(spec[ev.posP:ev.posV])
-		if ev.arg < opsLen {
+		if ev.valIdx[0] >= 0 {
+			if ev.valIdx[0] >= ev.posV {
+				sb.WriteString(spec[ev.valIdx[0]:ev.valIdx[1]])
+			}
+			// a [n] at an earlier site already printed verbatim above.
+		} else {
 			sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
 		}
-		sb.WriteString(spec[ev.posV:ev.i])
-		_ = tail
+		sb.WriteByte(verb)
 	}
 	last := 0
 	fixRest := false
@@ -491,19 +551,30 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				if last < ev.i-1+w {
 					last = ev.i - 1 + w
 				}
-			case fixRest && !ev.indexed && ev.arg < opsLen:
-				// the host's implicit cursor no longer matches the
-				// operand gc reads here — pin it explicitly. An
-				// rvalue-carried star arg is unboxed for %v already, so
-				// poison its slot: the host's `*` read sees a non-int
-				// and prints its own %!(BADWIDTH)/%!(BADPREC).
-				for _, st := range ev.stars {
-					if st < opsLen && rvalIdx[st] {
-						ops = append(ops, "")
-						starSub[st] = len(ops)
+			case fixRest && ev.badIdx:
+				// a bad [n] prints the verb's BADINDEX marker and
+				// consumes nothing — emit it as text so host indexing
+				// never reaches a parked operand; each `*` still reads
+				// its slot, printing a marker when gc's read fails.
+				for k, st := range ev.stars {
+					if st < opsLen && starOK(ops, st, k >= ev.nw, rvalIdx) {
+						continue
 					}
+					mk := "%%!(BADWIDTH)"
+					if k >= ev.nw {
+						mk = "%%!(BADPREC)"
+					}
+					sb.WriteString(mk)
 				}
-				pin(&sb, spec, ev, ops, "")
+				sb.WriteString("%%!" + spec[ev.i-1:ev.i] + "(BADINDEX)")
+			case fixRest && !ev.badIdx:
+				// the host's implicit cursor no longer matches the
+				// operand gc reads here — pin it explicitly. Indexed
+				// directives are pinned too: their `*` operands are
+				// still implicit in gc, so the rewrite rebinds them to
+				// the slot gc's argNum stood on — an OOB one indexes a
+				// parked "" and the host prints the BADWIDTH marker.
+				pin(&sb, spec, ev, spec[ev.i-1])
 			default:
 				sb.WriteString(spec[ev.pct:ev.i])
 			}
@@ -523,13 +594,13 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		wAt++
 		switch {
 		case lit == "":
-			if fixRest && !ev.indexed && ev.arg < opsLen {
+			if fixRest && !ev.badIdx && (ev.indexed || ev.arg < opsLen) {
 				pin(&sb, spec, verbEv{
 					pct: ev.pct, pos: ev.pos, posP: ev.posP,
 					posV: ev.posV, i: ev.i - 1, arg: ev.arg,
-					stars: ev.stars, nw: ev.nw,
-				}, ops, "")
-				sb.WriteByte('v')
+					stars: ev.stars, starIdx: ev.starIdx,
+					valIdx: ev.valIdx, nw: ev.nw,
+				}, 'v')
 			} else {
 				sb.WriteString(spec[ev.pct : ev.i-1])
 				sb.WriteByte('v')
@@ -560,7 +631,14 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				sb.WriteString(strconv.Itoa(ev.arg + 1))
 				sb.WriteString("]s")
 			} else {
-				sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
+				// the slot stays real for the sibling that claims it:
+				// park the marker on a fresh operand and read it by
+				// index — every later directive is pinned, so the
+				// cursor's landing point no longer matters.
+				ops = append(ops, lit)
+				sb.WriteString("%[")
+				sb.WriteString(strconv.Itoa(len(ops)))
+				sb.WriteString("]s")
 				fixRest = true
 			}
 		}
