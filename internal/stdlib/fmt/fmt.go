@@ -407,6 +407,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			}
 		}
 	}
+	// starSub reroutes a `*` operand's pinned index to a fresh operand:
+	// an arg that arrived as a reflect.Value is unboxed for %v already,
+	// so a star that must read non-int indexes a parked "" instead —
+	// the original arg still prints wherever an explicit %[K] shares it.
+	starSub := map[int]int{}
+	starPinIdx := func(st int) int {
+		if s, ok := starSub[st]; ok {
+			return s
+		}
+		return st + 1
+	}
 	// pin emits a directive with every operand index made explicit —
 	// width and precision stars get theirs at their own index sites —
 	// so the host's cursor lands where gc's argNum stood, even after a
@@ -419,11 +430,11 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		// fmt parses the latter as a width index and the verb goes
 		// BADINDEX).
 		if ev.nw > 0 && ev.stars[0] < len(ops) {
-			sb.WriteString("[" + strconv.Itoa(ev.stars[0]+1) + "]")
+			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[0])) + "]")
 		}
 		sb.WriteString(spec[ev.pos:ev.posP])
 		if len(ev.stars) > ev.nw && ev.stars[ev.nw] < len(ops) {
-			sb.WriteString("[" + strconv.Itoa(ev.stars[ev.nw]+1) + "]")
+			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[ev.nw])) + "]")
 		}
 		sb.WriteString(spec[ev.posP:ev.posV])
 		if ev.arg < len(ops) {
@@ -483,7 +494,8 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				// and prints its own %!(BADWIDTH)/%!(BADPREC).
 				for _, st := range ev.stars {
 					if st < len(ops) && rvalIdx[st] {
-						ops[st] = ""
+						ops = append(ops, "")
+						starSub[st] = len(ops)
 					}
 				}
 				pin(&sb, spec, ev, ops, "")
@@ -510,7 +522,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				pin(&sb, spec, verbEv{
 					pct: ev.pct, pos: ev.pos, posP: ev.posP,
 					posV: ev.posV, i: ev.i - 1, arg: ev.arg,
-					stars: ev.stars,
+					stars: ev.stars, nw: ev.nw,
 				}, ops, "")
 				sb.WriteByte('v')
 			} else {
