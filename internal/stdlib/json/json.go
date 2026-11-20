@@ -802,15 +802,21 @@ func jsonBareName(td *runtime.TypeDef) string {
 func unmarshalRecv(prior runtime.Value, c runtime.Zeroer, td *runtime.TypeDef) (runtime.Value, *runtime.Cell) {
 	switch p := prior.(type) {
 	case *runtime.Cell:
+		// a typaless slot stores `*t = underlying` uncoerced — the decode
+		// target's declared type is td, so fill it in.
+		if p.Typ == nil {
+			p.Typ = td
+		}
 		return p, nil
 	case nil:
-		cell := &runtime.Cell{Elem: c.Zero(td)}
+		cell := &runtime.Cell{Elem: c.Zero(td), Typ: td}
 		return cell, cell
 	default:
 		// the decode slot is always addressable — a bare struct prior
 		// still sees the pointer method set, like gc handing the method
-		// the field's own address.
-		cell := &runtime.Cell{Elem: prior}
+		// the field's own address. Typ makes `*t = ...` coerce to the
+		// declared type (e.g. []string -> a named slice type).
+		cell := &runtime.Cell{Elem: prior, Typ: td}
 		return cell, cell
 	}
 }
