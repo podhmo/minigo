@@ -1,0 +1,7 @@
+*os.File
+*os.File
+*os.File
+[]ast.Decl
+[]*ast.Field
+[]*ast.Ident
+[]*ast.ImportSpec

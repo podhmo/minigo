@@ -4,6 +4,7 @@ package stdlib
 
 import (
 	"go/ast"
+	"reflect"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -116,6 +117,13 @@ func BindTyp(td *runtime.TypeDef, et *runtime.TypeDef) *runtime.TypeDef {
 		return cp
 	}
 	return et
+}
+
+// APITypeBox marks a host facade whose script-visible API type differs
+// from its box type — %T spells the API type (os.Stdout's facade spells
+// *os.File, not the wrapper's name).
+type APITypeBox interface {
+	APIType() reflect.Type
 }
 
 // typedefSpelling renders a typedef for %T/#v output — it delegates to
