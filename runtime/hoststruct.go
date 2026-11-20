@@ -41,13 +41,14 @@ func HostStructTagged(v Value) bool {
 func ptrSpelling(td *TypeDef) bool {
 	seen := map[*TypeDef]bool{}
 	expr := td.Anon
+	locals, pkg := td.LocalTypes, td.Pkg
 	for depth := 0; expr != nil && depth < 16; depth++ {
 		switch e := expr.(type) {
 		case *ast.StarExpr:
 			return true
 		case *ast.Ident:
 			expr = nil
-			if ltd := td.LocalTypes[e.Name]; ltd != nil {
+			if ltd := locals[e.Name]; ltd != nil {
 				if seen[ltd] {
 					return false
 				}
@@ -55,12 +56,16 @@ func ptrSpelling(td *TypeDef) bool {
 				if ltd.Kind == KindPointer {
 					return true
 				}
-				td = ltd
-				expr = ltd.Anon
+				locals, expr = ltd.LocalTypes, ltd.Anon
 				continue
 			}
-			if td.Pkg != nil && td.Pkg.Index != nil {
-				if info := td.Pkg.Index.Types[e.Name]; info != nil && info.Decl != nil {
+			// an ident in a package-level spec resolves in package
+			// scope: a function-local name in td.LocalTypes must not
+			// shadow it — clear the local table once the chase
+			// descends through the index.
+			locals = nil
+			if pkg != nil && pkg.Index != nil {
+				if info := pkg.Index.Types[e.Name]; info != nil && info.Decl != nil {
 					if ts, ok := info.Decl.Spec.(*ast.TypeSpec); ok {
 						expr = ts.Type
 					}
