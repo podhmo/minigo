@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"fmt"
 	"go/ast"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
@@ -39,38 +38,6 @@ func (v *VM) hostPtrConv(td *runtime.TypeDef, x runtime.Value) bool {
 		rt = hostbridge.PointerTo(rt)
 	}
 	return rt == hostbridge.TypeOf(x.(*runtime.GoValue).V)
-}
-
-// convertStruct implements `S(x)` on struct typedefs: legal when the
-// source is a struct whose field list matches the target's (the
-// approximation of Go's identical-underlying rule — field types and tags
-// are not modeled). The result is a copy carrying the target's typedef.
-func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
-	s, ok := x.(*runtime.Struct)
-	if !ok {
-		if dv, isRef := runtime.Deref(x); isRef {
-			s, ok = dv.(*runtime.Struct)
-		}
-	}
-	if !ok {
-		// a host struct box converts to a declared type over the same
-		// host struct — `type MyBuf bytes.Buffer; MyBuf(b)` — or to
-		// the bound type itself; gc copies the struct, so the tagged
-		// result wraps a snapshot, not the shared box.
-		if u := v.peelNamed(td); u != nil && u.HostNew != nil {
-			if gv, isGV := runtime.Unwrap(x).(*runtime.GoValue); isGV &&
-				hostbridge.TypeOf(gv.V) == hostbridge.TypeOf(u.HostNew()) {
-				if nv, ok := runtime.HostStructCopy(gv); ok {
-					return &runtime.Named{Typ: td, V: nv}, nil
-				}
-			}
-		}
-		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
-	}
-	if s.Def != nil && s.Def != td && !runtime.StructFieldsEq(s.Def, td) {
-		return nil, fmt.Errorf("cannot convert %s to %s", tdName(s.Def), tdName(td))
-	}
-	return &runtime.Struct{Def: td, Fields: append([]runtime.Value{}, s.Fields...)}, nil
 }
 
 // convShapeEq reports whether two typedefs have identical underlying
@@ -112,4 +79,3 @@ func (v *VM) elemFamily(et *runtime.TypeDef) byte {
 	}
 	return 0
 }
-
