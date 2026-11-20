@@ -96,39 +96,57 @@ func sigExprs(fl *ast.FieldList) []ast.Expr {
 func (v *VM) sigTypeFitsHost(from *runtime.TypeDef, e ast.Expr, rt hostbridge.Type) bool {
 	// Composite type exprs compare structurally: ResolveType peels a
 	// `*` to the element's typedef, so `Equal(*T)` would look like
-	// `Equal(T)` if the leaf typedef answered for the whole expr.
+	// `Equal(T)` if the leaf typedef answered for the whole expr. The
+	// structural walk only applies to unnamed host types — a named
+	// host type (`net.IP` over []byte) is identical only to its own
+	// spelling, so it falls through to the leaf compare.
 	switch t := e.(type) {
 	case *ast.ParenExpr:
 		return v.sigTypeFitsHost(from, t.X, rt)
-	case *ast.StarExpr:
-		return rt.Kind() == hostbridge.KindPointer && v.sigTypeFitsHost(from, t.X, rt.Elem())
-	case *ast.ArrayType:
-		if t.Len == nil {
-			return rt.Kind() == hostbridge.KindSlice && v.sigTypeFitsHost(from, t.Elt, rt.Elem())
-		}
-		return rt.Kind() == hostbridge.KindArray && v.sigTypeFitsHost(from, t.Elt, rt.Elem())
-	case *ast.MapType:
-		return rt.Kind() == hostbridge.KindMap &&
-			v.sigTypeFitsHost(from, t.Key, rt.Key()) &&
-			v.sigTypeFitsHost(from, t.Value, rt.Elem())
-	case *ast.ChanType:
-		dir := hostbridge.KindBothDir
-		if t.Dir == ast.SEND {
-			dir = hostbridge.KindSendDir
-		} else if t.Dir == ast.RECV {
-			dir = hostbridge.KindRecvDir
-		}
-		return rt.Kind() == hostbridge.KindChan && rt.ChanDir() == dir &&
-			v.sigTypeFitsHost(from, t.Value, rt.Elem())
 	}
-	// `any` is not in the basic-name table so the resolver may not
-	// answer — but it is a real type for signature identity: the host
-	// position must itself be the empty interface.
-	if id, ok := e.(*ast.Ident); ok && id.Name == "any" {
-		return rt.Kind() == hostbridge.KindInterface && rt.NumMethod() == 0
+	if rt.Name() == "" {
+		switch t := e.(type) {
+		case *ast.StarExpr:
+			return rt.Kind() == hostbridge.KindPointer && v.sigTypeFitsHost(from, t.X, rt.Elem())
+		case *ast.ArrayType:
+			if t.Len == nil {
+				return rt.Kind() == hostbridge.KindSlice && v.sigTypeFitsHost(from, t.Elt, rt.Elem())
+			}
+			if rt.Kind() != hostbridge.KindArray {
+				return false
+			}
+			// `[16]byte` never satisfies `[4]byte`: type identity
+			// includes the constant length. A length still unfolded
+			// keeps the element-only compare — the name pass already
+			// decided presence.
+			if n, ok := runtime.FoldedArrayLen(from.Pkg, t); ok && int64(rt.Len()) != n {
+				return false
+			}
+			return v.sigTypeFitsHost(from, t.Elt, rt.Elem())
+		case *ast.MapType:
+			return rt.Kind() == hostbridge.KindMap &&
+				v.sigTypeFitsHost(from, t.Key, rt.Key()) &&
+				v.sigTypeFitsHost(from, t.Value, rt.Elem())
+		case *ast.ChanType:
+			dir := hostbridge.KindBothDir
+			if t.Dir == ast.SEND {
+				dir = hostbridge.KindSendDir
+			} else if t.Dir == ast.RECV {
+				dir = hostbridge.KindRecvDir
+			}
+			return rt.Kind() == hostbridge.KindChan && rt.ChanDir() == dir &&
+				v.sigTypeFitsHost(from, t.Value, rt.Elem())
+		}
 	}
 	td, err := v.H.ResolveType(from, e)
 	if err != nil || td == nil {
+		// `any` is not in the basic-name table so the resolver may not
+		// answer — but it is a real type for signature identity: the
+		// host position must itself be the empty interface. A declared
+		// `type any = T` resolves above and never reaches this.
+		if id, ok := e.(*ast.Ident); ok && id.Name == "any" {
+			return rt.Kind() == hostbridge.KindInterface && rt.NumMethod() == 0
+		}
 		return true
 	}
 	td = v.peelAlias(td)
