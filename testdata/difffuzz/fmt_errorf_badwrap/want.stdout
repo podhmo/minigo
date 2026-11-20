@@ -10,3 +10,10 @@ e e
 3 %!w(int=3)
 %!w(string=ab)
 x %!w(main.S={})
+%!w(string=ab)
+x %!w(main.S={})
+%!(BADWIDTH)%!w(string=x)
+%!w(string=    x)
+%!w(string=   x) 7
+%!(BADPREC)%!w(int=5)
+%!w(string=   x) 4
