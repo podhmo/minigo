@@ -194,6 +194,13 @@ func (m *Marshal) HostSliceConv(vc runtime.VMCaller, td *runtime.TypeDef, x runt
 	}
 	switch s := x.(type) {
 	case *runtime.Slice:
+		// a script slice that still carries its host backing (a
+		// projected buf.Bytes()) shares it like a host-to-host
+		// conversion — writes through either alias reach the same
+		// array, as Go's []byte -> T conversion does.
+		if s.Host.IsValid() && s.Host.Type().ConvertibleTo(rt) {
+			return runtime.Tag(td, &runtime.GoValue{V: s.Host.Convert(rt).Interface()}), true, nil
+		}
 		hv, err := m.ToReflect(s, rt, vc)
 		if err != nil {
 			return nil, true, err
