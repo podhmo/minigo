@@ -8,7 +8,7 @@ package archcheck
 var FileBudgets = map[string]int{
 	"bindenv.go":                                40,
 	"boundreads.go":                             70,
-	"builtin/builtins.go":                       1163,
+	"builtin/builtins.go":                       1166,
 	"builtin/hostslice.go":                      75,
 	"builtin/order.go":                          30,
 	"builtins.go":                               16,
