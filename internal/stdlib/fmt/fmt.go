@@ -265,6 +265,11 @@ func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string, stars []int
 // operand, leaving no EXTRA. bad lists one entry per %w in verb order,
 // "" for a good operand.
 func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]bool) (string, []any) {
+	// opsLen is the operand count gc's argNum and [n] indexes span:
+	// operands appended mid-rewrite (a parked "" an rvalue star reads)
+	// must not become reachable by an OOB directive's MISSING/BADINDEX
+	// checks, so every range test below compares against this snapshot.
+	opsLen := len(ops)
 	if !strings.Contains(spec, "w") {
 		return spec, ops
 	}
@@ -285,7 +290,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				dirIndexed = true
 				hadIndex = true
 				if n, err := strconv.Atoi(spec[i+1 : i+k]); err == nil && n >= 1 {
-					if n-1 >= len(ops) {
+					if n-1 >= opsLen {
 						dirBad = true
 					} else {
 						argNum = n - 1
@@ -341,7 +346,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		if i < len(spec) && spec[i] == '*' {
 			stars = append(stars, argNum)
 			nw++
-			if argNum < len(ops) {
+			if argNum < opsLen {
 				argNum++
 			}
 			i++
@@ -354,7 +359,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
 				stars = append(stars, argNum)
-				if argNum < len(ops) {
+				if argNum < opsLen {
 					argNum++
 				}
 				i++
@@ -429,15 +434,15 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		// precision star's between `.` and `*` (`%.[n]*`, not `%[n].*` —
 		// fmt parses the latter as a width index and the verb goes
 		// BADINDEX).
-		if ev.nw > 0 && ev.stars[0] < len(ops) {
+		if ev.nw > 0 && ev.stars[0] < opsLen {
 			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[0])) + "]")
 		}
 		sb.WriteString(spec[ev.pos:ev.posP])
-		if len(ev.stars) > ev.nw && ev.stars[ev.nw] < len(ops) {
+		if len(ev.stars) > ev.nw && ev.stars[ev.nw] < opsLen {
 			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[ev.nw])) + "]")
 		}
 		sb.WriteString(spec[ev.posP:ev.posV])
-		if ev.arg < len(ops) {
+		if ev.arg < opsLen {
 			sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
 		}
 		sb.WriteString(spec[ev.posV:ev.i])
@@ -454,7 +459,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			case c == '%':
 				// %% takes no operand — never pin it.
 				sb.WriteString(spec[ev.pct:ev.i])
-			case fixRest && !ev.indexed && ev.arg >= len(ops):
+			case fixRest && !ev.indexed && ev.arg >= opsLen:
 				// gc reads past the operand list and prints the
 				// verb's MISSING marker — emit it as text since the
 				// host's cursor may sit earlier. The `*` operands are
@@ -466,7 +471,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 					if k >= ev.nw {
 						mk = "%%!(BADPREC)"
 					}
-					if st >= len(ops) {
+					if st >= opsLen {
 						sb.WriteString(mk)
 						continue
 					}
@@ -486,14 +491,14 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				if last < ev.i-1+w {
 					last = ev.i - 1 + w
 				}
-			case fixRest && !ev.indexed && ev.arg < len(ops):
+			case fixRest && !ev.indexed && ev.arg < opsLen:
 				// the host's implicit cursor no longer matches the
 				// operand gc reads here — pin it explicitly. An
 				// rvalue-carried star arg is unboxed for %v already, so
 				// poison its slot: the host's `*` read sees a non-int
 				// and prints its own %!(BADWIDTH)/%!(BADPREC).
 				for _, st := range ev.stars {
-					if st < len(ops) && rvalIdx[st] {
+					if st < opsLen && rvalIdx[st] {
 						ops = append(ops, "")
 						starSub[st] = len(ops)
 					}
@@ -509,7 +514,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		lit := ""
 		if wAt < len(bad) {
 			lit = bad[wAt]
-		} else if ev.arg >= len(ops) {
+		} else if ev.arg >= opsLen {
 			lit = "%!w(BADINDEX)"
 			if !hadIndex {
 				lit = "%!w(MISSING)"
@@ -518,7 +523,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		wAt++
 		switch {
 		case lit == "":
-			if fixRest && !ev.indexed && ev.arg < len(ops) {
+			if fixRest && !ev.indexed && ev.arg < opsLen {
 				pin(&sb, spec, verbEv{
 					pct: ev.pct, pos: ev.pos, posP: ev.posP,
 					posV: ev.posV, i: ev.i - 1, arg: ev.arg,
@@ -541,7 +546,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			// silent consumption leaves no EXTRA and nothing reads
 			// the marker text as a width.
 			for _, st := range ev.stars {
-				if st != ev.arg && st < len(ops) && !shared[st] && !consumed[st] {
+				if st != ev.arg && st < opsLen && !shared[st] && !consumed[st] {
 					ops[st] = ""
 					sb.WriteString("%[")
 					sb.WriteString(strconv.Itoa(st + 1))
@@ -549,7 +554,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 					consumed[st] = true
 				}
 			}
-			if ev.arg < len(ops) && !shared[ev.arg] && !consumed[ev.arg] {
+			if ev.arg < opsLen && !shared[ev.arg] && !consumed[ev.arg] {
 				ops[ev.arg] = lit
 				sb.WriteString("%[")
 				sb.WriteString(strconv.Itoa(ev.arg + 1))
