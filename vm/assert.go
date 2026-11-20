@@ -1636,11 +1636,7 @@ func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value) {
 // reviveUnsafePtr reports the referent a mint recorded for addr.
 func (v *VM) reviveUnsafePtr(addr uint64) (runtime.Value, bool) {
 	if p := v.proc.Load(); p != nil {
-		if ref, ok := p.ReviveUintptr(addr); ok {
-			rv, isVal := ref.(runtime.Value)
-			return rv, isVal
-		}
-		return nil, false
+		return p.ReviveUintptr(addr)
 	}
 	ref, ok := v.unsafePtrMint[addr]
 	return ref, ok
