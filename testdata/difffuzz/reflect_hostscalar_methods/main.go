@@ -52,5 +52,6 @@ func main() {
 	fmt.Println(mc.Type)
 	mx, _ := tv.MethodByName("MapIndex")
 	fmt.Println(mx.Type)
+	fmt.Println(mc.Func.Type() == mc.Type)
 	fmt.Println(reflect.TypeFor[P]().NumMethod())
 }

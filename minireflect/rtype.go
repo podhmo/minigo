@@ -1194,6 +1194,9 @@ func (t *RType) Method(i int) *Method {
 		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
+		// gc's Method.Func.Type agrees with Method.Type — the
+		// receiver keeps the enumerated type's pointer shape.
+		f.rtSig = t.e.methodSigType(rt, m.Type)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(t.e.methodSigType(rt, m.Type)), Index: i,
 			Func: f}
@@ -1253,6 +1256,7 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
+		f.rtSig = t.e.methodSigType(rt, m.Type)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
 			Type: t.e.hostTypeOf(t.e.methodSigType(rt, m.Type)), Index: idx,
 			Func: f}, true
