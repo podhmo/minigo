@@ -1025,32 +1025,54 @@ func (t *RType) methodRT() reflect.Type {
 		return t.rt
 	}
 	if t.td != nil {
-		rt := t.e.hostRTOf(t.td)
-		base := rt
-		for base != nil && base.Kind() == reflect.Pointer {
-			base = base.Elem()
-		}
-		if base != nil && base.PkgPath() == reflect.TypeOf(RValue{}).PkgPath() {
-			// the facade's own typedefs (reflect.Value → *RValue)
-			// resolve to internal types whose method sets are not
-			// gc's public reflect surface.
-			return nil
-		}
-		return rt
+		return t.e.hostRTOf(t.td)
 	}
 	return nil
 }
 
+// facadeInternalMethods names exported methods of the facade's own
+// types (*RValue, *RType) that are not part of gc's public reflect
+// surface — the other facades (MapIter, StructField) expose exactly
+// the public names already.
+var facadeInternalMethods = map[string]bool{
+	"APIType": true, // the facade's api-type marker
+	"Payload": true, // RValue's inner-value reader
+}
+
+// hostMethodNames lists rt's exported method names in reflect order,
+// minus the internal facade methods a minireflect type would report
+// that gc's public reflect API does not have.
+func hostMethodNames(rt reflect.Type) []string {
+	base := rt
+	for base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+	facade := base.PkgPath() == reflect.TypeOf(RValue{}).PkgPath()
+	var names []string
+	for i := 0; i < rt.NumMethod(); i++ {
+		n := rt.Method(i).Name
+		if facade && facadeInternalMethods[n] {
+			continue
+		}
+		names = append(names, n)
+	}
+	return names
+}
+
 func (t *RType) NumMethod() int {
 	if rt := t.methodRT(); rt != nil {
-		return rt.NumMethod()
+		return len(hostMethodNames(rt))
 	}
 	return len(exportedMethodNames(t.e.methodSet(t.td)))
 }
 
 func (t *RType) Method(i int) *Method {
 	if rt := t.methodRT(); rt != nil {
-		m := rt.Method(i)
+		names := hostMethodNames(rt)
+		if i < 0 || i >= len(names) {
+			panic(&runtime.Panic{Value: "reflect: Method index out of range"})
+		}
+		m, _ := rt.MethodByName(names[i])
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
@@ -1083,6 +1105,15 @@ func (t *RType) Method(i int) *Method {
 
 func (t *RType) MethodByName(name string) (*Method, bool) {
 	if rt := t.methodRT(); rt != nil {
+		if facadeInternalMethods[name] {
+			base := rt
+			for base.Kind() == reflect.Pointer {
+				base = base.Elem()
+			}
+			if base.PkgPath() == reflect.TypeOf(RValue{}).PkgPath() {
+				return &Method{}, false
+			}
+		}
 		m, ok := rt.MethodByName(name)
 		if !ok {
 			return &Method{}, false
