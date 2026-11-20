@@ -101,6 +101,20 @@ func (ix *Index) Lookup(name string) (*Decl, bool) {
 	return nil, false
 }
 
+// TypeSpec returns the spec a package-level type name declares — nil
+// when the index has no such type decl.
+func (ix *Index) TypeSpec(name string) *ast.TypeSpec {
+	if ix == nil {
+		return nil
+	}
+	d := ix.Types[name]
+	if d == nil || d.Decl == nil {
+		return nil
+	}
+	ts, _ := d.Decl.Spec.(*ast.TypeSpec)
+	return ts
+}
+
 // RedeclError reports a duplicate package-block name from [Build] —
 // Go's `X redeclared in this block` compile error. Pos points at the
 // second declaration, PrevPos at the first; callers render them through

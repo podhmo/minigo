@@ -1513,6 +1513,16 @@ func PtrArrayType(td *TypeDef) *ast.ArrayType {
 // are represented as a [Slice] whose Typ is such a typedef.
 func ArrayTypedef(td *TypeDef) bool { return arrayTypedef(td) }
 
+// ArrayASTOf returns the ArrayType AST behind an array typedef (Anon or
+// the named spec's type) — nil when td is not array-shaped.
+func ArrayASTOf(td *TypeDef) *ast.ArrayType {
+	if td == nil {
+		return nil
+	}
+	at, _ := td.TypeExpr().(*ast.ArrayType)
+	return at
+}
+
 // arrayTypedef reports whether a typedef is a fixed-size array — its
 // underlying AST is an ArrayType carrying a length (slices have none).
 func arrayTypedef(td *TypeDef) bool {

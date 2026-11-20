@@ -1679,12 +1679,7 @@ func pkgTypeSpec(p *runtime.Package, name string) *ast.TypeSpec {
 	if p == nil || p.Index == nil {
 		return nil
 	}
-	tdi := p.Index.Types[name]
-	if tdi == nil || tdi.Decl == nil {
-		return nil
-	}
-	ts, _ := tdi.Decl.Spec.(*ast.TypeSpec)
-	return ts
+	return p.Index.TypeSpec(name)
 }
 
 // selTypeSpec resolves an imported package's member name to the
