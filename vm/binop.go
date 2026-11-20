@@ -868,7 +868,18 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int)
 		// context's type — it shifts as the int value it is.
 		a = v.materialize(f, uc)
 	}
-	if uc, isU := a.(*runtime.UConst); isU && !(uc.Wrap && op == bytecode.BinShr) {
+	if uc, isU := a.(*runtime.UConst); isU && uc.Wrap && (op == bytecode.BinShr || len(uc.WrapOps) > 0) {
+		// A Wrap under >> — or one carrying deferred ops, which can't
+		// fold a further op into the payload — rides this shift as
+		// one more deferred op: right shift does not commute with
+		// truncation, so it replays at the materialization width
+		// (`int8(1<<n)>>1` is -64 where int's reads 64).
+		nu := &runtime.UConst{V: uc.V, Rune: uc.Rune, Wrap: true, WrapSure: uc.WrapSure || sure}
+		nu.WrapOps = append(append([]runtime.WrapOp{}, uc.WrapOps...),
+			runtime.WrapOp{Op: op, Arg: constant.MakeUint64(count)})
+		return nu
+	}
+	if uc, isU := a.(*runtime.UConst); isU {
 		// both sides in the constant domain: Go folds the shift —
 		// `const c1 = chuge >> 100` (chuge = 1<<100) is the constant
 		// 1. A float/complex LHS reads as its integer value; one that
@@ -880,7 +891,7 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int)
 		// here: the exact result rides as a Wrap value that truncates
 		// to whatever width it materializes at — `1 << 70` as an int
 		// is 0, not gc's "constant overflows" reject.
-		// (A Wrap left operand under >> settles at int first: a right
+		// (A Wrap left operand under >> was deferred above: a right
 		// shift does not commute with truncation.)
 		lv := uc.V
 		if lv.Kind() != constant.Int {
@@ -1159,6 +1170,26 @@ func constUnary(op bytecode.UnOp, u *runtime.UConst) (res *runtime.UConst, ok bo
 	tok, ok := unOpToken(op)
 	if !ok {
 		return nil, false
+	}
+	if len(u.WrapOps) > 0 {
+		// a Wrap with deferred ops can't fold a unary op into its
+		// payload — carry an equivalent deferred step instead (at
+		// every integer width -x is x*-1 and ^x is x^-1).
+		var step bytecode.BinOp
+		switch op {
+		case bytecode.UnPos:
+			return u, true
+		case bytecode.UnNeg:
+			step = bytecode.BinMul
+		case bytecode.UnXor:
+			step = bytecode.BinXor
+		default:
+			return nil, false
+		}
+		nu := &runtime.UConst{V: u.V, Rune: u.Rune, Wrap: u.Wrap, WrapSure: u.WrapSure}
+		nu.WrapOps = append(append([]runtime.WrapOp{}, u.WrapOps...),
+			runtime.WrapOp{Op: step, Arg: constant.MakeInt64(-1)})
+		return nu, true
 	}
 	// -x and ^x agree with every width's truncation, so a non-constant
 	// shift result (Wrap) stays one through them.
