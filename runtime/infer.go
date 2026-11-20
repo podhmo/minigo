@@ -3,6 +3,7 @@ package runtime
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 
 	"github.com/podhmo/minigo/syntax"
 )
@@ -34,12 +35,22 @@ type Inferer struct {
 	// methods alike. Nil means "unresolvable" (interface-method
 	// inference is skipped).
 	MethodSigs func(td *TypeDef) map[string]*Function
-	// ifacePairs dedups (interface, concrete) pairs unifyIfaceMethods
-	// already compared — a requirement and an implementation that each
-	// return their own type (N[T] interface{ M() N[T] } vs I{ M() I })
-	// otherwise recurse forever; a pair already compared teaches
-	// nothing new anyway.
-	ifacePairs map[[2]*TypeDef]bool
+	// ifacePairs dedups (interface, concrete, index-args) triples
+	// unifyIfaceMethods already compared — a requirement and an
+	// implementation that each return their own type
+	// (N[T] interface{ M() N[T] } vs I{ M() I }) otherwise recurse
+	// forever; a triple already compared teaches nothing new anyway.
+	// The args belong in the key: one alias repeated at two positions
+	// with different type args (Getter[U, int] beside Getter[string,
+	// V]) must unify each position separately.
+	ifacePairs map[ifaceTriple]bool
+}
+
+// ifaceTriple keys the unifyIfaceMethods dedup: pattern typedef,
+// concrete typedef and the index args' spelling.
+type ifaceTriple struct {
+	bt, conc *TypeDef
+	args     string
 }
 
 func (i *Inferer) underlying(td *TypeDef) *TypeDef {
@@ -436,13 +447,21 @@ func typedefOfBind(v Value) *TypeDef {
 // params, which UnifyDef then binds) and unified against conc's method
 // of the same name.
 func (i *Inferer) unifyIfaceMethods(ctx *TypeDef, tset map[string]bool, binds map[string]Value, bt *TypeDef, idxs []ast.Expr, conc *TypeDef) {
-	if i.ifacePairs == nil {
-		i.ifacePairs = map[[2]*TypeDef]bool{}
+	var sb strings.Builder
+	for _, ix := range idxs {
+		if ix != nil {
+			sb.WriteString(TypGoSpelling(ix, ctx))
+		}
+		sb.WriteByte(0)
 	}
-	if i.ifacePairs[[2]*TypeDef{bt, conc}] {
+	key := ifaceTriple{bt: bt, conc: conc, args: sb.String()}
+	if i.ifacePairs == nil {
+		i.ifacePairs = map[ifaceTriple]bool{}
+	}
+	if i.ifacePairs[key] {
 		return
 	}
-	i.ifacePairs[[2]*TypeDef{bt, conc}] = true
+	i.ifacePairs[key] = true
 	reqs := i.MethodSigs(bt)
 	cms := i.MethodSigs(conc)
 	if reqs == nil || cms == nil {
