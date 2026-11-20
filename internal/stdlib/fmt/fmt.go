@@ -148,7 +148,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			// the %w operand indexes come from the spec as written —
 			// they index the raw args; rewriteTypeVerbs renumbers the
 			// directives and rebuilds the operand list for printing.
-			_, wrapPos, wrapDirs, wrapStars := rewriteWrapVerbs(spec)
+			_, wrapPos, wrapDirs, wrapStars, wrapBadIdx := rewriteWrapVerbs(spec, len(flat)-1)
 			// gc prints %!w(...) for a %w operand that wraps nothing —
 			// nil, a non-error, or a missing operand — instead of its %v.
 			// Classify once per %w verb; the marker text rides to host fmt
@@ -157,8 +157,24 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			var bad []string
 			for k, p := range wrapPos {
 				switch {
-				case p+1 >= len(a) || p+1 >= len(flat):
-					bad = append(bad, "%!w(MISSING)")
+				case wrapBadIdx[k] || p+1 >= len(a) || p+1 >= len(flat):
+					// a bad [n] makes the directive %!w(BADINDEX) even
+					// when its operand index lands in range; a mere
+					// operand run-out prints %!w(MISSING). A bad `*`
+					// operand still prefixes %!(BADWIDTH).
+					mk := "MISSING"
+					if wrapBadIdx[k] {
+						mk = "BADINDEX"
+					}
+					_, bw, bp := markerInner(wrapDirs[k][1:len(wrapDirs[k])-1], wrapStars[k], flat[1:])
+					lit := ""
+					if bw {
+						lit = "%!(BADWIDTH)"
+					}
+					if bp {
+						lit += "%!(BADPREC)"
+					}
+					bad = append(bad, lit+"%!w("+mk+")")
 				default:
 					if lit, isBad := badWrapOperand(v, flat[p+1], wrapDirs[k], wrapStars[k], flat[1:]); isBad {
 						bad = append(bad, lit)
@@ -178,8 +194,8 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			// operands in argument order; a non-error operand wraps
 			// nothing.
 			var pos []int
-			for _, p := range wrapPos {
-				if p < len(args)-1 {
+			for k, p := range wrapPos {
+				if !wrapBadIdx[k] && p < len(args)-1 {
 					pos = append(pos, p)
 				}
 			}
@@ -249,15 +265,29 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	argNum := 0
 	wAt := 0
 	consumed := map[int]bool{}
-	// index mirrors rewriteWrapVerbs' cursor handling for `[n]`.
+	hadIndex := false
+	dirBad := false
+	dirIndexed := false
+	// index mirrors rewriteWrapVerbs' cursor handling for `[n]`: a
+	// valid in-range index moves the cursor; an out-of-range or
+	// malformed one leaves argNum alone and marks the directive bad —
+	// gc prints the verb's BADINDEX marker and consumes nothing.
 	index := func(i int) int {
 		if i < len(spec) && spec[i] == '[' {
 			if k := strings.IndexByte(spec[i:], ']'); k > 1 {
 				if n, err := strconv.Atoi(spec[i+1 : i+k]); err == nil && n >= 1 {
-					argNum = n - 1
+					dirIndexed = true
+					hadIndex = true
+					if n-1 >= len(ops) {
+						dirBad = true
+					} else {
+						argNum = n - 1
+					}
 					return i + k + 1
 				}
 			}
+			dirBad = true
+			return i + 1
 		}
 		return i
 	}
@@ -268,9 +298,12 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		return i
 	}
 	// a verb's operand indexes: the star args plus the value arg.
+	// pos is the post-flags offset where an explicit [n] would sit;
+	// indexed/badIdx record a valid / failed [n] in this directive.
 	type verbEv struct {
-		pct, i, arg int
-		stars       []int
+		pct, pos, i, arg int
+		stars            []int
+		indexed, badIdx  bool
 	}
 	var evs []verbEv
 	argNums := []int{}
@@ -286,10 +319,13 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 			i++
 		}
 		stars := []int{}
+		pos := i
 		i = index(i)
 		if i < len(spec) && spec[i] == '*' {
 			stars = append(stars, argNum)
-			argNum++
+			if argNum < len(ops) {
+				argNum++
+			}
 			i++
 		} else {
 			i = digits(i)
@@ -298,7 +334,9 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
 				stars = append(stars, argNum)
-				argNum++
+				if argNum < len(ops) {
+					argNum++
+				}
 				i++
 			} else {
 				i = digits(i)
@@ -310,11 +348,15 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		}
 		verb := spec[i]
 		i++
-		evs = append(evs, verbEv{pct, i, argNum, stars})
+		evs = append(evs, verbEv{pct, pos, i, argNum, stars, dirIndexed, dirBad})
 		if verb != '%' {
 			argNums = append(argNums, argNum)
-			argNum++
+			if !dirBad {
+				argNum++
+			}
 		}
+		dirBad = false
+		dirIndexed = false
 	}
 	// operand indexes a surviving directive consumes: every value arg
 	// plus every `*` arg of a non-%w or good-%w verb. A bad %w's own
@@ -342,12 +384,21 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		}
 	}
 	last := 0
+	fixRest := false
 	for n, ev := range evs {
 		sb.WriteString(spec[last:ev.pct])
 		last = ev.i
 		c := spec[ev.i-1]
 		if c != 'w' {
-			sb.WriteString(spec[ev.pct:ev.i])
+			if fixRest && !ev.indexed && ev.arg < len(ops) {
+				// the host's implicit cursor no longer matches the
+				// operand gc reads here — pin it explicitly.
+				sb.WriteString(spec[ev.pct:ev.pos])
+				sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
+				sb.WriteString(spec[ev.pos:ev.i])
+			} else {
+				sb.WriteString(spec[ev.pct:ev.i])
+			}
 			continue
 		}
 		_ = n
@@ -356,13 +407,23 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		if wAt < len(bad) {
 			lit = bad[wAt]
 		} else if ev.arg >= len(ops) {
-			lit = "%!w(MISSING)"
+			lit = "%!w(BADINDEX)"
+			if !hadIndex {
+				lit = "%!w(MISSING)"
+			}
 		}
 		wAt++
-		if lit == "" {
+		switch {
+		case lit == "":
 			sb.WriteString(spec[ev.pct : ev.i-1])
 			sb.WriteByte('v')
-		} else {
+		case ev.badIdx:
+			// a bad [n] makes gc print %!w(BADINDEX) and consume
+			// nothing — emit the marker as text and pin the operand
+			// index of every later implicit directive instead.
+			sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
+			fixRest = true
+		default:
 			// the directive's `*` operands die with it: any slot no
 			// sibling consumes gets an empty string + %[S]s so gc's
 			// silent consumption leaves no EXTRA and nothing reads
@@ -383,12 +444,22 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 				sb.WriteString("]s")
 			} else {
 				sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
+				fixRest = true
 			}
 		}
 		consumed[ev.arg] = true
 	}
 	_ = argNums
 	sb.WriteString(spec[last:])
+	// gc prints no EXTRA once any [n] reorders the args. When every
+	// explicit index lived inside a replaced bad-%w directive, keep the
+	// spec reordered by parking a fresh empty operand on %[N]s.
+	if hadIndex && !strings.Contains(sb.String(), "[") {
+		ops = append(ops, "")
+		sb.WriteString("%[")
+		sb.WriteString(strconv.Itoa(len(ops)))
+		sb.WriteString("]s")
+	}
 	return sb.String(), ops
 }
 
@@ -399,24 +470,35 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 // precision consume an operand, and the list may repeat an index
 // (`%[1]w %[1]w`). Indexes past the operands are reported too; the
 // caller drops them (gc prints %!w(MISSING) and records nothing).
-func rewriteWrapVerbs(spec string) (string, []int, []string, [][]int) {
+func rewriteWrapVerbs(spec string, numArgs int) (string, []int, []string, [][]int, []bool) {
 	if !strings.Contains(spec, "w") {
-		return spec, nil, nil, nil
+		return spec, nil, nil, nil, nil
 	}
 	var sb strings.Builder
 	var wrapPos []int
 	var wrapDirs []string
 	var wrapStars [][]int
+	var wrapBadIdx []bool
 	argNum := 0
-	// index parses an explicit `[n]` at spec[i:], moving the cursor.
+	dirBad := false // a `[n]` in the current directive failed (bad parse or out of range)
+	// index parses an explicit `[n]` at spec[i:]. Like gc's argNumber:
+	// a valid in-range index moves the cursor; an out-of-range or
+	// malformed one leaves argNum alone and makes the whole directive
+	// print a BADINDEX marker.
 	index := func(i int) int {
 		if i < len(spec) && spec[i] == '[' {
 			if k := strings.IndexByte(spec[i:], ']'); k > 1 {
 				if n, err := strconv.Atoi(spec[i+1 : i+k]); err == nil && n >= 1 {
-					argNum = n - 1
+					if n-1 >= numArgs {
+						dirBad = true
+					} else {
+						argNum = n - 1
+					}
 					return i + k + 1
 				}
 			}
+			dirBad = true
+			return i + 1
 		}
 		return i
 	}
@@ -443,7 +525,9 @@ func rewriteWrapVerbs(spec string) (string, []int, []string, [][]int) {
 		i = index(i)
 		if i < len(spec) && spec[i] == '*' {
 			stars = append(stars, argNum)
-			argNum++
+			if argNum < numArgs {
+				argNum++
+			}
 			i++
 		} else {
 			i = digits(i)
@@ -452,7 +536,9 @@ func rewriteWrapVerbs(spec string) (string, []int, []string, [][]int) {
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
 				stars = append(stars, argNum)
-				argNum++
+				if argNum < numArgs {
+					argNum++
+				}
 				i++
 			} else {
 				i = digits(i)
@@ -474,13 +560,19 @@ func rewriteWrapVerbs(spec string) (string, []int, []string, [][]int) {
 			wrapPos = append(wrapPos, argNum)
 			wrapDirs = append(wrapDirs, spec[pct:i])
 			wrapStars = append(wrapStars, stars)
-			argNum++
+			wrapBadIdx = append(wrapBadIdx, dirBad)
+			if !dirBad {
+				argNum++
+			}
 		default:
 			sb.WriteString(spec[pct:i])
-			argNum++
+			if !dirBad {
+				argNum++
+			}
 		}
+		dirBad = false
 	}
-	return sb.String(), wrapPos, wrapDirs, wrapStars
+	return sb.String(), wrapPos, wrapDirs, wrapStars, wrapBadIdx
 }
 
 // ffn wraps a host fmt-style function: each arg becomes fmtArg so host
@@ -702,7 +794,10 @@ func markerInner(tail string, stars []int, vals []runtime.Value) (st markerState
 		if ch == '*' {
 			i++
 			if starAt < len(stars) {
-				v, ok := starInt(vals[stars[starAt]])
+				v, ok := 0, false
+				if stars[starAt] < len(vals) {
+					v, ok = starInt(vals[stars[starAt]])
+				}
 				switch {
 				case !ok:
 					badWidth = true
@@ -747,7 +842,10 @@ func markerInner(tail string, stars []int, vals []runtime.Value) (st markerState
 			st.p = st.p*10 + int(ch-'0')
 		case ch == '*':
 			if starAt < len(stars) {
-				v, ok := starInt(vals[stars[starAt]])
+				v, ok := 0, false
+				if stars[starAt] < len(vals) {
+					v, ok = starInt(vals[stars[starAt]])
+				}
 				if !ok || v < 0 {
 					badPrec = true
 				} else {
