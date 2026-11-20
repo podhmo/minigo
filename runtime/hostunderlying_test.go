@@ -6,6 +6,8 @@ import (
 	"net/textproto"
 	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 type hueA struct{ Next *hueA }
@@ -33,8 +35,8 @@ func TestHostUnderlyingEq(t *testing.T) {
 		{"distinct scalars", rt(int(0)), rt(uint(0)), false},
 		{"nil", nil, rt(net.IP{}), false},
 	} {
-		if got := HostUnderlyingEq(c.a, c.b); got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		if diff := cmp.Diff(c.want, HostUnderlyingEq(c.a, c.b)); diff != "" {
+			t.Errorf("%s: mismatch (-want +got):\n%s", c.name, diff)
 		}
 	}
 }
