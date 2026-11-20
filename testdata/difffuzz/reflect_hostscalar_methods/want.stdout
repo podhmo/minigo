@@ -6,4 +6,7 @@ Monday
 false
 true
 4 true
+0 func(*reflect.MapIter) reflect.Value
+Key
+true
 0

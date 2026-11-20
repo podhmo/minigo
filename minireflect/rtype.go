@@ -68,7 +68,11 @@ func (e *Env) rtypeOf(td *runtime.TypeDef) *RType {
 	// Name, methods and Implements see the aliased declaration
 	// (kin-openapi's `type AdditionalProperties = BoolSchema`).
 	td = e.peelAlias(td)
-	return e.intern(e.keyOf(td), td, nil)
+	// a facade typedef also carries the real gc type it stands in
+	// for — field/kind ops answer the public surface (reflect.Value's
+	// abi fields), while methodRT maps it back to the internal type
+	// whose methods dispatch on facade receivers.
+	return e.intern(e.keyOf(td), td, e.facadeRT[td])
 }
 
 // peelAlias follows `type A = T` chains to the target typedef.
@@ -83,12 +87,72 @@ func (e *Env) peelAlias(td *runtime.TypeDef) *runtime.TypeDef {
 	return td
 }
 
-// hostTypeOf interns a host reflect.Type.
+// hostTypeOf interns a host reflect.Type. A host type that stands in
+// for one of the facade's public types (*RValue for reflect.Value)
+// maps back to that typedef, so signatures and field types spelled
+// with it report the public type — `func() reflect.Value`, not
+// `func() *minireflect.RValue`.
 func (e *Env) hostTypeOf(rt reflect.Type) *RType {
-	if e.h.TypeAlias != nil && rt != nil {
-		rt = e.h.TypeAlias(rt)
+	if rt != nil {
+		rt = e.publicRT(rt)
+		if td, ok := e.facadeTyp[rt]; ok {
+			return e.rtypeOf(td)
+		}
+		if e.h.TypeAlias != nil {
+			rt = e.h.TypeAlias(rt)
+		}
 	}
 	return e.intern(hostTypeKey(rt), nil, rt)
+}
+
+// publicRT rewrites the facade's own host types inside a host type to
+// the real gc types they stand in for, so a signature spells the
+// public API — `func(*reflect.MapIter) reflect.Value`, not
+// `func(*minireflect.MapIter) *minireflect.RValue`. Composites are
+// rebuilt when an element changed.
+func (e *Env) publicRT(rt reflect.Type) reflect.Type {
+	if pub, ok := e.facadePub[rt]; ok {
+		return pub
+	}
+	switch rt.Kind() {
+	case reflect.Pointer:
+		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+			return reflect.PointerTo(el)
+		}
+	case reflect.Slice:
+		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+			return reflect.SliceOf(el)
+		}
+	case reflect.Array:
+		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+			return reflect.ArrayOf(rt.Len(), el)
+		}
+	case reflect.Map:
+		k, el := e.publicRT(rt.Key()), e.publicRT(rt.Elem())
+		if k != rt.Key() || el != rt.Elem() {
+			return reflect.MapOf(k, el)
+		}
+	case reflect.Chan:
+		if el := e.publicRT(rt.Elem()); el != rt.Elem() {
+			return reflect.ChanOf(rt.ChanDir(), el)
+		}
+	case reflect.Func:
+		changed := false
+		ins := make([]reflect.Type, rt.NumIn())
+		for i := range ins {
+			ins[i] = e.publicRT(rt.In(i))
+			changed = changed || ins[i] != rt.In(i)
+		}
+		outs := make([]reflect.Type, rt.NumOut())
+		for i := range outs {
+			outs[i] = e.publicRT(rt.Out(i))
+			changed = changed || outs[i] != rt.Out(i)
+		}
+		if changed {
+			return reflect.FuncOf(ins, outs, rt.IsVariadic())
+		}
+	}
+	return rt
 }
 
 // hostRTOf derives the host reflect.Type a typedef stands for, when
@@ -1022,6 +1086,13 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 // the script method set).
 func (t *RType) methodRT() reflect.Type {
 	if t.rt != nil {
+		// a real gc type standing in for the facade (reflect.Value)
+		// reports the internal type's method set — those methods
+		// dispatch on facade receivers, and the internal names are
+		// filtered out by hostMethodNames.
+		if mt, ok := t.e.facadeMeth[t.rt]; ok {
+			return mt
+		}
 		return t.rt
 	}
 	if t.td != nil {
@@ -1070,13 +1141,19 @@ func (t *RType) Method(i int) *Method {
 	if rt := t.methodRT(); rt != nil {
 		names := hostMethodNames(rt)
 		if i < 0 || i >= len(names) {
+			// An interface type's requirements are a plain list in
+			// Go: out-of-range returns the zero Method instead of
+			// panicking (matching the script-type path below).
+			if rt.Kind() == reflect.Interface {
+				return &Method{}
+			}
 			panic(&runtime.Panic{Value: "reflect: Method index out of range"})
 		}
 		m, _ := rt.MethodByName(names[i])
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Type: t.e.hostTypeOf(m.Type), Index: i,
 			Func: f}
 	}
 	set := t.e.methodSet(t.td)
@@ -1118,10 +1195,19 @@ func (t *RType) MethodByName(name string) (*Method, bool) {
 		if !ok {
 			return &Method{}, false
 		}
+		// Index is the position in the filtered method list — the
+		// same number Method(i) reports — not the host index.
+		idx := -1
+		for i, n := range hostMethodNames(rt) {
+			if n == name {
+				idx = i
+				break
+			}
+		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Type: t.e.hostTypeOf(m.Type), Index: idx,
 			Func: f}, true
 	}
 	set := t.e.methodSet(t.td)
