@@ -2,6 +2,8 @@ package repl
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -79,5 +81,37 @@ func TestReplImporters(t *testing.T) {
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf(":importers (-want +got):\n%s", diff)
+	}
+}
+
+func TestNestedModuleDir(t *testing.T) {
+	root := t.TempDir()
+	writeFile := func(rel, content string) {
+		t.Helper()
+		abs := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(abs), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(abs, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile("go.mod", "module example.com/parent\n")
+	writeFile("nested/go.mod", "module other.com/nested\n")
+
+	cases := []struct {
+		dir  string
+		want bool
+	}{
+		{filepath.Join(root, "pkg"), false},
+		{filepath.Join(root, "nested"), true},
+		{filepath.Join(root, "nested", "pkg"), true},
+		{root, false},
+		{t.TempDir(), false},
+	}
+	for _, c := range cases {
+		if got := nestedModuleDir(root, c.dir); got != c.want {
+			t.Errorf("nestedModuleDir(%q) = %v, want %v", c.dir, got, c.want)
+		}
 	}
 }

@@ -43,7 +43,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           121,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           642,
-	"internal/archcheck/budgets.go":             306,
+	"internal/archcheck/budgets.go":             307,
 	"internal/archcheck/rules.go":               147,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -129,11 +129,11 @@ var FileBudgets = map[string]int{
 	"native.go":                                 97,
 	"pkg/gentest/gentest.go":                    227,
 	"pkg/gentest/writer.go":                     72,
-	"pkg/locator/locator.go":                    747,
+	"pkg/locator/locator.go":                    777,
 	"pkg/modulewalk/modulewalk.go":              541,
 
 	"repl/complete.go":                             1389,
-	"repl/pkginfo.go":                              162,
+	"repl/pkginfo.go":                              214,
 	"repl/load.go":                                 662,
 	"repl/repl.go":                                 1259,
 	"replhooks.go":                                 55,
@@ -302,4 +302,5 @@ var FileBudgetExceptions = map[string]string{
 	"vm/selectsite.go":                   "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name; the site cache also covers namedMember (selNamedMethod, payload field/path replays) + genCallSlot/instSiteSlot site memos + instSiteEnv/instSiteCacheable",
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch",
+	"pkg/locator/locator.go":             "ReplacedImportPath: spell a replace-covered dir by its OldPath",
 }
