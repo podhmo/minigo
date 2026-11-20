@@ -73,7 +73,7 @@ var Rules = map[string][]string{
 	"internal/stdlib/regexp":        {"internal/stdlib", "runtime"},
 	"internal/stdlib/unsafe":        {"internal/hostbridge", "internal/stdlib", "minireflect", "runtime"},
 	"internal/stdlib/reflect":       {"internal/hostbridge", "internal/stdlib", "minireflect", "runtime"},
-	"internal/stdlib/inspect":       {"index", "inspect", "internal/stdlib", "resolve", "runtime"},
+	"internal/stdlib/inspect":       {"index", "inspect", "internal/hostbridge", "internal/stdlib", "resolve", "runtime"},
 	"internal/stdlib/json":          {"internal/hostbridge", "internal/stdlib", "internal/stdlib/io", "runtime"},
 	"internal/stdlib/fmt":           {"internal/hostbridge", "internal/stdlib", "internal/stdlib/goruntime", "internal/stdlib/io", "internal/stdlib/json", "internal/stdlib/time", "minireflect", "runtime"},
 	"internal/typedef":              {"bytecode", "index", "internal/hostbridge", "runtime", "syntax"},
