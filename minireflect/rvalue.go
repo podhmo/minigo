@@ -2599,32 +2599,8 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		} else if len(in) > n {
 			plain("reflect: Call with too many input arguments")
 		}
-		if v.mexpr != "" && len(in) > 0 {
-			if r := in[0]; r != nil && r.rv.IsValid() && r.rv.CanInterface() {
-				if dm := r.rv.MethodByName(v.mexpr); dm.IsValid() {
-					rest := make([]reflect.Value, len(in)-1)
-					for i, a := range in[1:] {
-						j := i + 1
-						var pt reflect.Type
-						if mt.IsVariadic() && j >= mt.NumIn()-1 {
-							pt = mt.In(mt.NumIn() - 1).Elem()
-						} else {
-							pt = mt.In(j)
-						}
-						rv, err := toHost(a.ifaceVal(), pt, v.e)
-						if err != nil {
-							trap("reflect.Value.Call: %s", err)
-						}
-						rest[i] = rv
-					}
-					out := dm.Call(rest)
-					var res []*RValue
-					for _, o := range out {
-						res = append(res, v.e.wrapHost(v.vc, o))
-					}
-					return res
-				}
-			}
+		if res, ok := v.callMethodExpr(mt, in); ok {
+			return res
 		}
 		for i, a := range in {
 			var pt reflect.Type

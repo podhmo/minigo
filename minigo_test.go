@@ -2592,8 +2592,8 @@ func TestWithOutputReflectWrite(t *testing.T) {
 	var buf strings.Builder
 	e := minigo.NewEngine("..", minigo.WithOutput(&buf))
 	run(t, e, "./testdata/intrins", "StdoutReflectWrite")
-	if got := buf.String(); got != "reflect 7\n" {
-		t.Fatalf("output: got %q", got)
+	if diff := cmp.Diff("reflect 7\n", buf.String()); diff != "" {
+		t.Fatalf("output mismatch (-want +got):\n%s", diff)
 	}
 }
 
