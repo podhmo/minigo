@@ -3272,7 +3272,10 @@ func (v *RValue) Convert(t *RType) *RValue {
 			// to a declared `Octet`/`R` slot.
 			if t.td != nil {
 				s.Typ = t.td
-				if etd := v.e.elemOf(t.td); etd != nil {
+				// an alias element (`type B = byte`) is the same type
+				// as its spelling — tag with the peeled typedef so the
+				// elements DeepEqual a plain `[]byte`.
+				if etd := v.e.peelAlias(v.e.elemOf(t.td)); etd != nil {
 					for i, e := range s.Elems {
 						s.Elems[i] = runtime.Tag(etd, runtime.Unwrap(e))
 					}
