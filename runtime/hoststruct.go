@@ -97,6 +97,25 @@ func HostStructCopy(v Value) (Value, bool) {
 	return &GoValue{V: cp.Interface()}, true
 }
 
+// HostValueStructCopy copies a host struct boxed by value — `var i2 = i`
+// on a T-shaped box keeps i2's field writes off i's storage (gc value
+// semantics). ok is false when v is not a value-boxed host struct: a *T
+// box shares like a pointer — it may be a host-returned pointer, not
+// var storage.
+func HostValueStructCopy(v Value) (Value, bool) {
+	gv, ok := v.(*GoValue)
+	if !ok {
+		return nil, false
+	}
+	rv := reflect.ValueOf(gv.V)
+	if !rv.IsValid() || rv.Kind() != reflect.Struct {
+		return nil, false
+	}
+	cp := reflect.New(rv.Type())
+	cp.Elem().Set(rv)
+	return &GoValue{V: cp.Elem().Interface()}, true
+}
+
 // HostStructSnapshot copies the host struct v boxes — *T storage or a
 // bare T value alike — into a fresh box of the shape the type stores:
 // wantPtr (the bound type's [HostNew] spells *T) selects a *T box, a
