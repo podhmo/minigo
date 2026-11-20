@@ -1976,11 +1976,20 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 		if fv, ok := x.V.(*fmtValue); ok {
 			return fmtArg(v, fv.x)
 		}
-		// the tag only names the declared type — a host-boxed payload
-		// still unwraps to fmtRValue, while other payloads keep
-		// fmtValue's tag-aware rendering (float32 tags, named scalars).
+		// a host-boxed payload unwraps to fmtRValue — but only while
+		// the tag is the bound typedef itself: a script-declared type
+		// over a host struct inherits no methods, so gc renders it
+		// field-wise and the native box must stay wrapped.
 		if gv, ok := x.V.(*runtime.GoValue); ok {
-			return fmtArg(v, gv)
+			td := x.Typ
+			if _, isRV := gv.V.(*minireflect.RValue); isRV || td == nil || td.HostNew != nil || td.HostIdent != nil {
+				// the tag is the bound typedef itself — the payload's
+				// host methods stay live.
+				return fmtArg(v, gv)
+			}
+			// a script-declared type over a host struct inherits no
+			// methods: gc renders it field-wise, so the native box
+			// must stay wrapped in the tag-aware path.
 		}
 		// a still-constant payload materializes at the declared width
 		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
