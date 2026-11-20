@@ -73,10 +73,16 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			return &TickerChanBox{t: t, C: f.C, feed: f}, nil
 		}),
 		"Tick": h.Fnvc("time.Tick", func(vc runtime.VMCaller, a []any) (any, error) {
-			// Tick's channel is gc-deprecated but never stops — the proxy
-			// feed keeps liveness armed like NewTicker's.
-			f := newChanFeed(vc, stdtime.Tick(durOf(a[0])), false)
-			return (<-chan stdtime.Time)(f.C), nil
+			// A non-positive interval returns nil like gc — wrapping it
+			// in a feed would mint a non-nil channel and defeat both
+			// `c == nil` and the nil-recv deadlock. Tick's channel is
+			// gc-deprecated but never stops — the proxy feed keeps
+			// liveness armed like NewTicker's.
+			if d := durOf(a[0]); d > 0 {
+				f := newChanFeed(vc, stdtime.Tick(d), false)
+				return (<-chan stdtime.Time)(f.C), nil
+			}
+			return (<-chan stdtime.Time)(nil), nil
 		}),
 		"AfterFunc": &runtime.BuiltinFunc{Name: "time.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 2 {

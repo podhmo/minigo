@@ -254,7 +254,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/html/html.go":                   12,
 	"internal/stdlib/htmltemplate/htmltemplate.go":   53,
 	"internal/stdlib/texttemplate/texttemplate.go":   56,
-	"internal/stdlib/time/time.go":                   514,
+	"internal/stdlib/time/time.go":                   520,
 	"internal/stdlib/utf8/utf8.go":                   116,
 }
 

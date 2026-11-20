@@ -16,4 +16,10 @@ func main() {
 	c := time.Tick(5 * time.Millisecond)
 	<-c
 	fmt.Println("ticked")
+	tickNil()
+}
+
+func tickNil() {
+	c := time.Tick(0)
+	fmt.Println(c == nil)
 }
