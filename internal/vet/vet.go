@@ -33,14 +33,30 @@ type Deps struct {
 	Registered func(path, name string) bool
 }
 
+// Kind names the check a [Result] came from: KindStubCall fails the
+// run, KindHint is advisory only.
+type Kind string
+
+const (
+	KindStubCall Kind = "stub-call"
+	KindHint     Kind = "hint"
+)
+
 // Result is one [Scan] finding.
 type Result struct {
+	Kind     Kind
 	Pos      token.Position
 	Call     string // "pkg.Sym" as written (alias.Sym form)
 	Resolved string // canonical "import/path.Sym" it resolves to
 }
 
+// IsHint reports whether this finding is advisory-only (a KindHint).
+func (r Result) IsHint() bool { return r.Kind == KindHint }
+
 func (r Result) String() string {
+	if r.Kind == KindHint {
+		return fmt.Sprintf("%s: hint: %s", r.Pos, r.Resolved)
+	}
 	return fmt.Sprintf("%s: call %s resolves to unregistered stub member %s", r.Pos, r.Call, r.Resolved)
 }
 
@@ -82,6 +98,7 @@ func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) 
 		}
 		for _, decl := range sf.AST.Decls {
 			scanStubCalls(ctx, decl, imports, locals, &out, deps)
+			scanReadFileHints(decl, imports, deps.Position, &out)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -119,6 +136,7 @@ func scanStubCalls(ctx context.Context, root ast.Node, imports map[string]string
 			continue
 		}
 		*out = append(*out, Result{
+			Kind:     KindStubCall,
 			Pos:      deps.Position(call.Lparen),
 			Call:     x.Name + "." + name,
 			Resolved: path + "." + name,
