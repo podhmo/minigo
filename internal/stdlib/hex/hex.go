@@ -38,7 +38,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters) {
 			return fmt.Errorf("dst has %d bytes, need %d", len(s.Elems), len(b))
 		}
 		for i, by := range b {
-			s.Elems[i] = runtime.ByteValue(by)
+			s.SetElem(int64(i), runtime.ByteValue(by))
 		}
 		return nil
 	}

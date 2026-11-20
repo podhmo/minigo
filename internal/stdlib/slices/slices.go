@@ -471,6 +471,7 @@ func slicesReverse() *runtime.BuiltinFunc {
 		}
 		if s != nil && !s.Virtual() {
 			gslices.Reverse(s.Elems)
+			s.CommitHost()
 		}
 		return runtime.NIL, nil
 	}}
