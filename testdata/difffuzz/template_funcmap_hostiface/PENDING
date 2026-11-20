@@ -1,0 +1,3 @@
+FuncMap funcs declaring a non-empty interface param (interface{ Encode()
+string }) reject a named host map arg: Lift/coerce sees the unboxed
+map[string][]string shape, not url.Values with its method set.
