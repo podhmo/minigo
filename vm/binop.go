@@ -532,7 +532,9 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 				if _, err := v.materializeConstErr(ru, tag); err != nil {
 					f.trap("%s", err)
 				}
-				r = runtime.Tag(tag, ru)
+				// gc rounds every typed float/complex op to the type —
+				// the tag keeps the constant domain at that precision.
+				r = runtime.Tag(tag, roundConstInKind(ru, tn))
 			}
 			ca.SetMemo(key, r) // comparisons fold to an untyped bool
 			return r
