@@ -159,6 +159,16 @@ func HostNamedKind(rt reflect.Type) runtime.TypeKind {
 	return runtime.KindNamedBasic
 }
 
+// HostSliceTypOf is the typedef tag for an unnamed slice of host
+// element rt — the anon expression for the shape plus the element's
+// package-level identity for display and generic inference, the same
+// tag GoValueOf stamps on an unboxed unnamed host slice.
+func HostSliceTypOf(rt reflect.Type) *runtime.TypeDef {
+	td := AnonSliceTypX(AnonExprOf(rt))
+	td.Elem = HostPkgElemTypedef(rt)
+	return td
+}
+
 // HostPkgElemTypedef is the element identity a host slice keeps when
 // its element is a type declared in a package, or a pointer to one: the
 // bare name AnonExprOf spells (`[]Stmt`, `[]*Comment`) resolves nowhere,
@@ -490,8 +500,7 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 				}
 			}
 			if rv.Type().Name() == "" {
-				td := AnonSliceTypX(AnonExprOf(rv.Type().Elem()))
-				td.Elem = HostPkgElemTypedef(rv.Type().Elem())
+				td := HostSliceTypOf(rv.Type().Elem())
 				if rv.IsNil() {
 					return &runtime.TypedNil{Typ: td}
 				}

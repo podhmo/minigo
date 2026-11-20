@@ -182,6 +182,14 @@ func (e *Env) keyOf(td *runtime.TypeDef) string {
 	}
 	if td.Anon != nil {
 		if s := runtime.TypSpelling(td.Anon, td); s != "" {
+			// a host-derived element spells the composite by the host
+			// type's qualified name — matching hostTypeKey's
+			// "anon:"+rt.String() form — where the bare Anon ident
+			// would collide across packages ([]*inspect.File vs
+			// []*ast.Field both spell []*Field).
+			if hs := e.hostElemKey(td); hs != "" {
+				return "anon:" + hs
+			}
 			return "anon:" + s
 		}
 	}
@@ -241,6 +249,54 @@ func (e *Env) bindsKeyOf(td *runtime.TypeDef) string {
 	}
 	sb.WriteString("]")
 	return sb.String()
+}
+
+// hostElemKey spells a typedef by the host type identity it or its
+// element chain carries — the same words reflect's rt.String() uses —
+// or "" when no host identity is recorded, when the composite is an
+// array (the length lives only in the Anon spelling), or when the
+// Anon element is already package-qualified (a bound facade's stamped
+// []reflect.Value keys by its own spelling, not the internal
+// *minireflect.RValue element).
+func (e *Env) hostElemKey(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if td.HostIdent != nil {
+		return td.HostIdent.String()
+	}
+	if td.Elem != nil {
+		inner := e.hostElemKey(td.Elem)
+		if inner == "" {
+			return ""
+		}
+		switch td.Kind {
+		case runtime.KindPointer:
+			return "*" + inner
+		case runtime.KindSlice:
+			if at, isArr := td.Anon.(*ast.ArrayType); isArr {
+				if at.Len != nil || runtime.AnonEltQualified(at.Elt) {
+					return ""
+				}
+			}
+			return "[]" + inner
+		case runtime.KindChan:
+			pre := "chan "
+			if ct, isChan := td.Anon.(*ast.ChanType); isChan {
+				if runtime.AnonEltQualified(ct.Value) {
+					return ""
+				}
+				switch ct.Dir {
+				case ast.RECV:
+					pre = "<-chan "
+				case ast.SEND:
+					pre = "chan<- "
+				}
+			}
+			return pre + inner
+		}
+	}
+	return ""
 }
 
 // spellOf renders a typedef the way it would appear inside a composite

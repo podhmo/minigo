@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"reflect"
 	"syscall"
 
 	intbind "github.com/podhmo/minigo/internal/bind"
@@ -106,7 +107,9 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			for i, en := range entries {
 				el[i] = &runtime.GoValue{V: en}
 			}
-			return &runtime.Tuple{Elems: []runtime.Value{&runtime.Slice{Elems: el}, stdlib.ErrVal(err)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{
+				&runtime.Slice{Elems: el, Typ: hostbridge.HostSliceTypOf(reflect.TypeFor[fs.DirEntry]())},
+				stdlib.ErrVal(err)}}, nil
 		}),
 		// Getwd/Chdir operate on the engine's virtual cwd (see WithWorkingDir):
 		// the host process cwd is never touched, so scripts can "cd" freely
