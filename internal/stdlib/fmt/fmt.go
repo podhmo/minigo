@@ -1636,8 +1636,8 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		// Go's fmt prints maps in sorted-key order (fmtsort), not
 		// insertion order — sort a copy of Order the same way.
 		order, _ := v.SnapshotKeys()
-		sort.SliceStable(order, func(i, j int) bool {
-			a, b := order[i], order[j]
+		var keyLess func(a, b runtime.Value) bool
+		keyLess = func(a, b runtime.Value) bool {
 			// Mixed-type keys (map[any]) compare by the concrete
 			// type first, like fmtsort's interface rule.
 			ra, ta := mapKeyRank(a)
@@ -1654,11 +1654,31 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			if stdlib.LessScript(b, a) {
 				return false
 			}
-			// unordered kinds (bool, composites, mixed): order by the
+			// composite keys compare element by element on the
+			// underlying values like gc's fmtsort — a key's own
+			// rendered text never decides ([2]B whose String maps
+			// true to "a" still orders false before true).
+			ae, be, ok := fmtsortKeyElems(a, b)
+			if ok {
+				n := min(len(ae), len(be))
+				for i := 0; i < n; i++ {
+					if keyLess(ae[i], be[i]) {
+						return true
+					}
+					if keyLess(be[i], ae[i]) {
+						return false
+					}
+				}
+				return len(ae) < len(be)
+			}
+			// unordered kinds (mixed, unrenderable): order by the
 			// rendered key like fmtsort's fallback.
 			ka := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: a, depth: s.depth + 1}).render('v', nested(f))
 			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', nested(f))
 			return ka < kb
+		}
+		sort.SliceStable(order, func(i, j int) bool {
+			return keyLess(order[i], order[j])
 		})
 		kt, vt := stdlib.MapElemTyps(v.Typ)
 		ev := elemVerb(verb)
@@ -2074,6 +2094,28 @@ func UnwrapFmtArg(v any) any {
 // hand script values to Go formatters through it.
 func NewFmtValue(c runtime.MemberCaller, x runtime.Value) fmt.Formatter {
 	return &fmtValue{c: c, x: x, nilSyntax: true}
+}
+
+// fmtsortKeyElems returns the elements two same-shape composite keys
+// compare by — a slice's Elems (an array is a Slice carrying an
+// array typedef) or a struct's Fields. ok is false for any other
+// pair or for differing kinds.
+func fmtsortKeyElems(a, b runtime.Value) ([]runtime.Value, []runtime.Value, bool) {
+	switch av := a.(type) {
+	case *runtime.Slice:
+		bv, ok := b.(*runtime.Slice)
+		if !ok {
+			return nil, nil, false
+		}
+		return av.Elems, bv.Elems, true
+	case *runtime.Struct:
+		bv, ok := b.(*runtime.Struct)
+		if !ok {
+			return nil, nil, false
+		}
+		return av.Fields, bv.Fields, true
+	}
+	return nil, nil, false
 }
 
 // mapKeyRank ranks a map key by its concrete type like go's
