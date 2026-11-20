@@ -88,6 +88,11 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 	}
 	switch x := v.(type) {
 	case *runtime.Named:
+		// gc encodes a 32-bit float at its own precision — re-tag the
+		// payload as float32 instead of widening to float64.
+		if f, ok := x.V.(float64); ok && jsonUnderlyingName(x.Typ) == "float32" {
+			return float32(f)
+		}
 		// unsigned basics store int64 internally; a decode that fit a
 		// uint64 through ParseUint (>MaxInt64) reads back negative —
 		// re-read the payload through the unsigned tag before emitting.
@@ -178,6 +183,17 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 			return jsonCycle{via: typeStrOf(x)}
 		}
 		defer delete(seen, x)
+		// a []byte marshals as a base64 string — named element types
+		// count too ([]MyByte), while an [N]byte array stays
+		// element-wise.
+		if x.Typ != nil && !stdlib.IsArrayTyp(x.Typ) && jsonSliceIsByte(c, x.Typ) {
+			out := make([]byte, len(x.Elems))
+			for i, e := range x.Elems {
+				u, _ := runtime.Unwrap(e).(int64)
+				out[i] = byte(u)
+			}
+			return out
+		}
 		out := make([]any, len(x.Elems))
 		// slice elements marshal through their backing array, which
 		// gc always treats as addressable; array elements keep the
@@ -250,4 +266,26 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 	default:
 		return v
 	}
+}
+
+// jsonSliceIsByte reports whether td's element type is byte/uint8 —
+// a named byte typedef counts too, matching gc's `[]MyByte` base64
+// rule.
+func jsonSliceIsByte(c runtime.MemberShapeCaller, td *runtime.TypeDef) bool {
+	if stdlib.ByteSliceTyp(td) {
+		return true
+	}
+	et := td.Elem
+	if et == nil && c != nil {
+		// a named element type resolves through the caller —
+		// `[]MyByte` spells its elem "main.MyByte", not "uint8".
+		if r, err := c.ElemOf(td); err == nil {
+			et = r
+		}
+	}
+	if et == nil {
+		return false
+	}
+	un := jsonUnderlyingName(et)
+	return un == "byte" || un == "uint8"
 }
