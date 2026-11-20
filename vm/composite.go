@@ -3020,8 +3020,7 @@ func hostStructCopy(x runtime.Value) runtime.Value {
 // back copied (or came back unchanged for the same reason
 // HostStructCopy would report false).
 func hostNewStructTagged(v runtime.Value) bool {
-	n, ok := v.(*runtime.Named)
-	return ok && n.Typ != nil && n.Typ.Kind == runtime.KindStruct && n.Typ.HostNew != nil
+	return runtime.HostStructTagged(v)
 }
 
 // memberOf resolves a package member through MemberV so that a lazy
