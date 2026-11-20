@@ -1470,8 +1470,8 @@ func DisplayName(td *TypeDef) string {
 	// AnonExprOf spells a named element unqualified ([]DirEntry where
 	// gc prints []fs.DirEntry) while Elem keeps the host package's
 	// name — through a pointer wrapper too ([]*inspect.File, not
-	// []*File). Maps stay on the anon spelling — only it carries the
-	// key.
+	// []*File). Maps spell the key through the anon expression — the
+	// typedef has no key slot, so a named host key still spells bare.
 	if td.Elem != nil && hostElemTypedef(td.Elem) != nil {
 		switch td.Kind {
 		case KindChan:
@@ -1491,8 +1491,22 @@ func DisplayName(td *TypeDef) string {
 			}
 		case KindSlice:
 			at, isArr := td.Anon.(*ast.ArrayType)
-			if !isArr || (at.Len == nil && !AnonEltQualified(at.Elt)) {
+			if !isArr {
 				return "[]" + DisplayName(td.Elem)
+			}
+			if !AnonEltQualified(at.Elt) {
+				if at.Len == nil {
+					return "[]" + DisplayName(td.Elem)
+				}
+				// a host array spells the same element preference with
+				// its length in front ([3]fs.DirEntry).
+				return "[" + TypLenName(at.Len) + "]" + DisplayName(td.Elem)
+			}
+		case KindMap:
+			// the anon spelling carries the key; a named element still
+			// wants the host package's name (map[string]fs.DirEntry).
+			if mt, isMap := td.Anon.(*ast.MapType); isMap && !AnonEltQualified(mt.Value) {
+				return "map[" + TypGoSpelling(mt.Key, td) + "]" + DisplayName(td.Elem)
 			}
 		}
 	}
