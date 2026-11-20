@@ -2782,6 +2782,7 @@ func TestVetReadFileHint(t *testing.T) {
 	want := []string{
 		"b from os.ReadFile is only read as text — io.Copy(&strings.Builder{}, r) keeps the bytes on the host",
 		"b from os.ReadFile is only read as text — io.Copy(&strings.Builder{}, r) keeps the bytes on the host",
+		"b from os.ReadFile is only read as text — io.Copy(&strings.Builder{}, r) keeps the bytes on the host",
 	}
 	if diff := cmp.Diff(want, hints); diff != "" {
 		t.Errorf("hints mismatch (-want +got):\n%s", diff)

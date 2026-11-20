@@ -53,3 +53,25 @@ func main() {
 	_ = shadowed
 	_ = unused
 }
+
+type holder struct{ b []byte }
+
+func fieldNameSame(p string) (holder, string) {
+	var h holder
+	b, _ := os.ReadFile(p)
+	h.b = []byte{1}     // field name `b` is not a use of the var
+	return h, string(b) // hint still fires
+}
+
+func shadowImport() int {
+	type faker struct{ n int }
+	os := faker{n: 7}
+	return os.n // `os` rebound: os.ReadFile below is a method call
+}
+
+func shadowBuiltin(p string) int {
+	string := func(any) string { return "x" }
+	b, _ := os.ReadFile(p)
+	_ = string(b) // a foreign call sees the bytes — no hint
+	return len(b) - 1
+}

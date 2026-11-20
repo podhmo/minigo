@@ -127,7 +127,7 @@ var FileBudgets = map[string]int{
 	"internal/typedef/dispatch_deferred_typ.go": 93,
 	"internal/typedef/iface_reqs.go":            197,
 	"internal/vet/vet.go":                       182,
-	"internal/vet/readfile_hint.go":              95,
+	"internal/vet/readfile_hint.go":             109,
 	"internal/typedef/iterseq.go":               104,
 	"internal/typedef/respath.go":               217,
 	"internal/stdlib/fmt/fmt.go":                1798,

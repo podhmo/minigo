@@ -98,7 +98,7 @@ func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) 
 		}
 		for _, decl := range sf.AST.Decls {
 			scanStubCalls(ctx, decl, imports, locals, &out, deps)
-			scanReadFileHints(decl, imports, deps.Position, &out)
+			scanReadFileHints(decl, imports, locals, deps.Position, &out)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
