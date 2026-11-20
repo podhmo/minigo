@@ -4,9 +4,14 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"reflect"
+	"unsafe"
 )
 
 func main() {
+	// a host-scalar key in an ellipsis literal — gob's decOpTable
+	// shape; EllipsisLen must read the boxed reflect.Kind.
+	fmt.Println(unsafe.Sizeof([...]byte{reflect.Bool: 1}))
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(map[string]int{"a": 1}); err != nil {
 		fmt.Println("enc:", err)
