@@ -44,6 +44,11 @@ type Inferer struct {
 	// with different type args (Getter[U, int] beside Getter[string,
 	// V]) must unify each position separately.
 	ifacePairs map[ifaceTriple]bool
+	// ifaceDepth bounds the method-set walk: a substituted requirement
+	// that nests one level deeper each round (M() N[N[T]]) spells new
+	// index args at every visit, so the pair dedup never fires — the
+	// depth cap is the backstop that still terminates the walk.
+	ifaceDepth int
 }
 
 // ifaceTriple keys the unifyIfaceMethods dedup: pattern typedef,
@@ -454,6 +459,11 @@ func (i *Inferer) unifyIfaceMethods(ctx *TypeDef, tset map[string]bool, binds ma
 		}
 		sb.WriteByte(0)
 	}
+	if i.ifaceDepth >= 16 {
+		return
+	}
+	i.ifaceDepth++
+	defer func() { i.ifaceDepth-- }()
 	key := ifaceTriple{bt: bt, conc: conc, args: sb.String()}
 	if i.ifacePairs == nil {
 		i.ifacePairs = map[ifaceTriple]bool{}
