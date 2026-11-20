@@ -23,6 +23,7 @@ import (
 
 	"github.com/podhmo/minigo/index"
 	xinspect "github.com/podhmo/minigo/inspect"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
@@ -283,7 +284,7 @@ func Install(bind stdlib.Bind, h Hooks) {
 			for i, sf := range p.Files {
 				xs[i] = &runtime.GoValue{V: xinspect.NewFile(p, sf)}
 			}
-			return &runtime.Slice{Elems: xs}, nil
+			return hostSlice[*xinspect.File](xs), nil
 		}),
 		"Imports": bf("Imports", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -298,7 +299,7 @@ func Install(bind stdlib.Bind, h Hooks) {
 			for i, imp := range imps {
 				xs[i] = &runtime.GoValue{V: imp}
 			}
-			return &runtime.Slice{Elems: xs}, nil
+			return hostSlice[*xinspect.Import](xs), nil
 		}),
 		"Comments": bf("Comments", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -708,7 +709,7 @@ func Install(bind stdlib.Bind, h Hooks) {
 				sid := sid
 				xs[i] = &runtime.GoValue{V: sid}
 			}
-			return &runtime.Slice{Elems: xs}, nil
+			return hostSlice[runtime.SymbolID](xs), nil
 		}),
 		// ---- value layer ----
 		"Value": bf("Value", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -806,12 +807,20 @@ func (h Hooks) fileView(name string) (runtime.Value, error) {
 	return &runtime.GoValue{V: xinspect.NewFile(p, sf)}, nil
 }
 
+// boxedSlice packs host values as boxed elements of a typed slice.
 func boxedSlice[T any](xs []T) *runtime.Slice {
 	vs := make([]runtime.Value, len(xs))
 	for i, x := range xs {
 		vs[i] = &runtime.GoValue{V: x}
 	}
-	return &runtime.Slice{Elems: vs}
+	return hostSlice[T](vs)
+}
+
+// hostSlice tags a slice of boxed host values with T's host typedef —
+// %T on it reads the element's qualified name ([]ast.Stmt), not a
+// bare element spelling or interface{}.
+func hostSlice[T any](xs []runtime.Value) *runtime.Slice {
+	return &runtime.Slice{Elems: xs, Typ: hostbridge.HostSliceTypOf(reflect.TypeFor[T]())}
 }
 
 func goView[T any](v runtime.Value, what string) (*T, error) {
@@ -1020,7 +1029,7 @@ func hostFields(n int, at func(i int) reflect.Type) *runtime.Slice {
 	for i := 0; i < n; i++ {
 		xs[i] = &runtime.GoValue{V: &xinspect.Field{Type: xinspect.NewHostType(at(i))}}
 	}
-	return &runtime.Slice{Elems: xs}
+	return hostSlice[*xinspect.Field](xs)
 }
 
 // hostMethodPkg recovers the package a host method was declared in from
@@ -1076,7 +1085,7 @@ func (h Hooks) declsOf(v runtime.Value) (runtime.Value, error) {
 				xs = append(xs, &runtime.GoValue{V: xinspect.NewDecl(p, d)})
 			}
 		}
-		return &runtime.Slice{Elems: xs}, nil
+		return hostSlice[*xinspect.Decl](xs), nil
 	}
 	p, err := h.pkgOf(runtime.Unwrap(v))
 	if err != nil {
@@ -1099,7 +1108,7 @@ func (h Hooks) declsOf(v runtime.Value) (runtime.Value, error) {
 			}
 		}
 	}
-	return &runtime.Slice{Elems: xs}, nil
+	return hostSlice[*xinspect.Decl](xs), nil
 }
 
 // ownerOf implements inspect.OwnerOf: value -> its declaring package.
