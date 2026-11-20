@@ -857,6 +857,12 @@ func hostNamedConst(rt reflect.Type, u *runtime.UConst) (runtime.Value, error) {
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, rt)
 		}
 		w := runtime.WrapInt64(cv)
+		if u.Wrap && len(u.WrapOps) > 0 {
+			var wok bool
+			if w, wok = runtime.WrapReplayAtKind(u, rt.Kind()); !wok {
+				return nil, fmt.Errorf("constant %s: integer divide by zero", u.V)
+			}
+		}
 		if rv.CanInt() {
 			rv.SetInt(w)
 			if !u.Wrap && (rv.Int() != w || constant.Compare(cv, token.NEQ, constant.MakeInt64(w))) {

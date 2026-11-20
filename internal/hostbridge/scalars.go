@@ -273,9 +273,13 @@ func ConstToHostInt(u *runtime.UConst, t reflect.Type) (runtime.Value, bool) {
 	}
 	rv := reflect.New(t).Elem()
 	if u.Wrap {
-		// a non-constant shift result truncates to t's width: the
-		// reflect setters store the low bits.
-		w := runtime.WrapInt64(c)
+		// a non-constant shift result — and ops deferred on it — is
+		// evaluated at t's width, then the reflect setters store the
+		// low bits.
+		w, wok := runtime.WrapReplayAtKind(u, t.Kind())
+		if !wok {
+			return nil, false
+		}
 		switch t.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			rv.SetInt(w)
