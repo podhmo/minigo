@@ -548,6 +548,12 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			// the host pointer to the same package path and name; other
 			// *T fall back to comparing the printed type spelling.
 			if et.HostNew != nil {
+				// a host facade boxes a wrapper type but asserts as the
+				// API type it spells — the scriptFile/EngineStdout
+				// wrappers are *os.File as far as the script sees.
+				if at, ok := gv.V.(interface{ APIType() hostbridge.Type }); ok {
+					return at.APIType() == et.HostType()
+				}
 				return hostbridge.TypeOf(gv.V) == et.HostType()
 			}
 			if rt := hostbridge.TypeOf(gv.V); rt.Kind() == hostbridge.KindPointer && v.hostTypedefIs(rt.Elem(), et) {

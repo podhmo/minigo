@@ -1,0 +1,6 @@
+true <nil>
+f.txt
+f.txt
+read f.txt: file already closed
+true
+true
