@@ -208,7 +208,7 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	// any(nilMap)` trap regardless of the values' wrapper shapes.
 	// Arrays stay comparable-by-element here: [N]T keeps the slice Kind
 	// on its typedef, so only a non-array shape panics this early.
-	if atd != nil && uncomparableTyp(atd) && !isArrayTyp(atd) {
+	if atd != nil && uncomparableTyp(atd) && !runtime.ArrayTypedef(atd) {
 		panic(runtime.ComparingUncomparablePanic(spelledTyp(atd)))
 	}
 	an, aNamed := a.(*runtime.Named)
@@ -1612,12 +1612,12 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			// compares element-wise (issue23545) — the named tag already
 			// peels above for scalars, so the same lax rule applies here.
 			if !runtime.TypIdentical(av.Typ, bs.Typ) &&
-				!(av.Typ != nil && bs.Typ != nil && isArrayTyp(av.Typ) && isArrayTyp(bs.Typ) && v.tdShapeEq(av.Typ, bs.Typ)) {
+				!(av.Typ != nil && bs.Typ != nil && runtime.ArrayTypedef(av.Typ) && runtime.ArrayTypedef(bs.Typ) && v.tdShapeEq(av.Typ, bs.Typ)) {
 				return false
 			}
 			// array-typed values compare element-wise; plain slices are
 			// uncomparable and the comparison panics, like Go.
-			if isArrayTyp(av.Typ) && isArrayTyp(bs.Typ) {
+			if runtime.ArrayTypedef(av.Typ) && runtime.ArrayTypedef(bs.Typ) {
 				if len(av.Elems) != len(bs.Elems) {
 					return false
 				}
@@ -1710,7 +1710,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 				// containers. Distinct ARRAY objects still
 				// fold to different objects (&x1[0] != &x2[0]).
 				if zeroSizeValue(as.Elems[ai]) && zeroSizeValue(bs.Elems[bi]) {
-					if as != bs && isArrayTyp(as.Typ) && isArrayTyp(bs.Typ) {
+					if as != bs && runtime.ArrayTypedef(as.Typ) && runtime.ArrayTypedef(bs.Typ) {
 						return false
 					}
 					return true
