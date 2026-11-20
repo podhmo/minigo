@@ -516,11 +516,21 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	// wroteIndex tracks the emitted ones: a literal '[' in the format
 	// text ("wrap [%w]") is not an index.
 	wroteIndex := false
+	verbatimIndex := false
 	sbIdx := func(sb *strings.Builder, n int) {
 		sb.WriteByte('[')
 		sb.WriteString(strconv.Itoa(n))
 		sb.WriteByte(']')
 		wroteIndex = true
+	}
+	// emitV writes directive-interior spec text: a '[' inside a
+	// directive is index syntax (unlike a literal '[' in plain text,
+	// which is not), so mark a surviving index for the park check.
+	emitV := func(sb *strings.Builder, s string) {
+		if strings.IndexByte(s, '[') >= 0 {
+			verbatimIndex = true
+		}
+		sb.WriteString(s)
 	}
 	// emitStar writes star k's `*` operand over spec[lo:hi] inside the
 	// directive: an in-range, non-rvalue slot is pinned to [st+1] (an
@@ -566,12 +576,12 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 		if ev.nw > 0 {
 			emitStar(sb, spec, ev, 0, ev.pos, hiW)
 		} else {
-			sb.WriteString(spec[ev.pos:hiW])
+			emitV(sb, spec[ev.pos:hiW])
 		}
 		if len(ev.stars) > ev.nw {
 			emitStar(sb, spec, ev, ev.nw, ev.posP, ev.posV)
 		} else {
-			sb.WriteString(spec[ev.posP:ev.posV])
+			emitV(sb, spec[ev.posP:ev.posV])
 		}
 	}
 	// pin emits a directive with every operand index made explicit —
@@ -584,7 +594,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 		emitCore(sb, spec, ev, spec[ev.pct:ev.pos])
 		if ev.valIdx[0] >= 0 {
 			if ev.valIdx[0] >= ev.posV {
-				sb.WriteString(spec[ev.valIdx[0]:ev.valIdx[1]])
+				emitV(sb, spec[ev.valIdx[0]:ev.valIdx[1]])
 			}
 			// a [n] at an earlier site already printed verbatim above.
 			sb.WriteString(verb)
@@ -620,7 +630,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 					emitCore(&sb, spec, ev, "%")
 					sb.WriteString("%")
 				} else {
-					sb.WriteString(spec[ev.pct:ev.i])
+					emitV(&sb, spec[ev.pct:ev.i])
 				}
 			case fixRest && ev.badIdx:
 				// a bad [n] prints the verb's BADINDEX marker and its
@@ -638,7 +648,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 				pin(&sb, spec, ev, verb)
 				last = ev.i - 1 + vw
 			default:
-				sb.WriteString(spec[ev.pct:ev.i])
+				emitV(&sb, spec[ev.pct:ev.i])
 			}
 			continue
 		}
@@ -719,20 +729,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	}
 	sb.WriteString(spec[last:tailEnd])
 	if brokenPct >= 0 {
-		if fixRest {
-			starMarkers(&sb, broken)
-			emitCore(&sb, spec, broken, "%")
-			// the lone '%' that opens this marker text closes the
-			// partial's directive as a % verb (printing '%'), leaving
-			// "!(NOVERB)" literal — the same trick pin uses for
-			// MISSING tails.
-			sb.WriteString("%!(NOVERB)")
+		starMarkers(&sb, broken)
+		// emitCore takes the directive's prefix ('%' through flags);
+		// its drops dead `*`s and pins live ones. A trailing '.'
+		// reports %!.(MISSING) like pin's MISSING tail; otherwise the
+		// lone '%' opening the marker text closes the directive as a
+		// % verb, leaving "!(NOVERB)" literal — verbatim would let a
+		// trailing '%' fuse with a following %% diagnostic.
+		emitCore(&sb, spec, broken, spec[brokenPct:broken.pos])
+		if spec[broken.i-1] == '.' {
+			sb.WriteString("%!.(MISSING)")
 		} else {
-			// emitCore drops dead `*`s and pins live ones; a lone '%'
-			// closes the % verb the appended text pairs into, leaving
-			// "!(NOVERB)" literal — verbatim would let the trailing
-			// '%' fuse with a following %% diagnostic.
-			emitCore(&sb, spec, broken, spec[brokenPct:broken.i])
 			sb.WriteString("%!(NOVERB)")
 		}
 	}
@@ -752,7 +759,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	// operand vanished with its '*' (the host's argNum then no longer
 	// matches gc's cursor).
 	needExtra := !hadIndex && argNum < opsLen
-	if (hadIndex || dropped || needExtra) && !wroteIndex {
+	if (hadIndex || dropped || needExtra) && !wroteIndex && !verbatimIndex {
 		ops = append(ops, "")
 		sb.WriteString("%[")
 		sb.WriteString(strconv.Itoa(len(ops)))
