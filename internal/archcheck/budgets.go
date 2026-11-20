@@ -134,7 +134,7 @@ var FileBudgets = map[string]int{
 	"pkg/locator/locator.go":                       747,
 	"pkg/modulewalk/modulewalk.go":                 541,
 	"repl/complete.go":                             1389,
-	"repl/pkginfo.go":                              149,
+	"repl/pkginfo.go":                              162,
 	"repl/load.go":                                 662,
 	"repl/repl.go":                                 1259,
 	"replhooks.go":                                 55,
@@ -305,4 +305,5 @@ var FileBudgetExceptions = map[string]string{
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 	"internal/typedef/dispatch.go":       "ifacekey: *E over an interface has an empty method set; plain-name promotion for qualified reqs",
 	"internal/typedef/iface_reqs.go":     "ifacekey: declared-over-interface reqs and sigs chase the underlying spec type",
+	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch",
 }
