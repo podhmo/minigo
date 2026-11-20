@@ -976,8 +976,25 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 		c.emit(bytecode.OpReturn, len(c.results), 0, st.Pos())
 		return
 	} else {
+		// a single `any` result accepts a result tuple — the repl's
+		// `__stepN() any { return f() }` convention relies on it.
+		anyResult := len(st.Results) == 1 && len(c.results) == 1 && func() bool {
+			switch t := c.results[0].(type) {
+			case *ast.Ident:
+				return t.Name == "any"
+			case *ast.InterfaceType:
+				return t.Methods == nil || len(t.Methods.List) == 0
+			}
+			return false
+		}()
 		for i, r := range st.Results {
+			if anyResult {
+				if _, isCall := ast.Unparen(r).(*ast.CallExpr); isCall {
+					c.spreadTuple = true
+				}
+			}
 			c.expr(r)
+			c.spreadTuple = false
 			// `return e` coerces e to the declared result type — `return nil`
 			// under a *T result yields a typed nil, under any an IfaceNil.
 			if i < len(c.results) && c.results[i] != nil {
