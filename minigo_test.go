@@ -196,13 +196,13 @@ func TestCallArgs(t *testing.T) {
 	// not reach the caller's backing (the Engine.Call arg contract).
 	ab := []byte("hello")
 	run(t, e, "./testdata/callargs", "MutateB", ab)
-	if got := string(ab); got != "hello" {
-		t.Errorf("MutateB: caller slice changed to %q", got)
+	if diff := cmp.Diff("hello", string(ab)); diff != "" {
+		t.Errorf("MutateB: caller slice changed (-want +got):\n%s", diff)
 	}
 	as := []string{"a", "b"}
 	run(t, e, "./testdata/callargs", "MutateS", as)
-	if got := as[0]; got != "a" {
-		t.Errorf("MutateS: caller slice changed to %q", got)
+	if diff := cmp.Diff("a", as[0]); diff != "" {
+		t.Errorf("MutateS: caller slice changed (-want +got):\n%s", diff)
 	}
 	// a shared (non-cyclic) sub-slice still unboxes at every reference.
 	shs := []int{1}
