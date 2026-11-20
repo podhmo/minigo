@@ -430,7 +430,10 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 		a = n.V
 	}
 	if n, ok := b.(*runtime.Named); ok {
-		if aTd != nil && !sameTypeDef(aTd, n.Typ) {
+		// a `type A = B` alias operand is the target type itself —
+		// `var m os.FileMode` compares equal to an `fs.FileMode`
+		// value, like gc.
+		if aTd != nil && !sameTypeDef(v.peelAlias(aTd), v.peelAlias(n.Typ)) {
 			// a nil operand asks nilness, not typedef identity:
 			// `s == nil` on a nilable named type is lawful and true
 			// when s holds nil — only a non-nilable named type
