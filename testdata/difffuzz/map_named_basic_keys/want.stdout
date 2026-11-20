@@ -40,7 +40,7 @@ main.K time.Month July [b]
 main.K
 map[k:1]
 {"1":1} <nil>
-{"a":1} <nil>
+{"T-a":1} <nil>
 {"I-3":1} <nil>
 {"3":1} <nil>
 map[k:1 kk:2 kkkkk:5] <nil>
