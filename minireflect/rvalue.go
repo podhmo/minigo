@@ -36,6 +36,11 @@ type RValue struct {
 	// EngineStdout.Write's output redirect — survives the reflect path
 	// instead of being unwrapped to the API type's real method.
 	mexpr string
+	// rtSig overrides the host func's reported Type: a host method
+	// enumerated on a pointer type spells its receiver *T publicly
+	// (gc's Method.Type and Method.Func.Type agree), even though the
+	// underlying real method takes the value form.
+	rtSig reflect.Type
 }
 
 // host reports whether this value delegates to a real reflect.Value.
@@ -501,6 +506,9 @@ func (v *RValue) Type() *RType {
 	v.mustValid("Type")
 	if v.host() {
 		rt := v.rv.Type()
+		if v.rtSig != nil {
+			rt = v.rtSig
+		}
 		// a host facade reports its API type — reflect.TypeOf(os.Stdout)
 		// is *os.File, not the engine's wrapper, and assert/compare on
 		// the RType sees the same identity (APITypeBox). An
