@@ -2,6 +2,7 @@ package minigo
 
 import (
 	"fmt"
+	"go/ast"
 	"reflect"
 	"slices"
 	"strings"
@@ -156,6 +157,20 @@ func (e *Engine) typeIDOfSlow(td *runtime.TypeDef) runtime.TypeID {
 		}
 	}
 	if td.Elem != nil {
+		// the element key drops the parts the typedef has no slot
+		// for — an array's length and a map's key — so composites
+		// whose Anon carries them spell those parts into the id, or
+		// [3]T and [4]T (and map[string]T and map[int]T) collide.
+		switch td.Kind {
+		case runtime.KindMap:
+			if mt, isMap := td.Anon.(*ast.MapType); isMap {
+				return runtime.TypeID(fmt.Sprintf("anon:%d:map[%s]%s%s", td.Kind, runtime.TypGoSpelling(mt.Key, td), e.typeIDOf(td.Elem), args))
+			}
+		case runtime.KindSlice:
+			if at, isArr := td.Anon.(*ast.ArrayType); isArr && at.Len != nil {
+				return runtime.TypeID(fmt.Sprintf("anon:%d:[%s]%s%s", td.Kind, runtime.TypLenName(at.Len), e.typeIDOf(td.Elem), args))
+			}
+		}
 		return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, e.typeIDOf(td.Elem), args))
 	}
 	if td.Name != "" && td.Pkg != nil && td.Pkg.Path != "" {
