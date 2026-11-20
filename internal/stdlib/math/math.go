@@ -82,15 +82,19 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			i, frac := math.Modf(stdlib.FloatOf(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{i, frac}}, nil
 		}),
-		"Log2":            h.Fn("math.Log2", func(a []any) (any, error) { return math.Log2(stdlib.FloatOf(a[0])), nil }, math.Log2),
-		"Log10":           h.Fn("math.Log10", func(a []any) (any, error) { return math.Log10(stdlib.FloatOf(a[0])), nil }, math.Log10),
-		"Log1p":           h.Fn("math.Log1p", func(a []any) (any, error) { return math.Log1p(stdlib.FloatOf(a[0])), nil }, math.Log1p),
-		"Mod":             h.Fn2("math.Mod", func(a []any) (any, error) { return math.Mod(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Mod),
-		"Remainder":       h.Fn2("math.Remainder", func(a []any) (any, error) { return math.Remainder(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Remainder),
-		"Max":             h.Fn2("math.Max", func(a []any) (any, error) { return math.Max(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Max),
-		"Min":             h.Fn2("math.Min", func(a []any) (any, error) { return math.Min(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Min),
-		"Dim":             h.Fn2("math.Dim", func(a []any) (any, error) { return math.Dim(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Dim),
-		"Sin":             h.Fn("math.Sin", func(a []any) (any, error) { return math.Sin(stdlib.FloatOf(a[0])), nil }, math.Sin),
+		"Log2":      h.Fn("math.Log2", func(a []any) (any, error) { return math.Log2(stdlib.FloatOf(a[0])), nil }, math.Log2),
+		"Log10":     h.Fn("math.Log10", func(a []any) (any, error) { return math.Log10(stdlib.FloatOf(a[0])), nil }, math.Log10),
+		"Log1p":     h.Fn("math.Log1p", func(a []any) (any, error) { return math.Log1p(stdlib.FloatOf(a[0])), nil }, math.Log1p),
+		"Mod":       h.Fn2("math.Mod", func(a []any) (any, error) { return math.Mod(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Mod),
+		"Remainder": h.Fn2("math.Remainder", func(a []any) (any, error) { return math.Remainder(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Remainder),
+		"Max":       h.Fn2("math.Max", func(a []any) (any, error) { return math.Max(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Max),
+		"Min":       h.Fn2("math.Min", func(a []any) (any, error) { return math.Min(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Min),
+		"Dim":       h.Fn2("math.Dim", func(a []any) (any, error) { return math.Dim(stdlib.FloatOf(a[0]), stdlib.FloatOf(a[1])), nil }, math.Dim),
+		"Sin":       h.Fn("math.Sin", func(a []any) (any, error) { return math.Sin(stdlib.FloatOf(a[0])), nil }, math.Sin),
+		"Sincos": h.Fn("math.Sincos", func(a []any) (any, error) {
+			s, c := math.Sincos(stdlib.FloatOf(a[0]))
+			return &runtime.Tuple{Elems: []runtime.Value{s, c}}, nil
+		}),
 		"Cos":             h.Fn("math.Cos", func(a []any) (any, error) { return math.Cos(stdlib.FloatOf(a[0])), nil }, math.Cos),
 		"Tan":             h.Fn("math.Tan", func(a []any) (any, error) { return math.Tan(stdlib.FloatOf(a[0])), nil }, math.Tan),
 		"Asin":            h.Fn("math.Asin", func(a []any) (any, error) { return math.Asin(stdlib.FloatOf(a[0])), nil }, math.Asin),
