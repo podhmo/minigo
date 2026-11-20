@@ -1,6 +1,9 @@
 package runtime
 
-import "reflect"
+import (
+	"reflect"
+	"sync"
+)
 
 // HostPtrRef is the location `*p` names when p is a host pointer box — a
 // [GoValue] holding a non-nil reflect pointer. Reads box the pointee,
@@ -55,16 +58,43 @@ func (r *HostPtrRef) elem() (reflect.Value, bool) {
 	return rv.Elem(), true
 }
 
-// Get boxes the pointee for a script read: the `*p` value. The box
-// holds *T over the pointee's own storage — the shape a `var t T`
-// carries — so member writes through `(*p).f` and pointer-receiver
-// methods reach the host storage.
+// hostStructTyp mints the value-side typedef of a host struct's
+// pointee — KindStruct with the reflect identity carried so the intern
+// key lands on the same descriptor the bound type's typedef keys, and
+// a HostNew so assignment copies like `var b bytes.Buffer` does. One
+// descriptor per reflect type, interned here since runtime cannot
+// reach the engine's table.
+var hostStructTyps sync.Map // reflect.Type -> *TypeDef
+
+func hostStructTyp(rt reflect.Type) *TypeDef {
+	if td, ok := hostStructTyps.Load(rt); ok {
+		return td.(*TypeDef)
+	}
+	td := &TypeDef{
+		Name:      rt.String(),
+		Kind:      KindStruct,
+		HostIdent: rt,
+		HostNew:   func() any { return reflect.New(rt).Interface() },
+	}
+	got, _ := hostStructTyps.LoadOrStore(rt, td)
+	return got.(*TypeDef)
+}
+
+// Get boxes the pointee for a script read: the `*p` value. A struct
+// pointee comes back as Named{td(T), GoValue{*T over the pointee's
+// storage}} — the shape a `var t T` carries — so `r := *p` copies the
+// struct, `(*p).f` member writes and pointer-receiver methods reach
+// the host storage, and `%T` spells T. A non-struct pointee returns
+// its value outright.
 func (r *HostPtrRef) Get() (Value, bool) {
 	el, ok := r.elem()
 	if !ok {
 		return nil, false
 	}
-	return &GoValue{V: el.Addr().Interface()}, true
+	if el.Kind() == reflect.Struct {
+		return &Named{Typ: hostStructTyp(el.Type()), V: &GoValue{V: el.Addr().Interface()}}, true
+	}
+	return &GoValue{V: el.Interface()}, true
 }
 
 // Set stores v through the pointer when it is already a host value of
@@ -93,7 +123,13 @@ func (r *HostPtrRef) Set(v Value) bool {
 		return true
 	}
 	if !sv.Type().AssignableTo(el.Type()) {
-		return false
+		// a host struct value lives in a *T box (the `var t T` shape
+		// Get mints), so `*p = *q` arrives as *T for a T slot: the
+		// assignment stores the pointee's struct.
+		if sv.Kind() != reflect.Ptr || sv.IsNil() || !sv.Elem().Type().AssignableTo(el.Type()) {
+			return false
+		}
+		sv = sv.Elem()
 	}
 	el.Set(sv)
 	return true
