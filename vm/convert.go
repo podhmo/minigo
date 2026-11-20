@@ -33,18 +33,6 @@ func isFloat(v runtime.Value) bool {
 	return ok
 }
 
-func toFloat(v runtime.Value) float64 {
-	switch x := v.(type) {
-	case float64:
-		return x
-	case int64:
-		return float64(x)
-	case *runtime.Named:
-		return toFloat(x.V)
-	}
-	return 0
-}
-
 // Convert implements [runtime.VMCaller], for host intrinsics running on
 // this VM's goroutine.
 func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
@@ -55,6 +43,14 @@ func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 
 // convert implements T(x) — a call on a *TypeDef.
 func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
+	return v.convertFrom(td, x, nil)
+}
+
+// convertFrom converts with the source expression's static typedef
+// when the call site knows it (a `var b T` stores a bare *T box — the
+// declared type lives on the slot, not the value, so only the static
+// type can tell it from a real *T host pointer).
+func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.TypeDef) (runtime.Value, error) {
 	// an alias IS its target type: `A(3)` with `type A = uint8` is a
 	// uint8 (%T, interface identity), and a typed const `const a A`
 	// converts the same way.
@@ -177,12 +173,19 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	srcUnsafe := false
 	peeled := false
 	var unsafeBox *runtime.Named
+	srcTag := srcTd
 	for {
 		n, ok := x.(*runtime.Named)
 		if !ok {
 			break
 		}
 		peeled = true
+		if srcTag == nil {
+			// the outermost tag is the source's declared type — a host
+			// struct conversion needs it to tell `var b T` (tagged T)
+			// from a real *T box a host call returned.
+			srcTag = n.Typ
+		}
 		if sameTypeDef(n.Typ, td) {
 			return x, nil
 		}
@@ -399,11 +402,11 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	switch td.Kind {
 	case runtime.KindAlias:
 		if u := v.peelAlias(td); u != nil && u != td {
-			return v.convert(u, x)
+			return v.convertFrom(u, x, srcTd)
 		}
 	case runtime.KindNamedBasic:
 		if u := v.peelNamed(td); u != nil && u != td {
-			cv, err := v.convert(u, x)
+			cv, err := v.convertFrom(u, x, srcTd)
 			if err != nil {
 				return nil, err
 			}
@@ -430,7 +433,7 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	case runtime.KindPointer:
 		return v.convertPointer(td, x, srcUnsafe)
 	case runtime.KindStruct:
-		return v.convertStruct(td, x)
+		return v.convertStruct(td, x, srcTag)
 	case runtime.KindFunc:
 		// generalized inference (Go 1.27): `F(Id)` instantiates the
 		// generic function against F's signature first — the inferred
@@ -494,12 +497,6 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 // stringFromInt converts an integer code point to a one-rune string,
 // range-checked like string(int64) — rune(sx) would truncate before
 // string() could see the out-of-range value (issue15039).
-func stringFromInt(sx int64) string {
-	if sx < 0 || sx > utf8.MaxRune {
-		return "�"
-	}
-	return string(rune(sx))
-}
 
 // unboxGoValue gives a boxed host value the script value of the same
 // shape where one exists, so `[]byte(x)` and `string(x)` see through a
@@ -830,8 +827,14 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 	// by valueCopy (runtime.Copy's Named branch) — cloning again would
 	// only snapshot the snapshot; the call still matters for a box with
 	// no tag of its own (a host function's return bound to a declared
-	// slot).
-	if td.Kind == runtime.KindStruct && td.HostNew != nil && !hostNewStructTagged(x) {
+	// slot). A declared-over-host target (`type MyBuf bytes.Buffer`)
+	// peels to the host struct for the same check — its own typedef
+	// carries no HostNew, but `other := mb` must still copy.
+	ut := v.peelNamed(td)
+	if ut == nil {
+		ut = td
+	}
+	if ut.Kind == runtime.KindStruct && ut.HostNew != nil && !hostNewStructTagged(x) {
 		x = hostStructCopy(x)
 	}
 	if td.Kind == runtime.KindAlias {
@@ -894,19 +897,6 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 // host boundary; a TypedNil re-tags when the underlying shape matches.
 // convComplex reads a value into the complex domain for a conversion:
 // ints and floats promote to complex128, boxed complex values pass.
-func convComplex(x runtime.Value) (complex128, bool) {
-	switch n := x.(type) {
-	case int64:
-		return complex(float64(n), 0), true
-	case float64:
-		return complex(n, 0), true
-	case *runtime.GoValue:
-		if cv, _, ok := asComplex(n); ok {
-			return cv, true
-		}
-	}
-	return 0, false
-}
 
 func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	if u, ok := x.(*runtime.UConst); ok && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
