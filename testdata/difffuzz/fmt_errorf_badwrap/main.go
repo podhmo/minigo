@@ -34,6 +34,14 @@ func main() {
 	fmt.Println(fmt.Errorf("%[3]*[2]w %[1]d", 7, "x", 4))
 	fmt.Println(fmt.Errorf("%.*w", "x", 5))
 	fmt.Println(fmt.Errorf("%[2]*[1]w %[2]d", "x", 4))
+	// an out-of-range index prints %!w(BADINDEX), a missing implicit
+	// one %!w(MISSING); once any [n] reorders, unused operands print
+	// no EXTRA, and a missing `*` operand is BADWIDTH not a trap.
+	fmt.Println(fmt.Errorf("%[9]w", "x"))
+	fmt.Println(fmt.Errorf("%[9]w %d", "x", 3))
+	fmt.Println(fmt.Errorf("%*w", "x"))
+	fmt.Println(fmt.Errorf("%[2]*[1]w", "x"))
+	fmt.Println(fmt.Errorf("%[2]*w", "x"))
 }
 
 type S struct{}
