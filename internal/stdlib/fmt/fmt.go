@@ -192,7 +192,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 					rvalIdx[i] = true
 				}
 			}
-			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], bad, rvalIdx)
+			spec, a2 := rewriteWrapVerbsOps(spec, a[1:], flat[1:], bad, rvalIdx)
 			a = append(a[:1], a2...)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			// like gc: the shape follows the raw count of %w verbs that
@@ -264,7 +264,7 @@ func badWrapOperand(v runtime.VMCaller, x runtime.Value, dir string, stars []int
 // goes in as %-escaped literal text and the sibling verb consumes the
 // operand, leaving no EXTRA. bad lists one entry per %w in verb order,
 // "" for a good operand.
-func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]bool) (string, []any) {
+func rewriteWrapVerbsOps(spec string, ops []any, flat []runtime.Value, bad []string, rvalIdx map[int]bool) (string, []any) {
 	// opsLen is the operand count gc's argNum and [n] indexes span:
 	// operands appended mid-rewrite (a parked "" an rvalue star reads)
 	// must not become reachable by an OOB directive's MISSING/BADINDEX
@@ -427,6 +427,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 	// must keep its value or the sibling verb misprints (and a `*` of
 	// another directive would read the marker as its width).
 	shared := map[int]bool{}
+	valUsed := map[int]bool{}
 	wIdx := map[int]int{}
 	wAtShared := 0
 	for n, ev := range evs {
@@ -439,142 +440,157 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 			}
 		}
 		if c != '%' {
+			valUsed[ev.arg] = true
 			shared[ev.arg] = true
 			for _, st := range ev.stars {
 				shared[st] = true
 			}
 		}
 	}
-	// starSub reroutes a `*` operand's pinned index to a parked ""
-	// operand: an arg that arrived as a reflect.Value is unboxed for %v
-	// already, and a slot gc would read out of range must both make the
-	// host's `*` hit a non-int so it prints its own
-	// %!(BADWIDTH)/%!(BADPREC) — the original arg still prints wherever
-	// an explicit %[K] shares it.
-	starSub := map[int]int{}
-	starPinIdx := func(st int) int {
-		if s, ok := starSub[st]; ok {
-			return s
+	// a `*` operand only read by stars is lifted to a native int so the
+	// host fmt accepts the widths gc does — a bound named int or a
+	// GoValue would print BADWIDTH instead. A slot another directive
+	// also reads as a value keeps its marshalled form, or %T would lie.
+	for _, ev := range evs {
+		for _, st := range ev.stars {
+			if st < opsLen && !valUsed[st] && !rvalIdx[st] && st < len(flat) {
+				ops[st] = starOperand(ops[st], flat[st])
+			}
 		}
-		if st < opsLen && !rvalIdx[st] {
-			return st + 1
-		}
-		ops = append(ops, "")
-		starSub[st] = len(ops)
-		return len(ops)
 	}
-	// pin emits a directive with every operand index made explicit —
-	// width and precision stars get theirs at their own index sites
-	// (an explicit `[n]` the directive already carries is rewritten,
-	// not duplicated) — so the host's cursor lands where gc's argNum
-	// stood, even after a directive that consumed nothing.
-	pin := func(sb *strings.Builder, spec string, ev verbEv, verb byte) {
-		sb.WriteString(spec[ev.pct:ev.pos])
-		if ev.nw > 0 {
-			site := ev.starIdx[0]
-			if site[0] >= 0 {
-				sb.WriteString(spec[ev.pos:site[0]])
+	// deadStar reports whether gc's `*` operand read at ops[st] fails —
+	// out of range or a reflect.Value gc's intFromArg rejects — so the
+	// star prints its own marker and feeds nothing to the directive.
+	deadStar := func(st int) bool { return st >= opsLen || rvalIdx[st] }
+	// starMarkers prints the BADWIDTH/BADPREC marker text of every dead
+	// star, before the directive itself opens: %% inside a directive is
+	// not literal, so the markers have to come first, exactly where gc
+	// prints them.
+	starMarkers := func(sb *strings.Builder, ev verbEv) {
+		for k, st := range ev.stars {
+			if !deadStar(st) {
+				continue
 			}
-			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[0])) + "]")
-			if site[0] >= 0 {
-				sb.WriteString(spec[site[1]:ev.posP])
+			if k < ev.nw {
+				sb.WriteString("%%!(BADWIDTH)")
 			} else {
-				sb.WriteString(spec[ev.pos:ev.posP])
+				sb.WriteString("%%!(BADPREC)")
 			}
+		}
+	}
+	// emitStar writes star k's `*` operand over spec[lo:hi] inside the
+	// directive: an in-range, non-rvalue slot is pinned to [st+1] (an
+	// explicit `[n]` the directive already carries is rewritten, not
+	// duplicated) so the host reads the same operand gc's argNum stood
+	// on. A dead star's `*` byte — and its `[n]` site — is dropped:
+	// its marker already printed, and the directive formats its value
+	// anyway.
+	emitStar := func(sb *strings.Builder, spec string, ev verbEv, k, lo, hi int) {
+		st := ev.stars[k]
+		site := ev.starIdx[k]
+		if deadStar(st) {
+			if site[0] >= 0 {
+				sb.WriteString(spec[lo:site[0]])
+				sb.WriteString(spec[site[1]+1 : hi]) // site[1] holds the '*'
+			} else {
+				sb.WriteString(spec[lo+1 : hi]) // lo holds the implicit '*'
+			}
+			return
+		}
+		if site[0] >= 0 {
+			sb.WriteString(spec[lo:site[0]])
+			sb.WriteString("[" + strconv.Itoa(st+1) + "]")
+			sb.WriteString(spec[site[1]:hi])
 		} else {
-			sb.WriteString(spec[ev.pos:ev.posP])
+			sb.WriteString("[" + strconv.Itoa(st+1) + "]")
+			sb.WriteString(spec[lo:hi])
+		}
+	}
+	// emitCore writes the directive from its '%' through the value
+	// operand's index site, with each `*` pinned or dropped. A dead
+	// precision star takes its '.' with it; an explicit `[n]` the
+	// directive already carries is rewritten, not duplicated.
+	emitCore := func(sb *strings.Builder, spec string, ev verbEv, pct string) {
+		sb.WriteString(pct)
+		hiW := ev.posP
+		if len(ev.stars) > ev.nw && deadStar(ev.stars[ev.nw]) &&
+			hiW-1 >= ev.pos && spec[hiW-1] == '.' {
+			hiW--
+		}
+		if ev.nw > 0 {
+			emitStar(sb, spec, ev, 0, ev.pos, hiW)
+		} else {
+			sb.WriteString(spec[ev.pos:hiW])
 		}
 		if len(ev.stars) > ev.nw {
-			site := ev.starIdx[ev.nw]
-			if site[0] >= 0 {
-				sb.WriteString(spec[ev.posP:site[0]])
-			}
-			sb.WriteString("[" + strconv.Itoa(starPinIdx(ev.stars[ev.nw])) + "]")
-			if site[0] >= 0 {
-				sb.WriteString(spec[site[1]:ev.posV])
-			} else {
-				sb.WriteString(spec[ev.posP:ev.posV])
-			}
+			emitStar(sb, spec, ev, ev.nw, ev.posP, ev.posV)
 		} else {
 			sb.WriteString(spec[ev.posP:ev.posV])
 		}
+	}
+	// pin emits a directive with every operand index made explicit —
+	// the host's implicit cursor no longer matches the operand gc reads
+	// here. A value operand that ran past the list prints gc's MISSING
+	// marker: the emitted %! pair closes into a '%' verb so any `*`
+	// operands are still consumed before the literal text.
+	pin := func(sb *strings.Builder, spec string, ev verbEv, verb string) {
+		starMarkers(sb, ev)
+		emitCore(sb, spec, ev, spec[ev.pct:ev.pos])
 		if ev.valIdx[0] >= 0 {
 			if ev.valIdx[0] >= ev.posV {
 				sb.WriteString(spec[ev.valIdx[0]:ev.valIdx[1]])
 			}
 			// a [n] at an earlier site already printed verbatim above.
-		} else {
+			sb.WriteString(verb)
+		} else if ev.arg < opsLen {
 			sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
+			sb.WriteString(verb)
+		} else {
+			// %!v + literal: after star pins the lone '%' closes the
+			// directive as a '%' verb (consuming the width operand);
+			// with no stars it pairs with the directive's own '%' into
+			// %%. Either way "!verb(MISSING)" prints literally.
+			sb.WriteString("%!" + verb + "(MISSING)")
 		}
-		sb.WriteByte(verb)
 	}
 	last := 0
 	fixRest := false
 	for n, ev := range evs {
 		sb.WriteString(spec[last:ev.pct])
+		// the verb is a whole rune, not one byte — a multi-byte verb's
+		// tail bytes still sit inside spec[last:].
+		_, vw := utf8.DecodeRuneInString(spec[ev.i-1:])
+		verb := spec[ev.i-1 : ev.i-1+vw]
 		last = ev.i
 		c := spec[ev.i-1]
 		if c != 'w' {
 			switch {
 			case c == '%':
-				// %% takes no operand — never pin it.
-				sb.WriteString(spec[ev.pct:ev.i])
-			case fixRest && !ev.indexed && ev.arg >= opsLen:
-				// gc reads past the operand list and prints the
-				// verb's MISSING marker — emit it as text since the
-				// host's cursor may sit earlier. The `*` operands are
-				// still consumed: an out-of-range or non-int one adds
-				// its BADWIDTH/BADPREC marker, and the verb name is a
-				// whole rune, not one byte.
-				for k, st := range ev.stars {
-					mk := "%%!(BADWIDTH)"
-					if k >= ev.nw {
-						mk = "%%!(BADPREC)"
-					}
-					if st >= opsLen {
-						sb.WriteString(mk)
-						continue
-					}
-					if !starOK(ops, st, k >= ev.nw, rvalIdx) {
-						sb.WriteString(mk)
-					}
-					if st != ev.arg && !shared[st] && !consumed[st] {
-						ops[st] = ""
-						sb.WriteString("%[")
-						sb.WriteString(strconv.Itoa(st + 1))
-						sb.WriteString("]s")
-						consumed[st] = true
-					}
-				}
-				_, w := utf8.DecodeRuneInString(spec[ev.i-1:])
-				sb.WriteString("%%!" + spec[ev.i-1:ev.i-1+w] + "(MISSING)")
-				if last < ev.i-1+w {
-					last = ev.i - 1 + w
+				// %% takes no operand — never pin it; a %*% after a
+				// replaced directive still reads its width operand,
+				// which the pin must name explicitly.
+				if fixRest && len(ev.stars) > 0 {
+					starMarkers(&sb, ev)
+					emitCore(&sb, spec, ev, "%")
+					sb.WriteString("%")
+				} else {
+					sb.WriteString(spec[ev.pct:ev.i])
 				}
 			case fixRest && ev.badIdx:
-				// a bad [n] prints the verb's BADINDEX marker and
-				// consumes nothing — emit it as text so host indexing
-				// never reaches a parked operand; each `*` still reads
-				// its slot, printing a marker when gc's read fails.
-				for k, st := range ev.stars {
-					if st < opsLen && starOK(ops, st, k >= ev.nw, rvalIdx) {
-						continue
-					}
-					mk := "%%!(BADWIDTH)"
-					if k >= ev.nw {
-						mk = "%%!(BADPREC)"
-					}
-					sb.WriteString(mk)
-				}
-				sb.WriteString("%%!" + spec[ev.i-1:ev.i] + "(BADINDEX)")
+				// a bad [n] prints the verb's BADINDEX marker and its
+				// value consumes nothing — emit it as text; each `*`
+				// operand still reads its slot, printing a marker when
+				// gc's read fails. The lone '%' of "%!verb" closes the
+				// directive as a '%' verb so the stars stay consumed.
+				starMarkers(&sb, ev)
+				emitCore(&sb, spec, ev, "%")
+				sb.WriteString("%!" + verb + "(BADINDEX)")
+				last = ev.i - 1 + vw
 			case fixRest && !ev.badIdx:
 				// the host's implicit cursor no longer matches the
-				// operand gc reads here — pin it explicitly. Indexed
-				// directives are pinned too: their `*` operands are
-				// still implicit in gc, so the rewrite rebinds them to
-				// the slot gc's argNum stood on — an OOB one indexes a
-				// parked "" and the host prints the BADWIDTH marker.
-				pin(&sb, spec, ev, spec[ev.i-1])
+				// operand gc reads here — pin it explicitly.
+				pin(&sb, spec, ev, verb)
+				last = ev.i - 1 + vw
 			default:
 				sb.WriteString(spec[ev.pct:ev.i])
 			}
@@ -594,13 +610,14 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 		wAt++
 		switch {
 		case lit == "":
-			if fixRest && !ev.badIdx && (ev.indexed || ev.arg < opsLen) {
+			if fixRest && !ev.badIdx {
 				pin(&sb, spec, verbEv{
 					pct: ev.pct, pos: ev.pos, posP: ev.posP,
 					posV: ev.posV, i: ev.i - 1, arg: ev.arg,
 					stars: ev.stars, starIdx: ev.starIdx,
 					valIdx: ev.valIdx, nw: ev.nw,
-				}, 'v')
+				}, "v")
+				last = ev.i
 			} else {
 				sb.WriteString(spec[ev.pct : ev.i-1])
 				sb.WriteByte('v')
@@ -632,13 +649,10 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string, rvalIdx map[int]b
 				sb.WriteString("]s")
 			} else {
 				// the slot stays real for the sibling that claims it:
-				// park the marker on a fresh operand and read it by
-				// index — every later directive is pinned, so the
-				// cursor's landing point no longer matters.
-				ops = append(ops, lit)
-				sb.WriteString("%[")
-				sb.WriteString(strconv.Itoa(len(ops)))
-				sb.WriteString("]s")
+				// the marker prints as escaped literal text, so it
+				// never lands in the operand list for an out-of-range
+				// [n] to read.
+				sb.WriteString(strings.ReplaceAll(lit, "%", "%%"))
 				fixRest = true
 			}
 		}
@@ -910,19 +924,6 @@ func nested(f fmt.State) fmt.State {
 // starInt reads a *-operand value as an int like gc's intFromArg: any
 // integer kind that fits an int (a named int64 like time.Duration
 // qualifies), wrapper boxes and const tokens peeled first.
-// starOK decides whether gc's `*` operand read at ops[st] succeeds: the
-// value must be an in-range signed/unsigned integer, it must not have
-// arrived as a reflect.Value (fmtRValue already flattened it, so
-// provenance rides in rvalIdx), and a precision star rejects negatives
-// while gc happily reads a negative width.
-func starOK(ops []any, st int, prec bool, rvalIdx map[int]bool) bool {
-	wi, ok := starInt(ops[st])
-	if !ok || rvalIdx[st] {
-		return false
-	}
-	return !prec || wi >= 0
-}
-
 func starInt(v runtime.Value) (int, bool) {
 	n := runtime.Unwrap(v)
 	if fv, ok := n.(*fmtValue); ok {
