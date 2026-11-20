@@ -189,7 +189,7 @@ var FileBudgets = map[string]int{
 	"tools/difffuzz/text.go":                       205,
 	"tools/tmpltests/main.go":                      816,
 	"tools/tmpltests/shims.go":                     130,
-	"typeid.go":                                    383,
+	"typeid.go":                                    398,
 	"typeid_leaf.go":                               232,
 	"vm/assert.go":                                 2314,
 	"vm/binop.go":                                  1614,

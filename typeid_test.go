@@ -181,15 +181,15 @@ func TestTypeIDAnonCompositeKeepsLenAndKey(t *testing.T) {
 			},
 		}
 	}
-	if a, b := e.typeIDOf(arr(3)), e.typeIDOf(arr(4)); a == b {
-		t.Errorf("[3]T and [4]T key alike: %q", a)
+	if diff := cmp.Diff(false, e.typeIDOf(arr(3)) == e.typeIDOf(arr(4))); diff != "" {
+		t.Errorf("[3]T and [4]T key alike (-want +got):\n%s", diff)
 	}
-	if a, b := e.typeIDOf(arr(3)), e.typeIDOf(&runtime.TypeDef{
+	if diff := cmp.Diff(false, e.typeIDOf(arr(3)) == e.typeIDOf(&runtime.TypeDef{
 		Kind: runtime.KindSlice,
 		Elem: elem,
 		Anon: &ast.ArrayType{Elt: ast.NewIdent("Duration")},
-	}); a == b {
-		t.Errorf("[3]T and []T key alike: %q", a)
+	})); diff != "" {
+		t.Errorf("[3]T and []T key alike (-want +got):\n%s", diff)
 	}
 	mk := func(key string) *runtime.TypeDef {
 		return &runtime.TypeDef{
@@ -201,11 +201,11 @@ func TestTypeIDAnonCompositeKeepsLenAndKey(t *testing.T) {
 			},
 		}
 	}
-	if a, b := e.typeIDOf(mk("string")), e.typeIDOf(mk("int")); a == b {
-		t.Errorf("map[string]T and map[int]T key alike: %q", a)
+	if diff := cmp.Diff(false, e.typeIDOf(mk("string")) == e.typeIDOf(mk("int"))); diff != "" {
+		t.Errorf("map[string]T and map[int]T key alike (-want +got):\n%s", diff)
 	}
-	if a, b := e.typeIDOf(mk("string")), e.typeIDOf(mk("string")); a != b {
-		t.Errorf("same map typedef keys differently: %q vs %q", a, b)
+	if diff := cmp.Diff(true, e.typeIDOf(mk("string")) == e.typeIDOf(mk("string"))); diff != "" {
+		t.Errorf("same map typedef keys differently (-want +got):\n%s", diff)
 	}
 }
 
