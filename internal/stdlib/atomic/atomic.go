@@ -183,6 +183,11 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 			return nil, fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
 		}
 		set := func(v runtime.Value) error {
+			// the cell keeps its declared type: a *int32 store into
+			// `var c C` (C int32) must not retype c to int32.
+			if c := stdlib.AsCell(args[0]); c != nil && c.Typ != nil {
+				v = &runtime.Named{Typ: c.Typ, V: v}
+			}
 			if !runtime.SetRef(args[0], v) {
 				return fmt.Errorf("%s needs a pointer operand, got %T", name, args[0])
 			}
