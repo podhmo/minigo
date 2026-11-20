@@ -54,10 +54,15 @@ func Lift(x runtime.Value, td *runtime.TypeDef, h *ArgAsHooks, depth int) runtim
 			case reflect.Slice, reflect.Array:
 				x = GoValueOf(rv)
 			case reflect.Map:
-				if !rv.IsNil() {
+				// unnamed host maps only: a named map type (url.Values)
+				// keeps its GoValue box or its methods vanish. MapRange,
+				// not MapKeys+MapIndex — a NaN key's value is
+				// unreachable by lookup.
+				if !rv.IsNil() && rv.Type().Name() == "" {
 					m := runtime.NewMap(nil, rv.Type().Key().Kind() == reflect.Interface)
-					for _, k := range rv.MapKeys() {
-						m.Insert(GoValueOf(k), GoValueOf(rv.MapIndex(k)))
+					it := rv.MapRange()
+					for it.Next() {
+						m.Insert(GoValueOf(it.Key()), GoValueOf(it.Value()))
 					}
 					x = m
 				}
