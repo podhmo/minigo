@@ -40,6 +40,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/pkg/astwalk"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -1976,14 +1977,10 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 	locals := syntax.NewLocalScopes(f.sf.AST)
 	seen := map[runtime.SymbolID]bool{}
 	var out []runtime.SymbolID
-	ast.Inspect(f.sf.AST, func(n ast.Node) bool {
-		se, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
+	for se := range astwalk.Each[*ast.SelectorExpr](f.sf.AST) {
 		x, ok := se.X.(*ast.Ident)
 		if !ok || locals.At(x.Name, x.Pos()) {
-			return true
+			continue
 		}
 		path, ok := local[x.Name]
 		if !ok && !pkgDeclares(f.pkg, x.Name) && !syntax.IsPredeclaredValue(x.Name) && !syntax.IsPredeclaredType(x.Name) {
@@ -2002,8 +1999,7 @@ func UsedSymbolsOf(f *File) []runtime.SymbolID {
 				out = append(out, sid)
 			}
 		}
-		return true
-	})
+	}
 	return out
 }
 
@@ -2016,12 +2012,9 @@ func CommentsOf(f *File) []*Comment {
 		return nil
 	}
 	attached := map[*ast.CommentGroup]bool{}
-	ast.Inspect(f.sf.AST, func(n ast.Node) bool {
-		if g, ok := n.(*ast.CommentGroup); ok {
-			attached[g] = true
-		}
-		return true
-	})
+	for g := range astwalk.Each[*ast.CommentGroup](f.sf.AST) {
+		attached[g] = true
+	}
 	var out []*Comment
 	for _, g := range f.sf.AST.Comments {
 		for _, c := range g.List {

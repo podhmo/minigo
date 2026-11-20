@@ -14,6 +14,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/podhmo/minigo/pkg/astwalk"
 	"github.com/podhmo/minigo/syntax"
 )
 
@@ -151,16 +152,15 @@ func build(files []*syntax.File, lenient bool) (*Index, error) {
 				// number non-alias function-local type decls in source
 				// order — including inside nested function literals — for
 				// the `·gen` spelling inside instantiation arg lists.
-				ast.Inspect(fd.Body, func(n ast.Node) bool {
-					if ts, isTs := n.(*ast.TypeSpec); isTs && !ts.Assign.IsValid() {
+				for ts := range astwalk.Each[*ast.TypeSpec](fd.Body) {
+					if !ts.Assign.IsValid() {
 						gen++
 						if ix.LocalGens == nil {
 							ix.LocalGens = map[*ast.TypeSpec]int{}
 						}
 						ix.LocalGens[ts] = gen
 					}
-					return true
-				})
+				}
 			}
 			switch d := gd.(type) {
 			case *ast.FuncDecl:
