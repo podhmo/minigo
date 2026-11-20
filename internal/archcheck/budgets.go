@@ -339,4 +339,5 @@ var FileBudgetExceptions = map[string]string{
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch",
 	"pkg/locator/locator.go":             "ReplacedImportPath: spell a replace-covered dir by its OldPath",
+	"compile/typehint.go":                "declared host conversions: callOpTyp result hint + CompositeLit/declared-callee arg hints + exprMentionsTypeParam",
 }
