@@ -193,6 +193,72 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 			}
 		}
 	}
+	// an unnamed concrete shape (a bare func literal's signature, a
+	// composite literal's anon type) never records the instantiation's
+	// binds — unify through the base type's own underlying expression
+	// instead: Seq[V] over func(func(int) bool) binds V=int, like gc.
+	if ue := bt.TypeExpr(); ue != nil {
+		subs := map[string]ast.Expr{}
+		for j, name := range bt.TParams {
+			if j < len(idxs) {
+				subs[name] = idxs[j]
+			}
+		}
+		i.UnifyDef(ctx, tset, binds, substTypeExprs(ue, subs), conc)
+	}
+}
+
+// substTypeExprs replaces type-parameter names in a type expression —
+// a local twin of compile's substTypeParams extended with FuncType so
+// a func-typed underlying shape substitutes its signature too.
+func substTypeExprs(e ast.Expr, subs map[string]ast.Expr) ast.Expr {
+	switch t := e.(type) {
+	case *ast.Ident:
+		if a, ok := subs[t.Name]; ok {
+			return a
+		}
+		return t
+	case *ast.ParenExpr:
+		return &ast.ParenExpr{Lparen: t.Lparen, X: substTypeExprs(t.X, subs), Rparen: t.Rparen}
+	case *ast.ArrayType:
+		return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: substTypeExprs(t.Elt, subs)}
+	case *ast.MapType:
+		return &ast.MapType{Map: t.Map, Key: substTypeExprs(t.Key, subs), Value: substTypeExprs(t.Value, subs)}
+	case *ast.StarExpr:
+		return &ast.StarExpr{Star: t.Star, X: substTypeExprs(t.X, subs)}
+	case *ast.Ellipsis:
+		return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: substTypeExprs(t.Elt, subs)}
+	case *ast.ChanType:
+		return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: substTypeExprs(t.Value, subs)}
+	case *ast.IndexExpr:
+		return &ast.IndexExpr{X: t.X, Lbrack: t.Lbrack, Index: substTypeExprs(t.Index, subs), Rbrack: t.Rbrack}
+	case *ast.IndexListExpr:
+		idx := make([]ast.Expr, len(t.Indices))
+		for i, x := range t.Indices {
+			idx[i] = substTypeExprs(x, subs)
+		}
+		return &ast.IndexListExpr{X: t.X, Lbrack: t.Lbrack, Indices: idx, Rbrack: t.Rbrack}
+	case *ast.FuncType:
+		return &ast.FuncType{
+			Func:    t.Func,
+			Params:  substFieldList(t.Params, subs),
+			Results: substFieldList(t.Results, subs),
+		}
+	}
+	return e
+}
+
+func substFieldList(fl *ast.FieldList, subs map[string]ast.Expr) *ast.FieldList {
+	if fl == nil {
+		return nil
+	}
+	out := &ast.FieldList{Opening: fl.Opening, Closing: fl.Closing}
+	for _, f := range fl.List {
+		nf := *f
+		nf.Type = substTypeExprs(f.Type, subs)
+		out.List = append(out.List, &nf)
+	}
+	return out
 }
 
 // CoreTypes is Go's constraint type inference: a bound parameter whose
