@@ -2974,7 +2974,14 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 func (v *RValue) Method(i int) *RValue {
 	v.mustValid("Method")
 	if v.host() {
-		return v.e.wrapHost(v.vc, v.methodRecv().Method(i))
+		if recv, api, facade := v.methodRecv(); facade {
+			// enumeration order is the public type's method set —
+			// the facade's own table lists helpers gc has no names
+			// for (APIType &co), which would shift every index.
+			name := api.Method(i).Name
+			return v.e.wrapHost(v.vc, recv.MethodByName(name))
+		}
+		return v.e.wrapHost(v.vc, v.rv.Method(i))
 	}
 	names := exportedMethodNames(v.e.methodSet(v.td))
 	if i < 0 || i >= len(names) {
@@ -2989,19 +2996,27 @@ func (v *RValue) Method(i int) *RValue {
 // zero Value answers false and `Int` on a box of an int answers 42.
 // The facade's own methods implement exactly those semantics, so bind
 // them on the facade rather than on the box that stores it.
-func (v *RValue) methodRecv() reflect.Value {
-	if fv, ok := v.ifaceVal().(*RValue); ok {
-		return reflect.ValueOf(fv)
+func (v *RValue) methodRecv() (recv reflect.Value, api reflect.Type, facade bool) {
+	// ifaceVal calls Interface(), which panics on a Value obtained from
+	// an unexported host field — a method lookup there must still
+	// answer (invalid), not trap.
+	if v.rv.CanInterface() {
+		switch fv := v.ifaceVal().(type) {
+		case *RValue:
+			return reflect.ValueOf(fv), fv.APIType(), true
+		case *RType:
+			return reflect.ValueOf(fv), fv.APIType(), true
+		}
 	}
-	if ft, ok := v.ifaceVal().(*RType); ok {
-		return reflect.ValueOf(ft)
-	}
-	return v.rv
+	return v.rv, nil, false
 }
 
 func (v *RValue) NumMethod() int {
 	v.mustValid("NumMethod")
 	if v.host() {
+		if _, api, facade := v.methodRecv(); facade {
+			return api.NumMethod()
+		}
 		return v.rv.NumMethod()
 	}
 	return len(exportedMethodNames(v.e.methodSet(v.td)))
@@ -3012,7 +3027,8 @@ func (v *RValue) MethodByName(name string) *RValue {
 	// invisible, like Go.
 	v.mustValid("MethodByName")
 	if v.host() {
-		m := v.methodRecv().MethodByName(name)
+		recv, _, _ := v.methodRecv()
+		m := recv.MethodByName(name)
 		return v.e.wrapHost(v.vc, m)
 	}
 	if !ast.IsExported(name) {
