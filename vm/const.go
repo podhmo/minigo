@@ -746,9 +746,12 @@ func deferWrapOp(ua, ub *runtime.UConst, op bytecode.BinOp) (*runtime.UConst, bo
 
 // constInKind reads a constant payload in the kind of the numeric
 // basic type name: a typed constant `float64(7)` keeps the Int payload
-// it was spelled with, yet its arithmetic is float64 arithmetic. A
-// payload that does not convert (a fractional value for an int name)
-// stays as is so the caller's own check reports it.
+// it was spelled with, yet its arithmetic is float64 arithmetic. The
+// float/complex names round the payload to the type — gc evaluates
+// every typed constant operation in the type's precision, so the
+// operand side reads the same rounded value materialization would
+// mint. A payload that does not convert (a fractional value for an
+// int name) stays as is so the caller's own check reports it.
 func constInKind(u *runtime.UConst, name string) *runtime.UConst {
 	var cv constant.Value
 	switch name {
@@ -759,10 +762,57 @@ func constInKind(u *runtime.UConst, name string) *runtime.UConst {
 	default:
 		cv = constant.ToInt(u.V)
 	}
-	if cv.Kind() == constant.Unknown || cv.Kind() == u.V.Kind() {
+	if cv.Kind() == constant.Unknown {
 		return u
 	}
-	return &runtime.UConst{V: cv, Rune: u.Rune && cv.Kind() == constant.Int}
+	if cv.Kind() != u.V.Kind() || floatConstKind(name) {
+		return roundConstInKind(&runtime.UConst{V: cv, Rune: u.Rune && cv.Kind() == constant.Int}, name)
+	}
+	return u
+}
+
+// floatConstKind reports whether name is a floating/complex basic —
+// the kinds whose constant domain rounds to a fixed width.
+func floatConstKind(name string) bool {
+	return name == "float32" || name == "float64" || name == "complex64" || name == "complex128"
+}
+
+// roundConstInKind rounds a constant payload to a float/complex basic
+// type's precision — the per-operation rounding gc applies to typed
+// constant arithmetic (`float32(0.1) + float32(0.2)` is the float32
+// sum). non-float names pass through untouched.
+func roundConstInKind(u *runtime.UConst, name string) *runtime.UConst {
+	switch name {
+	case "float32":
+		if u.V.Kind() != constant.Float {
+			return u
+		}
+		f32, _ := constant.Float32Val(u.V)
+		return &runtime.UConst{V: constant.MakeFloat64(float64(f32)), Rune: u.Rune}
+	case "float64":
+		if u.V.Kind() != constant.Float {
+			return u
+		}
+		f64, _ := constant.Float64Val(u.V)
+		return &runtime.UConst{V: constant.MakeFloat64(f64), Rune: u.Rune}
+	case "complex64", "complex128":
+		if u.V.Kind() != constant.Complex {
+			return u
+		}
+		var re, im float64
+		if name == "complex64" {
+			f32, _ := constant.Float32Val(constant.Real(u.V))
+			g32, _ := constant.Float32Val(constant.Imag(u.V))
+			re, im = float64(f32), float64(g32)
+		} else {
+			re, _ = constant.Float64Val(constant.Real(u.V))
+			im, _ = constant.Float64Val(constant.Imag(u.V))
+		}
+		return &runtime.UConst{V: constant.BinaryOp(
+			constant.MakeFloat64(re), token.ADD,
+			constant.MakeImag(constant.MakeFloat64(im))), Rune: u.Rune}
+	}
+	return u
 }
 
 // toIntConst converts an integer-valued Float constant to Int kind —
