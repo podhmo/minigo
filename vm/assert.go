@@ -1769,6 +1769,7 @@ func inlineReaches(s, target *runtime.Struct, depth int) bool {
 // that offers no weak storage (an integer address).
 type mintEnt struct {
 	refFn  func() runtime.Value
+	liveFn func() bool
 	boxes  []weak.Pointer[runtime.Named]
 	pins   []runtime.Value
 	pinned runtime.Value
@@ -1779,12 +1780,13 @@ type mintEnt struct {
 const mintBoxCap = 16
 
 // Dead reports whether the referent is unreachable: no permanent pin,
-// no live box, and the weak resolver finds the storage gone.
+// no live box, and the weak probe finds the storage gone. The probe is
+// separate from refFn so the FIFO sweep pays no allocation per entry.
 func (e *mintEnt) Dead() bool {
 	if e.pinned != nil || e.liveBoxes() > 0 {
 		return false
 	}
-	return e.refFn == nil || e.refFn() == nil
+	return e.liveFn == nil || !e.liveFn()
 }
 
 // cellBaseOf unwraps the Named layers of a ref base to the cell it
@@ -1805,13 +1807,15 @@ func cellBaseOf(v runtime.Value) *runtime.Cell {
 // mintWeakRefOf builds the entry's referent resolver over a weak
 // handle on the storage the referent reads through — a variable's
 // cell, an anchored field's owning struct, an index's backing
-// container, the host box itself. The second return is the storage to
-// pin while a minted box lives; nil when the referent is a plain
-// address with no storage (the resolver then stays constant).
-func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
+// container, the host box itself. The second return probes that
+// handle without building the ref (the FIFO sweep's liveness check);
+// the third is the storage to pin while a minted box lives — nil when
+// the referent is a plain address with no storage (the resolver stays
+// constant and the probe reports live forever).
+func mintWeakRefOf(x runtime.Value) (func() runtime.Value, func() bool, runtime.Value) {
 	switch r := x.(type) {
 	case *runtime.Cell:
-		// the closure must not capture r — holding the referent
+		// the closures must not capture r — holding the referent
 		// strongly would make the weak handle meaningless.
 		w := weak.Make(r)
 		return func() runtime.Value {
@@ -1819,7 +1823,7 @@ func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
 				return c
 			}
 			return nil
-		}, r
+		}, func() bool { return w.Value() != nil }, r
 	case *runtime.GoValue:
 		w := weak.Make(r)
 		return func() runtime.Value {
@@ -1827,7 +1831,7 @@ func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
 				return g
 			}
 			return nil
-		}, r
+		}, func() bool { return w.Value() != nil }, r
 	case *runtime.FieldRef:
 		// a variable-based ref keeps its dynamic base — the rebuilt ref
 		// follows a whole-struct rebind the way the original does. Only
@@ -1841,7 +1845,7 @@ func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
 					return nil
 				}
 				return &runtime.FieldRef{Base: cw, Name: name, Def: def, Path: path}
-			}, c
+			}, func() bool { return w.Value() != nil }, c
 		}
 		if st, idx, ok := r.Find(); ok {
 			name := r.Name
@@ -1856,7 +1860,7 @@ func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
 					return nil
 				}
 				return &runtime.FieldRef{Base: s, Name: name, Def: def, Path: []int{idx}}
-			}, st
+			}, func() bool { return w.Value() != nil }, st
 		}
 	case *runtime.IndexRef:
 		if sl := r.Slice(); sl != nil {
@@ -1868,7 +1872,7 @@ func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
 					return nil
 				}
 				return &runtime.IndexRef{Base: s, Key: key}
-			}, sl
+			}, func() bool { return w.Value() != nil }, sl
 		}
 		if m := r.Map(); m != nil {
 			w := weak.Make(m)
@@ -1879,14 +1883,14 @@ func mintWeakRefOf(x runtime.Value) (func() runtime.Value, runtime.Value) {
 					return nil
 				}
 				return &runtime.IndexRef{Base: s, Key: key}
-			}, m
+			}, func() bool { return w.Value() != nil }, m
 		}
 	case *runtime.DerefRef:
 		if pv, ok := runtime.Deref(r.Ptr); ok {
 			return mintWeakRefOf(pv)
 		}
 	}
-	return func() runtime.Value { return x }, nil
+	return func() runtime.Value { return x }, func() bool { return true }, nil
 }
 
 func (e *mintEnt) liveBoxes() int {
@@ -1932,8 +1936,8 @@ func (e *mintEnt) attach(box *runtime.Named, pin runtime.Value) {
 // table.
 func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value, box *runtime.Named) {
 	make_ := func() any {
-		refFn, pin := mintWeakRefOf(ref)
-		ent := &mintEnt{refFn: refFn}
+		refFn, liveFn, pin := mintWeakRefOf(ref)
+		ent := &mintEnt{refFn: refFn, liveFn: liveFn}
 		if box != nil {
 			ent.boxes = append(ent.boxes, weak.Make(box))
 			ent.pins = append(ent.pins, pin)
@@ -1946,7 +1950,7 @@ func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value, box *runtime.Named) {
 	merge := func(e any) {
 		if ent, ok := e.(*mintEnt); ok {
 			var pin runtime.Value
-			ent.refFn, pin = mintWeakRefOf(ref)
+			ent.refFn, ent.liveFn, pin = mintWeakRefOf(ref)
 			if box != nil {
 				ent.attach(box, pin)
 			}
@@ -2023,11 +2027,22 @@ func (v *VM) unsafePtrRoot(box *runtime.Named) {
 	if !ok {
 		return
 	}
-	_, pin := mintWeakRefOf(anchorMintRef(runtime.Unwrap(box)))
+	// the new box roots the referent's storage, not its own payload —
+	// resolve the referent through the entry and pin what it reads
+	// through, or the last strong hold on it goes when the pin lands.
+	pinOf := func(ent *mintEnt) runtime.Value {
+		if ent.refFn != nil {
+			if ref := ent.refFn(); ref != nil {
+				_, _, pin := mintWeakRefOf(anchorMintRef(ref))
+				return pin
+			}
+		}
+		return nil
+	}
 	if p := v.proc.Load(); p != nil {
 		p.AttachUintptr(addr, func(e any) {
 			if ent, isEnt := e.(*mintEnt); isEnt {
-				ent.attach(box, pin)
+				ent.attach(box, pinOf(ent))
 			}
 		})
 		return
@@ -2036,7 +2051,7 @@ func (v *VM) unsafePtrRoot(box *runtime.Named) {
 		if ent.Dead() {
 			delete(v.unsafePtrMint, addr)
 		} else {
-			ent.attach(box, pin)
+			ent.attach(box, pinOf(ent))
 		}
 	}
 }
