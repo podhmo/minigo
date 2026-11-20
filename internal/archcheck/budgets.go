@@ -79,7 +79,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/hostslice.go":          253,
 	"internal/hostbridge/members.go":            135,
 	"internal/hostbridge/scalars.go":            392,
-	"internal/hostbridge/errors.go":             594,
+	"internal/hostbridge/errors.go": 594,
 	"internal/process/process.go":               626,
 	"internal/replhooks/replhooks.go":           69,
 	"internal/semantics/fieldpath.go":           318,
