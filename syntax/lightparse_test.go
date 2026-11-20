@@ -67,4 +67,13 @@ func TestParseImports_BrokenBody(t *testing.T) {
 	if _, _, err := ParseImports(token.NewFileSet(), "b.go", []byte("package p\n\nimport 123\n")); err == nil {
 		t.Fatal("want the header error attached")
 	}
+
+	// a bad path literal keeps the name and the imports read so far
+	name, imports, err = ParseImports(token.NewFileSet(), "b.go", []byte("package p\n\nimport \"fmt\"\nimport \"\\xg\"\n"))
+	if err == nil {
+		t.Fatal("want the unquote error attached")
+	}
+	if name != "p" || len(imports) != 1 || imports[0].Path != "fmt" {
+		t.Fatalf("partial header = %q, %v", name, imports)
+	}
 }

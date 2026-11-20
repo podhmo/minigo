@@ -52,24 +52,27 @@ func ParseImports(fset *token.FileSet, filename string, src []byte) (string, []*
 		return "", nil, err
 	}
 	imports, ierr := importTable(f, filename)
-	if ierr != nil {
-		return "", nil, ierr
-	}
 	var name string
 	if f.Name != nil {
 		name = f.Name.Name
+	}
+	if ierr != nil {
+		return name, imports, ierr
 	}
 	return name, imports, err
 }
 
 // importTable converts an *ast.File's Imports to [Import] entries —
-// ParseFile's spelling, shared by the light header stages.
+// ParseFile's spelling, shared by the light header stages. A spec whose
+// path literal will not unquote stops the conversion: the entries read
+// so far come back with the error so a header-only caller can still use
+// the partial table (ParseFile discards it either way).
 func importTable(f *ast.File, filename string) ([]*Import, error) {
 	var out []*Import
 	for _, spec := range f.Imports {
 		path, err := strconv.Unquote(spec.Path.Value)
 		if err != nil {
-			return nil, fmt.Errorf("invalid import path in %s: %w", filename, err)
+			return out, fmt.Errorf("invalid import path in %s: %w", filename, err)
 		}
 		var alias string
 		if spec.Name != nil {
