@@ -2446,28 +2446,50 @@ func HostUnderlyingEq(a, b reflect.Type) bool {
 	if a == nil || b == nil || a.Kind() != b.Kind() {
 		return false
 	}
+	return hostFieldsEq(a, b)
+}
+
+// hostElemEq compares element types the way an underlying type does:
+// identical unnamed shapes compare equal, but a named leaf is only
+// equal to itself — `struct{ Next *A }` and `struct{ Next *B }` differ
+// because *A and *B wrap distinct named pointees. Stopping at named
+// leaves also bounds the walk: a reflect type graph can only cycle
+// through a named type, and one named type never expands inside the
+// compare of another.
+func hostElemEq(a, b reflect.Type) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Kind() != b.Kind() {
+		return false
+	}
+	if a.Name() != "" || b.Name() != "" {
+		return false
+	}
+	return hostFieldsEq(a, b)
+}
+
+func hostFieldsEq(a, b reflect.Type) bool {
 	switch a.Kind() {
-	case reflect.Pointer:
-		return HostUnderlyingEq(a.Elem(), b.Elem())
-	case reflect.Slice:
-		return HostUnderlyingEq(a.Elem(), b.Elem())
+	case reflect.Pointer, reflect.Slice:
+		return hostElemEq(a.Elem(), b.Elem())
 	case reflect.Array:
-		return a.Len() == b.Len() && HostUnderlyingEq(a.Elem(), b.Elem())
+		return a.Len() == b.Len() && hostElemEq(a.Elem(), b.Elem())
 	case reflect.Map:
-		return HostUnderlyingEq(a.Key(), b.Key()) && HostUnderlyingEq(a.Elem(), b.Elem())
+		return hostElemEq(a.Key(), b.Key()) && hostElemEq(a.Elem(), b.Elem())
 	case reflect.Chan:
-		return a.ChanDir() == b.ChanDir() && HostUnderlyingEq(a.Elem(), b.Elem())
+		return a.ChanDir() == b.ChanDir() && hostElemEq(a.Elem(), b.Elem())
 	case reflect.Func:
 		if a.NumIn() != b.NumIn() || a.NumOut() != b.NumOut() || a.IsVariadic() != b.IsVariadic() {
 			return false
 		}
 		for i := 0; i < a.NumIn(); i++ {
-			if !HostUnderlyingEq(a.In(i), b.In(i)) {
+			if !hostElemEq(a.In(i), b.In(i)) {
 				return false
 			}
 		}
 		for i := 0; i < a.NumOut(); i++ {
-			if !HostUnderlyingEq(a.Out(i), b.Out(i)) {
+			if !hostElemEq(a.Out(i), b.Out(i)) {
 				return false
 			}
 		}
@@ -2479,7 +2501,7 @@ func HostUnderlyingEq(a, b reflect.Type) bool {
 		for i := 0; i < a.NumField(); i++ {
 			fa, fb := a.Field(i), b.Field(i)
 			if fa.Name != fb.Name || fa.Tag != fb.Tag || fa.Anonymous != fb.Anonymous ||
-				!HostUnderlyingEq(fa.Type, fb.Type) {
+				!hostElemEq(fa.Type, fb.Type) {
 				return false
 			}
 		}
