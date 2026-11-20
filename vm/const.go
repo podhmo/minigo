@@ -201,22 +201,27 @@ func constPayload(x runtime.Value) (*runtime.UConst, bool) {
 // constant domain, which materialization to int64 would destroy.
 func (v *VM) matBuiltinArgs(args []runtime.Value, target any, keepConst bool) ([]runtime.Value, error) {
 	var out []runtime.Value
-	var ft hostbridge.Type // resolved on the first bare constant
+	// ft resolves the callee's signature on the first type-checked
+	// arg — paramType is nil for a non-func target or mismatched arity.
+	var ft hostbridge.Type
+	ftSeen := false
+	paramType := func(i int) hostbridge.Type {
+		if !ftSeen {
+			ftSeen = true
+			if t := hostbridge.TypeOf(target); t != nil && t.Kind() == hostbridge.KindFunc {
+				ft = t
+			}
+		}
+		if ft == nil {
+			return nil
+		}
+		return hostParamType(ft, i, len(args))
+	}
 	for i, a := range args {
 		var mv runtime.Value
 		var err error
 		if u, ok := a.(*runtime.UConst); ok && target != nil && constNeedsParamType(u) {
-			if ft == nil {
-				if ft = hostbridge.TypeOf(target); ft.Kind() != hostbridge.KindFunc {
-					target = nil
-					ft = nil
-				}
-			}
-			var pt hostbridge.Type
-			if ft != nil {
-				pt = hostParamType(ft, i, len(args))
-			}
-			if pt != nil {
+			if pt := paramType(i); pt != nil {
 				if td := hostConstParamTD(u, pt); td != nil {
 					mv, err = v.materializeConstErr(u, td)
 					if err != nil {
@@ -232,6 +237,11 @@ func (v *VM) matBuiltinArgs(args []runtime.Value, target any, keepConst bool) ([
 			}
 		}
 		if n, ok := a.(*runtime.Named); ok {
+			if target != nil {
+				if err := boundNamedArgErr(v, paramType(i), n); err != nil {
+					return nil, fmt.Errorf("arg %d: %w", i, err)
+				}
+			}
 			// a converted constant T(c) materializes at T, not the
 			// default type — uint64(1<<63) crosses a bound call as a
 			// uint64 where the int64 default would overflow.
@@ -246,6 +256,11 @@ func (v *VM) matBuiltinArgs(args []runtime.Value, target any, keepConst bool) ([
 			}
 			mv, err = materializeDefault(u)
 		} else {
+			if target != nil {
+				if err := boundHostArgErr(v, paramType(i), boundArgHostType(a)); err != nil {
+					return nil, fmt.Errorf("arg %d: %w", i, err)
+				}
+			}
 			continue
 		}
 		if err != nil {
@@ -368,6 +383,92 @@ func hostParamType(ft hostbridge.Type, i, nargs int) hostbridge.Type {
 		return ft.In(i)
 	}
 	return ft.In(nin - 1).Elem()
+}
+
+// boundNamedArgErr reports gc's compile-time assignability failure a
+// bound call would otherwise skip: a typed variable or typed constant
+// may not cross into a host parameter of a different type —
+// `const c int8 = 5; strconv.Itoa(c)` is a compile error, not a silent
+// int8→int conversion. Untagged args carry no declared type to check
+// (an int64 stores `int` and `int64` alike), interface parameters take
+// everything, and non-basic parameters fall to the twin lookup, whose
+// miss cannot prove a mismatch.
+func boundNamedArgErr(v *VM, pt hostbridge.Type, n *runtime.Named) error {
+	td := n.Typ
+	if td == nil || pt == nil || pt.Kind() == hostbridge.KindInterface {
+		return nil
+	}
+	if v.hostTypedefIs(pt, td) {
+		return nil
+	}
+	bname, basic := boundBasicParamName(pt)
+	if !basic {
+		return nil
+	}
+	if runtime.CanonicalBasicName(td.Name) == bname {
+		return nil
+	}
+	what := "value"
+	if u, ok := constPayload(n); ok {
+		what = "constant " + u.V.String()
+	}
+	return fmt.Errorf("cannot use %s of type %s as %s value", what, spelledTyp(td), pt.Name())
+}
+
+// boundHostArgErr reports the assignability failure for an arg whose
+// concrete host type is known — a bound package's typed constant or a
+// host API's return value — against a basic parameter: gc accepts only
+// the identical type, so `strconv.FormatInt(time.Second, 10)` rejects
+// the Duration const just as a declared Duration variable would.
+// An unnamed basic arg (int64, string, ...) stays unchecked — the same
+// value could be a script scalar whose declared width is unobservable.
+func boundHostArgErr(v *VM, pt hostbridge.Type, rt hostbridge.Type) error {
+	if rt == nil || pt == nil || pt.Kind() == hostbridge.KindInterface || rt == pt {
+		return nil
+	}
+	if _, basic := boundBasicParamName(pt); !basic {
+		return nil // non-basic params need a resolved twin — no proof of mismatch
+	}
+	if _, ambig := boundBasicParamName(rt); ambig {
+		return nil
+	}
+	return fmt.Errorf("cannot use value of type %s as %s value", rt.String(), pt.Name())
+}
+
+// boundArgHostType reports the concrete host type a bound arg carries:
+// a GoValue box reports the wrapped value's type, a bare host value its
+// own — while a bare script scalar (int64, float64, string, bool)
+// reports nil since its declared type is unobservable.
+func boundArgHostType(a runtime.Value) hostbridge.Type {
+	switch t := a.(type) {
+	case int64, float64, string, bool:
+		return nil
+	case *runtime.GoValue:
+		return hostbridge.TypeOf(t.V)
+	}
+	return hostbridge.TypeOf(a)
+}
+
+// boundBasicParamName names pt when it is an unnamed builtin basic —
+// the parameter spellings gc's assignability rule distinguishes (`int`
+// does not take an int8, and reflect already folds byte to uint8). ""
+// reports a named or composite parameter like time.Duration.
+func boundBasicParamName(pt hostbridge.Type) (string, bool) {
+	switch pt.Kind() {
+	case hostbridge.KindBool, hostbridge.KindString,
+		hostbridge.KindInt, hostbridge.KindInt8, hostbridge.KindInt16,
+		hostbridge.KindInt32, hostbridge.KindInt64,
+		hostbridge.KindUint, hostbridge.KindUint8, hostbridge.KindUint16,
+		hostbridge.KindUint32, hostbridge.KindUint64, hostbridge.KindUintptr,
+		hostbridge.KindFloat32, hostbridge.KindFloat64,
+		hostbridge.KindComplex64, hostbridge.KindComplex128:
+	default:
+		return "", false
+	}
+	if pt.PkgPath() != "" {
+		return "", false
+	}
+	return pt.Name(), true
 }
 
 func materializeDefault(u *runtime.UConst) (runtime.Value, error) {
