@@ -2344,6 +2344,26 @@ func TestHostReplacesMapElem(t *testing.T) {
 	}
 }
 
+// TestHostMapInPlaceWrites: a bound host func's in-place writes to a
+// script map arg — add, rewrite, delete — propagate to the caller's map,
+// including writes into a map nested in a slice arg.
+func TestHostMapInPlaceWrites(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/hostwb", map[string]runtime.Value{
+		"Touch": &runtime.GoValue{V: func(m map[string]int, rows []map[string]int) {
+			m["keep"] = 9
+			m["new"] = 7
+			delete(m, "gone")
+			rows[0]["a"] = 11
+		}},
+	})
+	got := run(t, e, "./testdata/hostwriteback", "Touch")
+	want := "{\"keep\":9,\"new\":7,\"old\":3} [{\"a\":11},{\"b\":2}]"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("Touch mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestSessionInheritsBinds: user-bound host packages must resolve in a
 // NewSession the same as on the parent engine.
 func TestSessionInheritsBinds(t *testing.T) {

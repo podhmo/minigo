@@ -22,3 +22,21 @@ func Change() string {
 	b, _ = json.Marshal(rows)
 	return out + "\n" + string(b)
 }
+
+// Touch hands a script map to a bound host func that adds, rewrites and
+// deletes entries in place; the writes must reach the caller's map. It
+// also mutates a nested map reached through a slice arg.
+func Touch() string {
+	m := map[string]int{"keep": 1, "gone": 2, "old": 3}
+	rows := []map[string]int{{"a": 1}, {"b": 2}}
+	hostwb.Touch(m, rows)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "err: " + err.Error()
+	}
+	b2, err := json.Marshal(rows)
+	if err != nil {
+		return "err: " + err.Error()
+	}
+	return string(b) + " " + string(b2)
+}
