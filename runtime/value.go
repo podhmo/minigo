@@ -825,11 +825,11 @@ func Copy(v Value) Value {
 		}
 		return v
 	case *Named:
-		// a HostNew struct's payload is a `*T` box — assignment copies
-		// the struct like gc (`var b bytes.Buffer = a` must not alias
-		// a's storage). The tag is the only reliable signal: a bare
-		// *T GoValue may be a host-returned pointer that must share.
-		if x.Typ != nil && x.Typ.Kind == KindStruct && x.Typ.HostNew != nil {
+		// a host-struct payload copies the struct on assignment like gc
+		// (`var b bytes.Buffer = a` must not alias a's storage). The tag
+		// is the only reliable signal: a bare *T GoValue may be a
+		// host-returned pointer that must share.
+		if HostStructTagged(x) {
 			if cp, ok := HostStructCopy(x.V); ok {
 				return Tag(x.Typ, cp)
 			}
@@ -847,26 +847,6 @@ func Copy(v Value) Value {
 		return &Named{Typ: x.Typ, V: Copy(x.V)}
 	}
 	return v
-}
-
-// HostStructCopy copies the struct behind a [GoValue] holding a non-nil
-// pointer to a struct, returning a new box. Unlike [Copy], which copies a
-// host struct only when it is tagged with a [TypeDef.HostNew] struct type
-// (a bare *T box may be a host pointer that must stay shared), it copies
-// unconditionally; the caller decides that v is a struct value. ok is
-// false for any other value, which the caller should store unchanged.
-func HostStructCopy(v Value) (Value, bool) {
-	gv, ok := v.(*GoValue)
-	if !ok {
-		return nil, false
-	}
-	rv := reflect.ValueOf(gv.V)
-	if rv.Kind() != reflect.Ptr || rv.IsNil() || rv.Elem().Kind() != reflect.Struct {
-		return nil, false
-	}
-	cp := reflect.New(rv.Elem().Type())
-	cp.Elem().Set(rv.Elem())
-	return &GoValue{V: cp.Interface()}, true
 }
 
 // SetRef stores val through a pointer value ([Cell], [FieldRef],

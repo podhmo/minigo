@@ -20,6 +20,10 @@ func main() {
 	fmt.Printf("%T\n", mb)
 	bb := bytes.Buffer(mb)
 	fmt.Println(bb.Len())
+	// assignment copies the struct: mutating the copy leaves mb.
+	other := mb
+	(*bytes.Buffer)(&other).Reset()
+	fmt.Println((*bytes.Buffer)(&mb).Len())
 	pmb := (*MyBuf)(bytes.NewBufferString("s"))
 	fmt.Printf("%T %v\n", pmb, pmb != nil)
 }
