@@ -79,7 +79,19 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 			m.pullElem(cur, has, sk, s, ev, vc, seen)
 		}
 		e.host = hostSnap(rv)
-		e.snap = scriptSnap(s)
+		// snapshot only the keys the host actually mirrors — folding a
+		// script-side add into snap would let sync skip its push, and
+		// the next pull would then drop it as host-deleted.
+		snap := map[string]runtime.Value{}
+		ds2, _ := s.SnapshotKeys()
+		for _, dk := range ds2 {
+			if hk, err := m.ToReflect(dk, krt, vc); err == nil && rv.MapIndex(hk).IsValid() {
+				if v, ok := s.Get(dk); ok {
+					snap[projKey(dk)] = v
+				}
+			}
+		}
+		e.snap = snap
 	case *runtime.Slice:
 		if rv.Kind() != reflect.Slice {
 			return
