@@ -920,31 +920,6 @@ func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function, x runt
 	return true
 }
 
-// hostMethodSigMatch compares a signature-bearing requirement against
-// the reflect method on a host box — reflect methods carry no declared
-// signature for dynFns, so without this their name alone satisfied any
-// same-named requirement regardless of signature. Non-host values and
-// unspellable requirements keep the name-only pass.
-func (v *VM) hostMethodSigMatch(reqFn *runtime.Function, m string, x runtime.Value) bool {
-	gv, ok := runtime.Unwrap(x).(*runtime.GoValue)
-	if !ok {
-		return true
-	}
-	rv := hostbridge.RVOf(gv.V)
-	if !rv.IsValid() {
-		return true
-	}
-	hm := rv.MethodByName(m)
-	if !hm.IsValid() {
-		return true // the name pass already decided presence
-	}
-	want, ok := runtime.FuncGoSpelling(reqFn)
-	if !ok {
-		return true
-	}
-	return hm.Type().String() == want
-}
-
 // memberSigEq compares two members' declared signatures — an interface
 // requirement and the concrete method offered against it — through the
 // shared semantic comparator.
