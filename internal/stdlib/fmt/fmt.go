@@ -463,11 +463,13 @@ var unnamedBasicTypes = map[reflect.Kind]reflect.Type{
 func markerInner(tail string, stars []int, vals []runtime.Value) (st markerState, badWidth, badPrec bool) {
 	var fl strings.Builder
 	starAt := 0
+	dot := false
 	i := 0
 	for i < len(tail) {
 		ch := tail[i]
 		if ch == '.' {
 			i++
+			dot = true
 			break
 		}
 		if ch == '[' {
@@ -514,33 +516,34 @@ func markerInner(tail string, stars []int, vals []runtime.Value) (st markerState
 			st.w, st.hasW = w, true
 		}
 	}
-	precStr := ""
+	// the '.' is consumed: an empty precision is present-as-zero —
+	// %.p truncates a string to "" like gc. Precision digits
+	// accumulate; a [n] operand index may still follow.
+	if dot {
+		st.hasP = true
+	}
 	for ; i < len(tail); i++ {
 		ch := tail[i]
-		if ch == '*' {
+		switch {
+		case ch >= '0' && ch <= '9':
+			st.p = st.p*10 + int(ch-'0')
+		case ch == '*':
 			if starAt < len(stars) {
 				v, ok := starInt(vals[stars[starAt]])
 				if !ok || v < 0 {
 					badPrec = true
 				} else {
-					st.p, st.hasP = v, true
+					st.p = v
 				}
 				starAt++
 			}
-			continue
-		}
-		precStr += string(ch)
-	}
-	if precStr != "" {
-		if p, err := strconv.Atoi(precStr); err == nil {
-			if p < 0 {
-				badPrec = true
-			} else {
-				st.p, st.hasP = p, true
+		case ch == '[':
+			for i < len(tail) && tail[i] != ']' {
+				i++
 			}
 		}
 	}
-	if badPrec {
+	if badPrec || !dot {
 		st.hasP = false
 	}
 	flagsStr := fl.String()
@@ -657,8 +660,10 @@ func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 	case *runtime.Named:
 		inner := ptrSpelling(c, t.V)
 		// a named scalar keeps its declared type in the marker — gc
-		// writes %!p(main.U=...), not the underlying kind's name.
-		if t.Typ != nil && t.Typ.Name != "" && strings.HasPrefix(inner, "%!") {
+		// writes %!p(main.U=...), not the underlying kind's name. An
+		// interface-declared tag never names the dynamic type.
+		if t.Typ != nil && t.Typ.Kind != runtime.KindInterface && !t.Typ.IfaceBase &&
+			t.Typ.Name != "" && strings.HasPrefix(inner, "%!") {
 			if eq := strings.IndexByte(inner, '='); eq >= 0 {
 				open := strings.IndexByte(inner, '(')
 				return inner[:open+1] + stdlib.TypedefSpelling(t.Typ) + "=" + inner[eq+1:]
