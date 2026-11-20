@@ -107,6 +107,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters) {
 			}
 			return &runtime.GoValue{V: bufio.NewWriterSize(w, int(stdlib.Int64Of(args[1])))}, nil
 		}},
+		"NewReadWriter": newReadWriterBind,
 	})
 }
 
