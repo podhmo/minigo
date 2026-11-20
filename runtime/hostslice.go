@@ -22,7 +22,7 @@ func (s *Slice) SetElem(i int64, v Value) {
 	if !dst.CanSet() {
 		return
 	}
-	if ev, ok := hostScalarOf(v, dst.Type()); ok {
+	if ev, ok := hostScalarOf(v, dst); ok {
 		dst.Set(ev)
 	}
 }
@@ -50,7 +50,7 @@ func (s *Slice) CommitHostRange(hi int64) bool {
 			ok = false
 			continue
 		}
-		if ev, conv := hostScalarOf(s.Elems[i], dst.Type()); conv {
+		if ev, conv := hostScalarOf(s.Elems[i], dst); conv {
 			dst.Set(ev)
 		} else {
 			ok = false
@@ -82,11 +82,25 @@ func (s *Slice) HostReslice3(lo, hi, max int64) reflect.Value {
 	return s.Host.Slice3(int(lo), int(hi), int(max))
 }
 
-// hostScalarOf converts a stored script value to a host element type:
+// hostScalarOf converts a stored script value for the host slot dst:
 // basic kinds assign or convert, a host box hands over when assignable
-// (or element-assignable, the *T-over-T shape). Anything else reports
-// unset — the caller keeps the script store only.
-func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
+// (or element-assignable, the *T-over-T shape). An interface slot keeps
+// the outgoing element's concrete type — the script side stores a host
+// int as int64, so writing int64 back would change the host's dynamic
+// type (%T, type assertions). Anything else reports unset — the caller
+// keeps the script store only.
+func hostScalarOf(v Value, dst reflect.Value) (reflect.Value, bool) {
+	t := dst.Type()
+	if t.Kind() == reflect.Interface && t.NumMethod() == 0 && !dst.IsNil() {
+		if ev, ok := hostScalarToType(v, dst.Elem().Type()); ok {
+			return ev, true
+		}
+	}
+	return hostScalarToType(v, t)
+}
+
+// hostScalarToType is hostScalarOf's conversion against a bare type.
+func hostScalarToType(v Value, t reflect.Type) (reflect.Value, bool) {
 	for {
 		if n, ok := v.(*Named); ok {
 			v = n.V
