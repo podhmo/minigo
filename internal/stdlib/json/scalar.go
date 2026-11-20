@@ -30,9 +30,11 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 		case un == "float64" || un == "float32":
 			if f, err := n.Float64(); err == nil {
 				// gc's floatType path: a float32 destination rejects
-				// |f| over MaxFloat32, and either float reports the
-				// literal when strconv refuses it (1e309, etc).
-				if un == "float32" && (f > math.MaxFloat32 || f < -math.MaxFloat32) {
+				// when the ROUNDED value overflows (3.4028235e38
+				// rounds into range, 3.5e38 does not), and either
+				// float reports the literal when strconv refuses it
+				// (1e309, etc).
+				if un == "float32" && math.IsInf(float64(float32(f)), 0) {
 					ectx.fail("number "+n.String(), td, nil)
 					return priorOr(prior, c, td)
 				}
@@ -227,7 +229,7 @@ func jsonStringOpt(c runtime.VMCaller, node *jsonDom, td *runtime.TypeDef, prior
 	// A quoted "null" is the null literal, not the word: it follows
 	// normal null semantics (nils nilable kinds, leaves the rest).
 	if sok && s == "null" {
-		return jsonShape(c, &jsonDom{raw: []byte("null")}, td, prior, ectx)
+		return jsonShape(c, &jsonDom{raw: []byte("null"), pos: -1}, td, prior, ectx)
 	}
 	if td.Kind == runtime.KindPointer {
 		var ep runtime.Value
