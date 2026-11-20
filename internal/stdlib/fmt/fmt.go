@@ -464,7 +464,18 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 	// deadStar reports whether gc's `*` operand read at ops[st] fails —
 	// out of range or a reflect.Value gc's intFromArg rejects — so the
 	// star prints its own marker and feeds nothing to the directive.
-	deadStar := func(st int) bool { return st >= opsLen || rvalIdx[st] }
+	// a star is dead when gc's intFromArg rejects its slot — out of
+	// range, a reflect.Value, or a non-integer — so the rewrite prints
+	// the marker in star order and drops the '*' byte; a live width
+	// left to the host would print BADWIDTH after a dead prec's
+	// BADPREC, inverting gc's diagnostic order.
+	deadStar := func(st int) bool {
+		if st >= opsLen || rvalIdx[st] {
+			return true
+		}
+		_, ok := starInt(ops[st])
+		return !ok
+	}
 	// starMarkers prints the BADWIDTH/BADPREC marker text of every dead
 	// star, before the directive itself opens: %% inside a directive is
 	// not literal, so the markers have to come first, exactly where gc
@@ -659,6 +670,11 @@ func rewriteWrapVerbsOps(spec string, ops []any, raws []runtime.Value, bad []str
 				fixRest = true
 			}
 		}
+		// the next directives are pinned whenever a %w was seen: a
+		// marker's text emits shift nothing, but a marshalled
+		// reflect.Value star operand reads its inner int to the host
+		// where gc rejects it — only the pin prints gc's marker.
+		fixRest = true
 		consumed[ev.arg] = true
 	}
 	_ = argNums
