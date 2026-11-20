@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 func main() {
@@ -36,4 +37,20 @@ func main() {
 	bs[0] = '7'
 	b, _ = json.Marshal(rm)
 	fmt.Println(string(b))
+
+	// decoding into an interface cell replaces the content (gc's
+	// indirect only descends into interface-held pointers).
+	var a any = time.Time{}
+	if err := json.Unmarshal([]byte("\"hello\""), &a); err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println(a)
+	}
+	t := time.Time{}
+	var p any = &t
+	if err := json.Unmarshal([]byte("\"2020-01-02T03:04:05Z\""), &p); err != nil {
+		fmt.Println(err)
+	} else {
+		fmt.Println(t.Format("2006"))
+	}
 }

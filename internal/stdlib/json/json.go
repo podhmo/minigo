@@ -196,29 +196,35 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 		// UnmarshalJSON escape the member probe. gc's indirect reaches
 		// them because &r is addressable: mint an address box, call
 		// the pointer method on it, then write the pointee back.
-		if gv, ok := runtime.Unwrap(prior).(*runtime.GoValue); ok {
-			if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() != reflect.Pointer {
-				pv := reflect.New(rv.Type())
-				pv.Elem().Set(rv)
-				if m, ok := runtime.IfaceMember(v, &runtime.GoValue{V: pv.Interface()}, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
-					r, cerr := v.Call(m, []runtime.Value{stdlib.ScriptVal(data)})
-					if cerr != nil {
-						return nil, cerr
-					}
-					var back runtime.Value = &runtime.GoValue{V: pv.Elem().Interface()}
-					if n, ok := prior.(*runtime.Named); ok && n.Typ != nil {
-						back = runtime.Tag(n.Typ, back)
-					}
-					runtime.SetRef(target, back)
-					return jsonErrResult(r), nil
-				}
+		// A value stored under an interface-typed cell skips this: gc
+		// decodes into the interface itself (a string literal replaces
+		// the time.Time a `var a any` holds), while a pointer inside it
+		// (any = &t) is descended into — both land below.
+		if !jsonCellIsIface(target) {
+			if r, done, err := jsonUnmarshalHostVal(v, data, prior, prior, target); done || err != nil {
+				return r, err
+			}
+		} else if dv, isRef := runtime.Deref(prior); isRef {
+			// pointer content of an interface cell: gc's indirect
+			// descends into it — the write goes through the shared
+			// pointee cell, not the interface slot.
+			if r, done, err := jsonUnmarshalHostVal(v, data, dv, dv, prior); done || err != nil {
+				return r, err
 			}
 		}
 		ectx := &jsonErrCtx{keepNum: flags.Number, strict: flags.Strict}
-		if std := derefTyp(v.TypeOf(target)); std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
+		// decode type: the declared pointee, except an interface-typed
+		// cell decodes as the interface itself — TypeOf reports the
+		// held value's type (time.Time), where gc replaces the cell's
+		// content by the literal's shape.
+		decTyp := derefTyp(v.TypeOf(target))
+		if c, ok := target.(*runtime.Cell); ok && c.Typ != nil && c.Typ.Kind == runtime.KindInterface {
+			decTyp = c.Typ
+		}
+		if std := decTyp; std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
 			ectx.strct = jsonBareName(std)
 		}
-		sv := jsonShape(v, node, derefTyp(v.TypeOf(target)), prior, ectx)
+		sv := jsonShape(v, node, decTyp, prior, ectx)
 		if !runtime.SetRef(target, sv) {
 			return nil, fmt.Errorf("json: cannot assign to %T", target)
 		}
@@ -594,6 +600,47 @@ type jsonCallErr struct {
 // a same-named method with a different signature does not implement
 // json.Unmarshaler, so its value decodes by shape. Host-callable
 // methods carry no Decl and are assumed conforming.
+// jsonCellIsIface reports whether target is a cell declared as an
+// interface type (a `var a any` slot) — gc decodes into such a slot
+// itself rather than consulting the held value's UnmarshalJSON.
+func jsonCellIsIface(target runtime.Value) bool {
+	c, ok := target.(*runtime.Cell)
+	return ok && c.Typ != nil && c.Typ.Kind == runtime.KindInterface
+}
+
+// jsonUnmarshalHostVal tries the UnmarshalJSON pointer method on a
+// host value box: it mints an address box over a copy of the pointee
+// (gc's indirect reaches pointer methods because &x is addressable),
+// calls through it, then writes the new pointee back through dst.
+// held is the script value carrying the Named tag the write-back
+// must keep. done is false when no such method exists.
+func jsonUnmarshalHostVal(v runtime.VMCaller, data []byte, pointee, held, dst runtime.Value) (runtime.Value, bool, error) {
+	gv, ok := runtime.Unwrap(pointee).(*runtime.GoValue)
+	if !ok {
+		return nil, false, nil
+	}
+	rv := reflect.ValueOf(gv.V)
+	if !rv.IsValid() || rv.Kind() == reflect.Pointer {
+		return nil, false, nil
+	}
+	pv := reflect.New(rv.Type())
+	pv.Elem().Set(rv)
+	m, ok := runtime.IfaceMember(v, &runtime.GoValue{V: pv.Interface()}, "UnmarshalJSON")
+	if !ok || !jsonUnmarshalShape(m) {
+		return nil, false, nil
+	}
+	r, cerr := v.Call(m, []runtime.Value{stdlib.ScriptVal(data)})
+	if cerr != nil {
+		return nil, true, cerr
+	}
+	var back runtime.Value = &runtime.GoValue{V: pv.Elem().Interface()}
+	if n, ok := held.(*runtime.Named); ok && n.Typ != nil {
+		back = runtime.Tag(n.Typ, back)
+	}
+	runtime.SetRef(dst, back)
+	return jsonErrResult(r), true, nil
+}
+
 func jsonUnmarshalShape(m runtime.Value) bool {
 	b, ok := m.(*runtime.BoundMethod)
 	if !ok {
