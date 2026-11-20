@@ -153,6 +153,10 @@ func refArg(a runtime.Value) (ref runtime.Value, leaf runtime.Value) {
 			} else {
 				seen[u] = true
 			}
+		case *runtime.GoValue:
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return ref, u
 		}
 		if dv, ok := runtime.Deref(u); ok {
 			u = dv

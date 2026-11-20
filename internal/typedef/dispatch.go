@@ -152,7 +152,7 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 		// method-bearing value — stop rather than spin. Only ref kinds
 		// can repeat; other values are skipped (some are unhashable).
 		switch v.(type) {
-		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef, *runtime.HostPtrRef:
 			if seen == nil {
 				seen = map[runtime.Value]bool{v: true}
 			} else if seen[v] {
@@ -162,6 +162,13 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 			}
 		}
 		if v == nil {
+			break
+		}
+		// a host value peels no further — the GoValue case below reads
+		// the box's own method set (a *T box carries the pointer method
+		// set already; dereferencing would mint an endless chain of
+		// pointee boxes).
+		if _, isGV := v.(*runtime.GoValue); isGV {
 			break
 		}
 		dv, ok := runtime.Deref(v)

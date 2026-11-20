@@ -222,6 +222,12 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 			holder = v // last ref wins — the deepest pointer chain link
 		}
+		if _, isGV := v.(*runtime.GoValue); isGV {
+			// a host value is the peel's terminal — the GoValue case
+			// below reads its box; dereferencing a *T box would mint
+			// an endless chain of pointee boxes.
+			break
+		}
 		if dv, ok := runtime.Deref(v); ok {
 			v = dv
 			continue

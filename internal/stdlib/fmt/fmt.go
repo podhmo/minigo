@@ -646,6 +646,10 @@ func formatString(x runtime.Value) (string, bool) {
 			// a bound-fmt result boxed for rendering can land in a
 			// named string slot — the spec is the boxed string.
 			x = v.x
+		case *runtime.GoValue:
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return "", false
 		default:
 			if dv, ok := runtime.Deref(x); ok {
 				x = dv
