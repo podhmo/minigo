@@ -271,6 +271,7 @@ var FileBudgetExceptions = map[string]string{
 	"compile/slots.go":                "selector lowering: the cell verdict is tri-state so a proven field or value-receiver select can read the base's value",
 	"compile/compile.go":              "method funclit symbol names carry the Go receiver form + emitDerefSite assigns a select-site slot to FieldRef reads",
 	"inspect/inspect.go":              "Import.Name and SymbolID dot-import + lit-keys foreign/tparam + scoped locals + decl-site roles",
+	"inspect/stub.go":                     "Spec intrinsic for the non-func decl Node-view root",
 	"internal/stdlib/inspect/inspect.go":   "Spec binding for the non-func decl Node-view root",
 	"internal/vet/vet.go":             "stub-call imports resolve the declared package name",
 	"vm/assert.go":                    "ifacekey: asserts peel a declared-over-interface tag to the payload pair + IfaceBase reqs reach the underlying spec + memberSigsMatch skips plain aliases of qualified reqs",
