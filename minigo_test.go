@@ -4138,6 +4138,27 @@ func greet() string {
 		t.Fatal("expected an allowed-roots error for a symlinked file outside the root")
 	}
 
+	// a link whose target is inside the root runs: like `go run`,
+	// the file counts as living where it is listed
+	otherDir := filepath.Join(root, "other")
+	if err := os.MkdirAll(otherDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "d.go"), []byte("package main\n\nfunc greet() string { return \"via link\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	inner := filepath.Join(root, "inner.go")
+	if err := os.Symlink(filepath.Join(otherDir, "d.go"), inner); err != nil {
+		t.Fatal(err)
+	}
+	got, err = e.RunFiles(context.Background(), []string{names[0], inner}, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("via link", got); diff != "" {
+		t.Fatalf("RunFiles linked file mismatch (-want +got):\n%s", diff)
+	}
+
 	// different package clauses in the list are rejected
 	if err := os.WriteFile(names[1], []byte("package other\n"), 0644); err != nil {
 		t.Fatal(err)
