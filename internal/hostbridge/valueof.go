@@ -525,7 +525,11 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = GoValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: td, Host: rv}
+				// snapshot the header value, not the field: when rv is
+				// a struct's slice field, reassigning that field must
+				// not redirect this alias (gc's `s := st.f` keeps the
+				// backing the header held at read time).
+				return &runtime.Slice{Elems: el, Typ: td, Host: reflect.ValueOf(rv.Interface())}
 			}
 		case reflect.Map:
 			if rv.IsNil() && rv.Type().Name() != "" {
