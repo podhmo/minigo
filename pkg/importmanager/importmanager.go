@@ -1,4 +1,7 @@
-package generator
+// Package importmanager manages import statements for generated Go
+// code — the go-scan importmanager port: keyword -> "_pkg", collision ->
+// numbered suffix, path-hash fallback, and Qualify.
+package importmanager
 
 import (
 	"fmt"
@@ -9,8 +12,8 @@ import (
 	"sync"
 )
 
-// ImportManager helps manage import statements for generated Go code.
-type ImportManager struct {
+// Manager helps manage import statements for generated Go code.
+type Manager struct {
 	mu                 sync.Mutex
 	currentPackagePath string
 	imports            map[string]string // import path -> alias
@@ -65,11 +68,11 @@ var goKeywords = map[string]bool{
 	"recover": true,
 }
 
-// NewImportManager creates a new ImportManager.
+// New creates a Manager.
 // currentPackagePath is the import path of the package being generated;
 // types from it are emitted unqualified.
-func NewImportManager(currentPackagePath string) *ImportManager {
-	return &ImportManager{
+func New(currentPackagePath string) *Manager {
+	return &Manager{
 		currentPackagePath: currentPackagePath,
 		imports:            make(map[string]string),
 		aliasesInUse:       make(map[string]string),
@@ -80,7 +83,7 @@ func NewImportManager(currentPackagePath string) *ImportManager {
 // It handles conflicts by adjusting aliases if necessary.
 // Returns the actual alias that should be used for the package.
 // If the path is the current package's path, it returns an empty string (no alias needed for qualification).
-func (im *ImportManager) Add(path string, requestedAlias string) string {
+func (im *Manager) Add(path string, requestedAlias string) string {
 	if path == "" {
 		return "" // Cannot import an empty path
 	}
@@ -217,7 +220,7 @@ func (im *ImportManager) Add(path string, requestedAlias string) string {
 // Qualify returns the qualified type name (e.g., "alias.TypeName" or "TypeName").
 // It ensures the package path is registered with an alias.
 // If packagePath is empty or matches currentPackagePath, typeName is returned as is.
-func (im *ImportManager) Qualify(packagePath string, typeName string) string {
+func (im *Manager) Qualify(packagePath string, typeName string) string {
 	if packagePath == "" || (im.currentPackagePath != "" && packagePath == im.currentPackagePath) {
 		return typeName // Type is in current package, built-in, or no package path given
 	}
@@ -244,7 +247,7 @@ func (im *ImportManager) Qualify(packagePath string, typeName string) string {
 
 // Imports returns a copy of the registered import-path-to-alias map.
 // Entries with empty aliases are excluded.
-func (im *ImportManager) Imports() map[string]string {
+func (im *Manager) Imports() map[string]string {
 	im.mu.Lock()
 	defer im.mu.Unlock()
 

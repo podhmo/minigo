@@ -1493,6 +1493,9 @@ func TestHostStubPackage(t *testing.T) {
 	if got := run(t, e, "./testdata/hostdev", "EnvPath"); got == "" {
 		t.Fatal("minigo.dev/host.Getenv(PATH) should return the host PATH")
 	}
+	if got := run(t, e, "./testdata/importmgr", "AliasRun"); got != "foo|foo1|baz.T" {
+		t.Fatalf("minigo.dev/importmanager aliases: got %v", got)
+	}
 	// host.Exit never terminates the host, like os.Exit
 	_, err := e.Run(context.Background(), "./testdata/hostpkg", "Exit")
 	if err == nil || !strings.Contains(err.Error(), "cannot terminate the host") {
