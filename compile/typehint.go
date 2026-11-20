@@ -2120,6 +2120,13 @@ func (c *compiler) argHint(e ast.Expr) bytecode.ArgHint {
 			}
 		}
 		return bytecode.ArgHint{Kind: bytecode.HintNil}
+	case *ast.CompositeLit:
+		// T{...} — the static type is the literal's own type, the same
+		// recipe a conversion T(v) spells.
+		if x.Type != nil {
+			return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(x.Type, e.Pos()))}
+		}
+		return bytecode.ArgHint{Kind: bytecode.HintNil}
 	}
 	id, ok := e.(*ast.Ident)
 	if !ok {

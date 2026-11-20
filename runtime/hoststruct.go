@@ -21,7 +21,7 @@ func HostStructTagged(v Value) bool {
 	if n.Typ.Spec == nil || n.Typ.HostNew != nil {
 		return false
 	}
-	if _, isPtr := n.Typ.Anon.(*ast.StarExpr); isPtr {
+	if ptrSpelling(n.Typ) {
 		return false
 	}
 	gv, ok := n.V.(*GoValue)
@@ -30,6 +30,47 @@ func HostStructTagged(v Value) bool {
 	}
 	rv := reflect.ValueOf(gv.V)
 	return rv.IsValid() && rv.Kind() == reflect.Ptr && !rv.IsNil() && rv.Elem().Kind() == reflect.Struct
+}
+
+// ptrSpelling reports whether the typedef's declared underlying expr
+// spells a pointer — `type P *bytes.Buffer` directly, or `type Q P`
+// transitively: such a tag's box shares like a pointer, never copies.
+// Ident refs resolve through function-local typedefs first, then the
+// declaring package's declaration index; a selector (otherpkg.P) or a
+// builtin name stops the chase as a non-pointer.
+func ptrSpelling(td *TypeDef) bool {
+	seen := map[*TypeDef]bool{}
+	expr := td.Anon
+	for depth := 0; expr != nil && depth < 16; depth++ {
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			return true
+		case *ast.Ident:
+			expr = nil
+			if ltd := td.LocalTypes[e.Name]; ltd != nil {
+				if seen[ltd] {
+					return false
+				}
+				seen[ltd] = true
+				if ltd.Kind == KindPointer {
+					return true
+				}
+				td = ltd
+				expr = ltd.Anon
+				continue
+			}
+			if td.Pkg != nil && td.Pkg.Index != nil {
+				if info := td.Pkg.Index.Types[e.Name]; info != nil && info.Decl != nil {
+					if ts, ok := info.Decl.Spec.(*ast.TypeSpec); ok {
+						expr = ts.Type
+					}
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // HostStructCopy copies the struct behind a [GoValue] holding a non-nil
