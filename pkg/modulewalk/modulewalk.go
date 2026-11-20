@@ -66,7 +66,7 @@ type Walker struct {
 
 	mu      sync.RWMutex
 	fset    *token.FileSet
-	cache   map[string]*PackageImports // import path -> imports
+	cache   map[string]*PackageImports // package dir -> imports (two checkouts may share an import path)
 	scanned map[string]bool            // every file handed to ParseImports
 }
 
@@ -89,12 +89,6 @@ func (w *Walker) Imports(ctx context.Context, importPath string) (*PackageImport
 	w.mu.Lock()
 	w.init()
 	w.mu.Unlock()
-	w.mu.RLock()
-	cached, ok := w.cache[importPath]
-	w.mu.RUnlock()
-	if ok {
-		return cached, nil
-	}
 	if w.Locator == nil {
 		return nil, fmt.Errorf("modulewalk: no locator; cannot resolve %q", importPath)
 	}
@@ -108,7 +102,7 @@ func (w *Walker) Imports(ctx context.Context, importPath string) (*PackageImport
 // ScanDir reads the import table of the package in dir, spelled
 // importPath — the entry [Walker.WalkRepo] and [Walker.FindImporters]
 // use for directories [resolve.ScanRepo] already enumerated. The result
-// is cached under importPath.
+// is cached under dir.
 func (w *Walker) ScanDir(ctx context.Context, dir, importPath string) (*PackageImports, error) {
 	return w.scanDir(ctx, dir, importPath)
 }
@@ -179,7 +173,7 @@ func (w *Walker) scanRepoPackage(ctx context.Context, repo *resolve.RepoPackage)
 	w.init()
 	w.mu.Unlock()
 	w.mu.RLock()
-	cached, ok := w.cache[repo.ImportPath]
+	cached, ok := w.cache[repo.Dir]
 	w.mu.RUnlock()
 	if ok {
 		return cached, nil
@@ -236,7 +230,7 @@ func (w *Walker) scanRepoPackage(ctx context.Context, repo *resolve.RepoPackage)
 	sort.Strings(pi.Imports)
 	sort.Strings(pi.TestImports)
 	w.mu.Lock()
-	w.cache[repo.ImportPath] = pi
+	w.cache[repo.Dir] = pi
 	w.mu.Unlock()
 	return pi, nil
 }
