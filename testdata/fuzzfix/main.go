@@ -300,6 +300,26 @@ func PtrConv() string {
 	return fmt.Sprintf("%v %T %T", s, *sp, *p)
 }
 
+// (*T)(p) on a pointee of a different underlying type is a gc compile
+// error — minigo traps at conversion time instead of re-tagging. The
+// same rule holds for host types: *strings.Builder does not convert to
+// *strings.Reader.
+type SS string
+
+func PtrConvDeclBad() string {
+	i := 3
+	p := &i
+	sp := (*SS)(p)
+	return string(*sp)
+}
+
+func PtrConvHostBad() string {
+	var b strings.Builder
+	p := &b
+	rp := (*strings.Reader)(p)
+	return rp.String()
+}
+
 // (*T)(p) shares the pointee's address: storing through *p is
 // observable through *sp.
 func PtrConvShared() string {

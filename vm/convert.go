@@ -480,6 +480,22 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 	return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 }
 
+// pointeeIsHostType reports whether x's pointee is a host value whose
+// concrete type is et's host type — the untagged-source `TL(&loc)`
+// case where the declared pointee type still matches.
+func (v *VM) pointeeIsHostType(x runtime.Value, et *runtime.TypeDef) bool {
+	dv, ok := runtime.Deref(x)
+	if !ok {
+		return false
+	}
+	gv, ok := runtime.Unwrap(dv).(*runtime.GoValue)
+	if !ok || gv.V == nil {
+		return false
+	}
+	rt := runtime.HostReflectType(et)
+	return rt != nil && hostbridge.TypeOf(gv.V) == rt
+}
+
 // hostFloat reads a value as float64 for float conversions: plain
 // int64/float64 pass through, and a boxed host number converts by its
 // own kind (uint64 reads unsigned — a wide literal keeps 2^63, not
@@ -773,14 +789,42 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 	var ptag *runtime.TypeDef
 	// an unsafe.Pointer source converts to any *T — Go exempts it from
 	// the identical-pointee rule, so the gate below is skipped.
-	if pt := v.pointeeTag(x); pt != nil && v.H.ElemOf != nil && !srcUnsafe {
-		ptag = pt
-		if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && et != nil && !sameTypeDef(pt, et) && !sameTypeDef(pt, v.peelAlias(et)) {
-			pe, pp := v.peelNamed(et), v.peelNamed(pt)
-			if pe == nil || pp == nil || pe.Kind != pp.Kind ||
-				(pe.Kind == runtime.KindStruct && !runtime.StructFieldsEq(pe, pp)) ||
-				(pe.Kind != runtime.KindStruct && !v.convShapeEq(pe, pp)) {
-				return nil, fmt.Errorf("cannot convert *%s to %s", tdName(pt), tdName(td))
+	if v.H.ElemOf != nil && !srcUnsafe {
+		if pt := v.pointeeTag(x); pt == nil {
+			// the source's pointee has no declared tag — a bare
+			// `&x` cell or an untagged host box. gc still requires
+			// identical underlying pointee types, so converting to a
+			// pointer whose pointee is a declared type is only legal
+			// when the pointee is a host value of that type (`TL(&loc)`
+			// on an untagged host struct), or its underlying shape is
+			// the target's (`(*SV)(&s)` — an untagged cell keeps no
+			// declared tag, so the string under it still matches
+			// `type SV string`'s underlying).
+			if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && declaredType(et) {
+				dv, _ := runtime.Deref(x)
+				if !v.pointeeIsHostType(x, et) && typeNameOf(dv) != v.underlyingShape(et) {
+					return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+				}
+			}
+		} else {
+			ptag = pt
+			if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && et != nil && !sameTypeDef(pt, et) && !sameTypeDef(pt, v.peelAlias(et)) {
+				pe, pp := v.peelNamed(et), v.peelNamed(pt)
+				// host pointees carry no script-modeled field list —
+				// StructFieldsEq on two empty lists is vacuously true,
+				// so a host-backed typedef compares by HostType like
+				// TypIdentical's host-identity rule.
+				mismatch := pe == nil || pp == nil || pe.Kind != pp.Kind
+				if !mismatch && (pe.HostNew != nil || pp.HostNew != nil) {
+					mismatch = pe.HostNew == nil || pp.HostNew == nil || pe.HostType() != pp.HostType()
+				} else if !mismatch && pe.Kind == runtime.KindStruct {
+					mismatch = !runtime.StructFieldsEq(pe, pp)
+				} else if !mismatch {
+					mismatch = !v.convShapeEq(pe, pp)
+				}
+				if mismatch {
+					return nil, fmt.Errorf("cannot convert *%s to %s", tdName(pt), tdName(td))
+				}
 			}
 		}
 	}

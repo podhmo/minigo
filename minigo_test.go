@@ -3038,6 +3038,8 @@ func TestFuzzFixes(t *testing.T) {
 		{"ComplexMixedWidth", "mismatched types complex64 and complex128"},
 		{"ComplexOrdered", "complex numbers are not ordered"},
 		{"BodilessCall", "no implementation for bodiless decl"},
+		{"PtrConvDeclBad", "cannot convert *int to *SS"},
+		{"PtrConvHostBad", "cannot convert *strings.Builder to *strings.Reader"},
 	}
 	for _, c := range traps {
 		_, err := e.Run(context.Background(), "./testdata/fuzzfix", c.fn)
