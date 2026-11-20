@@ -1667,7 +1667,7 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 		// zero-return shim would silently drop every result.
 		if d.Func.Body == nil {
 			if v, ok := stdlib.AsmImpl(pkg, d.Name); ok {
-				return v, nil
+				return e.tagDeclResults(pkg, d, v), nil
 			}
 			if pkg.Path == "runtime/debug" && d.Name == "modinfo" {
 				return &runtime.BuiltinFunc{Name: "runtime/debug.modinfo", Fn: func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
@@ -1688,6 +1688,69 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 	default:
 		return nil, fmt.Errorf("cannot materialize %s", d.Name)
 	}
+}
+
+// tagDeclResults wraps a host implementation substituted for a bodiless
+// declaration so its results carry the declared types — the interpreted
+// decl would answer tagged values, but a host fn returns bare ones. An
+// untagged result poisons `c :=` inference: `c := addVV(...)` records
+// int where gc declares Word, and a later `c = addVW(...)` (a named
+// big.Word result) traps on the slot's stale tag. Result types that do
+// not resolve — a type parameter like maps.clone's M — pass through,
+// as do interface results.
+func (e *Engine) tagDeclResults(pkg *runtime.Package, d *index.Decl, v runtime.Value) runtime.Value {
+	bf, ok := v.(*runtime.BuiltinFunc)
+	if !ok || d.Func.Type == nil || d.Func.Type.Results == nil {
+		return v
+	}
+	var exprs []ast.Expr
+	for _, res := range d.Func.Type.Results.List {
+		for range max(len(res.Names), 1) {
+			exprs = append(exprs, res.Type)
+		}
+	}
+	if len(exprs) == 0 {
+		return v
+	}
+	ctx := &runtime.TypeDef{Pkg: pkg}
+	tds := make([]*runtime.TypeDef, len(exprs))
+	for i, x := range exprs {
+		if td, err := e.td.ResolveTypeRef(ctx, x); err == nil && td != nil && td.Kind != runtime.KindInterface {
+			tds[i] = td
+		}
+	}
+	impl := bf.Fn
+	tag := *bf
+	tag.Fn = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		res, err := impl(vc, args)
+		if err != nil {
+			return nil, err
+		}
+		if len(tds) == 1 {
+			if tds[0] == nil {
+				return res, nil
+			}
+			if cv, err := vc.Convert(tds[0], res); err == nil {
+				return cv, nil
+			}
+			return res, nil
+		}
+		tp, ok := res.(*runtime.Tuple)
+		if !ok {
+			return res, nil
+		}
+		elems := make([]runtime.Value, len(tp.Elems))
+		for i, el := range tp.Elems {
+			if i < len(tds) && tds[i] != nil {
+				if cv, err := vc.Convert(tds[i], el); err == nil {
+					el = cv
+				}
+			}
+			elems[i] = el
+		}
+		return &runtime.Tuple{Elems: elems}, nil
+	}
+	return &tag
 }
 
 func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) {
