@@ -24,6 +24,7 @@ import (
 	"go/token"
 	"sort"
 	"strings"
+	"weak"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
@@ -1618,28 +1619,126 @@ func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 	return 0, false
 }
 
+// mintEnt is one recorded uintptr referent. get hands back a pointer
+// value covering the storage — a weak entry reports nil once the
+// referent became unreachable (gc's rule: a uintptr→unsafe.Pointer
+// revive is only valid while the object stays reachable), and a strong
+// entry is for the rare unweakable payload and lives until swept.
+type mintEnt struct {
+	get func() runtime.Value
+}
+
+// Dead reports whether the entry's referent is unreachable — the
+// process table sweeps dead entries before evicting live ones.
+func (e *mintEnt) Dead() bool { return e.get() == nil }
+
+// mintEntOf records x's referent behind a minted address, weakly where
+// the storage is a known heap object — a cell, a host box, a field's
+// owning struct, a slice's backing — so the entry dies with the
+// referent instead of pinning it (the revive then rebuilds an
+// equivalent ref onto the still-live storage). An unweakable payload
+// falls back to a strong record.
+func mintEntOf(x runtime.Value) *mintEnt {
+	strong := &mintEnt{get: func() runtime.Value { return x }}
+	switch t := x.(type) {
+	case *runtime.Cell:
+		w := weak.Make(t)
+		return &mintEnt{get: func() runtime.Value {
+			if p := w.Value(); p != nil {
+				return p
+			}
+			return nil
+		}}
+	case *runtime.GoValue:
+		w := weak.Make(t)
+		return &mintEnt{get: func() runtime.Value {
+			if p := w.Value(); p != nil {
+				return p
+			}
+			return nil
+		}}
+	case *runtime.FieldRef:
+		// the ref wrapper is ephemeral — the FIELD SLOT's owner is the
+		// live object, so the weak target is the resolved struct and a
+		// revive rebuilds a name ref onto it.
+		st, _, ok := t.Find()
+		if !ok {
+			return strong
+		}
+		w := weak.Make(st)
+		return &mintEnt{get: func() runtime.Value {
+			if s := w.Value(); s != nil {
+				return &runtime.FieldRef{Base: s, Name: t.Name}
+			}
+			return nil
+		}}
+	case *runtime.IndexRef:
+		sl := t.Slice()
+		if sl == nil {
+			return strong
+		}
+		w := weak.Make(sl)
+		return &mintEnt{get: func() runtime.Value {
+			if s := w.Value(); s != nil {
+				return &runtime.IndexRef{Base: s, Key: t.Key}
+			}
+			return nil
+		}}
+	case *runtime.DerefRef:
+		// &*p names its pointee's storage — record that referent's
+		// entry so a revive hands back a pointer to the same storage.
+		if pv, ok := runtime.Deref(t.Ptr); ok {
+			return mintEntOf(pv)
+		}
+		return strong
+	default:
+		return strong
+	}
+}
+
 // mintUnsafePtr records the referent behind a minted address. The
 // table lives on the process so a pointer minted on one goroutine
 // revives on a sibling (goroutine args); a VM outside any process —
 // setup work before the first Call — falls back to its own table.
 func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value) {
+	ent := mintEntOf(ref)
 	if p := v.proc.Load(); p != nil {
-		p.MintUintptr(addr, ref)
+		p.MintUintptr(addr, ent)
 		return
 	}
 	if v.unsafePtrMint == nil {
-		v.unsafePtrMint = map[uint64]runtime.Value{}
+		v.unsafePtrMint = map[uint64]*mintEnt{}
 	}
-	v.unsafePtrMint[addr] = ref
+	v.unsafePtrMint[addr] = ent
 }
 
 // reviveUnsafePtr reports the referent a mint recorded for addr.
 func (v *VM) reviveUnsafePtr(addr uint64) (runtime.Value, bool) {
+	var ref any
+	var ok bool
 	if p := v.proc.Load(); p != nil {
-		return p.ReviveUintptr(addr)
+		ref, ok = p.ReviveUintptr(addr)
+	} else {
+		ent, hit := v.unsafePtrMint[addr]
+		if !hit {
+			return nil, false
+		}
+		if ent.Dead() {
+			delete(v.unsafePtrMint, addr)
+			return nil, false
+		}
+		ref, ok = ent, true
 	}
-	ref, ok := v.unsafePtrMint[addr]
-	return ref, ok
+	if !ok {
+		return nil, false
+	}
+	if ent, isEnt := ref.(*mintEnt); isEnt {
+		if rv := ent.get(); rv != nil {
+			return rv, true
+		}
+		return nil, false
+	}
+	return ref, true
 }
 
 // unsafePtrAddrOf computes the minted address itself — see unsafePtrAddr
