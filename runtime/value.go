@@ -988,7 +988,19 @@ func CanonicalKey(v Value) Value {
 			return NIL
 		}
 		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
-	case *Cell, *FieldRef, *IndexRef, *Chan:
+	case *Cell:
+		// Go allocates a zero-size pointee at the shared zerobase, so
+		// pointers to it may compare equal — the choice the spec
+		// allows, and the same one binop's `==` already takes. Key by
+		// the pointee typedef: two *F keys meet while *F and *G stay
+		// apart, matching the interface equality gc gives.
+		if IsZeroSizeValue(x.Elem) {
+			if tag := zeroSizePointeeTag(x); tag != "" {
+				return mapKey{typ: tag, repr: "zerobase"}
+			}
+		}
+		return x
+	case *FieldRef, *IndexRef, *Chan:
 		// pointer-shaped keys hash by identity — the wrapper itself
 		// is comparable and stable.
 		return x
@@ -1762,6 +1774,20 @@ func IsZeroSizeValue(v Value) bool {
 		return ok && at.Len != nil
 	}
 	return false
+}
+
+// zeroSizePointeeTag renders the canonical key tag for a cell holding
+// a zero-size value — the pointee's typedef, or its struct definition
+// for an untyped composite literal. "" when neither is known; the key
+// then falls back to pointer identity.
+func zeroSizePointeeTag(c *Cell) string {
+	if c.Typ != nil {
+		return "zb:" + typeTagOf(c.Typ)
+	}
+	if st, ok := c.Elem.(*Struct); ok && st.Def != nil {
+		return "zb:" + typeTagOf(st.Def)
+	}
+	return ""
 }
 
 // Map is a map value: a header over a [mapStore]. Pairs is keyed by the
