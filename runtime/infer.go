@@ -34,6 +34,12 @@ type Inferer struct {
 	// methods alike. Nil means "unresolvable" (interface-method
 	// inference is skipped).
 	MethodSigs func(td *TypeDef) map[string]*Function
+	// ifacePairs dedups (interface, concrete) pairs unifyIfaceMethods
+	// already compared — a requirement and an implementation that each
+	// return their own type (N[T] interface{ M() N[T] } vs I{ M() I })
+	// otherwise recurse forever; a pair already compared teaches
+	// nothing new anyway.
+	ifacePairs map[[2]*TypeDef]bool
 }
 
 func (i *Inferer) underlying(td *TypeDef) *TypeDef {
@@ -430,6 +436,13 @@ func typedefOfBind(v Value) *TypeDef {
 // params, which UnifyDef then binds) and unified against conc's method
 // of the same name.
 func (i *Inferer) unifyIfaceMethods(ctx *TypeDef, tset map[string]bool, binds map[string]Value, bt *TypeDef, idxs []ast.Expr, conc *TypeDef) {
+	if i.ifacePairs == nil {
+		i.ifacePairs = map[[2]*TypeDef]bool{}
+	}
+	if i.ifacePairs[[2]*TypeDef{bt, conc}] {
+		return
+	}
+	i.ifacePairs[[2]*TypeDef{bt, conc}] = true
 	reqs := i.MethodSigs(bt)
 	cms := i.MethodSigs(conc)
 	if reqs == nil || cms == nil {
@@ -445,6 +458,12 @@ func (i *Inferer) unifyIfaceMethods(ctx *TypeDef, tset map[string]bool, binds ma
 		cm := cms[name]
 		if req == nil || cm == nil || req.Decl == nil || cm.Decl == nil ||
 			req.Decl.Type == nil || cm.Decl.Type == nil {
+			continue
+		}
+		// an unexported method belongs to its declaring package — gc
+		// never satisfies the requirement with a same-named method
+		// from another package.
+		if name[0] >= 'a' && name[0] <= 'z' && req.Pkg != cm.Pkg {
 			continue
 		}
 		ps, ok := substTypeExprs(req.Decl.Type, subs).(*ast.FuncType)
