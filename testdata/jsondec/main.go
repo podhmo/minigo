@@ -19,6 +19,10 @@ type TBis T
 
 func (b TBis) Tag() string { return "bis" }
 
+type Lit string
+
+func (l *Lit) UnmarshalJSON(b []byte) error { *l = Lit(string(b)); return nil }
+
 func main() string {
 	// bound NewDecoder streams one value off the reader.
 	dec := json.NewDecoder(bytes.NewReader([]byte(`{"a":1} {"b":2}`)))
@@ -60,8 +64,36 @@ func main() string {
 	if err := json.Unmarshal([]byte(`{"x":1}`), &tb); err != nil {
 		return "err7:" + err.Error()
 	}
+	// a nested UnmarshalJSON receives the member's original literal.
+	var sp struct {
+		K Lit `json:"k"`
+	}
+	if err := json.Unmarshal([]byte(`{"k":  1e2 }`), &sp); err != nil {
+		return "err8:" + err.Error()
+	}
+	// DisallowUnknownFields checks every duplicate-key occurrence
+	// while both occurrences still decode.
+	strict2 := json.NewDecoder(bytes.NewReader([]byte(`{"o":{"bad":1},"o":{"a":7}}`)))
+	strict2.DisallowUnknownFields()
+	var s2 struct {
+		O struct {
+			A int `json:"a"`
+		} `json:"o"`
+	}
+	serr2 := strict2.Decode(&s2)
+	if serr2 == nil {
+		return "err9:no error"
+	}
+	// a duplicate known key's later value wins.
+	var dup struct {
+		A int `json:"a"`
+	}
+	if err := json.Unmarshal([]byte(`{"a":1,"a":2}`), &dup); err != nil {
+		return "err10:" + err.Error()
+	}
 	return string(rune('0'+m1["a"])) + string(rune('0'+m2["b"])) + "|" + string(b) +
-		"|" + serr.Error() + "|" + itoa(big) + "|" + tb.Tag()
+		"|" + serr.Error() + "|" + itoa(big) + "|" + tb.Tag() +
+		"|" + string(sp.K) + "|" + serr2.Error() + "|" + itoa(int64(dup.A)) + "|" + itoa(int64(s2.O.A))
 }
 
 func itoa(i int64) string {

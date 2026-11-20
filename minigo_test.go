@@ -1499,7 +1499,7 @@ func TestHostStubPackage(t *testing.T) {
 	if diff := cmp.Diff("ok", run(t, e, "./testdata/importmgr", "ManagerRef")); diff != "" {
 		t.Fatalf("minigo.dev/importmanager type reference (-want +got): %s", diff)
 	}
-	if diff := cmp.Diff("12|{\"x\":[1,2]}|json: unknown field \"zzz\"|9007199254740993|bis", run(t, e, "./testdata/jsondec", "main")); diff != "" {
+	if diff := cmp.Diff("12|{\"x\":[1,2]}|json: unknown field \"zzz\"|9007199254740993|bis|1e2|json: unknown field \"bad\"|2|7", run(t, e, "./testdata/jsondec", "main")); diff != "" {
 		t.Fatalf("bound json decoder/rawmessage (-want +got): %s", diff)
 	}
 	// host.Exit never terminates the host, like os.Exit
