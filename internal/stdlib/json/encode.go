@@ -185,8 +185,9 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 		defer delete(seen, x)
 		// a []byte marshals as a base64 string — named element types
 		// count too ([]MyByte), while an [N]byte array stays
-		// element-wise.
-		if x.Typ != nil && !stdlib.IsArrayTyp(x.Typ) && jsonSliceIsByte(c, x.Typ) {
+		// element-wise. An element type implementing a marshaler
+		// demotes the slice to the element-wise path like gc.
+		if x.Typ != nil && !stdlib.IsArrayTyp(x.Typ) && jsonSliceIsByte(c, x.Typ) && !jsonElemMarshals(c, x.Elems) {
 			out := make([]byte, len(x.Elems))
 			for i, e := range x.Elems {
 				u, _ := runtime.Unwrap(e).(int64)
@@ -270,11 +271,10 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 
 // jsonSliceIsByte reports whether td's element type is byte/uint8 —
 // a named byte typedef counts too, matching gc's `[]MyByte` base64
-// rule.
+// rule. The AST `byte`/`uint8` spelling alone is not enough: a
+// scope may shadow `byte` (`type byte string`), so the element
+// resolves to its typedef and the UNDERLYING name decides.
 func jsonSliceIsByte(c runtime.MemberShapeCaller, td *runtime.TypeDef) bool {
-	if stdlib.ByteSliceTyp(td) {
-		return true
-	}
 	et := td.Elem
 	if et == nil && c != nil {
 		// a named element type resolves through the caller —
@@ -288,4 +288,20 @@ func jsonSliceIsByte(c runtime.MemberShapeCaller, td *runtime.TypeDef) bool {
 	}
 	un := jsonUnderlyingName(et)
 	return un == "byte" || un == "uint8"
+}
+
+// jsonElemMarshals reports whether the slice's element type carries
+// MarshalJSON/MarshalText — gc skips the []byte base64 shortcut
+// then. Every element shares one static type, so one probe decides;
+// slice elements are addressable, so pointer receivers count too.
+func jsonElemMarshals(c runtime.MemberShapeCaller, elems []runtime.Value) bool {
+	if len(elems) == 0 {
+		return false
+	}
+	pv := jsonMarshalProbe(elems[0], true)
+	if _, ok := runtime.IfaceMember(c, pv, "MarshalJSON"); ok {
+		return true
+	}
+	_, ok := runtime.IfaceMember(c, pv, "MarshalText")
+	return ok
 }

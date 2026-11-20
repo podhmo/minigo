@@ -119,7 +119,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/json/decode.go":            71,
 	"internal/stdlib/json/dom.go":               122,
 	"internal/stdlib/json/deep.go":              48,
-	"internal/stdlib/json/encode.go":            292,
+	"internal/stdlib/json/encode.go":            308,
 	"internal/stdlib/json/helpers.go":           69,
 	"internal/stdlib/json/mapkey.go":            162,
 	"internal/stdlib/json/json.go":              1629,
