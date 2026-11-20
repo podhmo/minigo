@@ -1038,8 +1038,16 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			return &runtime.TypedNil{Typ: td}
 		}
 	}
-	if _, ok := x.(*runtime.IfaceNil); ok {
-		f.trap("cannot use interface value as %s", tdName(td))
+	if in, ok := x.(*runtime.IfaceNil); ok {
+		// a boxed typed nil still carries its concrete tag: `error(e)`
+		// for a nil *E feeds an error-typed slot whenever *E satisfies
+		// the interface — the source errors package's `Is(err, target)`
+		// param relies on it. ifaceDynKey reads the tag directly.
+		if utd0 := v.peelNamed(td); utd0 != nil && utd0.Kind == runtime.KindInterface &&
+			v.satisfiesIface(f, utd0, x) {
+			return x
+		}
+		f.trap("cannot use interface value %s as %s", tdName(in.Typ), tdName(td))
 	}
 	// values carrying a declared tag (a named struct's Def, a stamped
 	// container Typ) follow the named-to-named rule like *Named —
