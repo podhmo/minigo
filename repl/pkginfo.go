@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/podhmo/minigo/pkg/locator"
 	"github.com/podhmo/minigo/pkg/modulewalk"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // Imports answers "what does this package import" (:imports). ref
@@ -80,11 +82,7 @@ func (r *REPL) packageImports(ctx context.Context, ref string) (*modulewalk.Pack
 		if p == nil {
 			return nil, fmt.Errorf("imports: no package to inspect — :cd into one first")
 		}
-		if p.Dir != "" { // a dir-loaded package spells its import path through its own module
-			ref = p.Dir
-		} else {
-			ref = p.Path
-		}
+		ref = scanRefOf(p)
 	}
 	if dir := r.anchor(ref); dirExists(dir) {
 		abs, err := filepath.Abs(dir)
@@ -114,6 +112,25 @@ func (r *REPL) packageImports(ctx context.Context, ref string) (*modulewalk.Pack
 	return w.Imports(ctx, ref)
 }
 
+// scanRefOf resolves the entered package to what a scan chases: a
+// real import path is what importers write and what resolves the
+// package, so it wins over re-deriving the path from p.Dir — a package
+// pulled in through a replace into another module's tree would
+// otherwise be spelled by the replacement's module path, which nothing
+// imports. Synthetic <dir>/<file> spellings and pathless packages
+// still go through the directory so the locator can name them inside
+// their own module.
+func scanRefOf(p *runtime.Package) string {
+	if p.Dir == "" || (p.Path != "" && !syntheticImportPath(p.Path)) {
+		return p.Path
+	}
+	return p.Dir
+}
+
+func syntheticImportPath(path string) bool {
+	return strings.HasPrefix(path, "<dir>") || strings.HasPrefix(path, "<file>")
+}
+
 // importPathForScan spells ref as the import path an importers query
 // chases: a directory goes through its own module's locator, anything
 // else is already a path.
@@ -127,11 +144,7 @@ func (r *REPL) importPathForScan(ref string) (string, error) {
 		if p == nil {
 			return "", fmt.Errorf("importers: no package to inspect — :cd into one first")
 		}
-		if p.Dir != "" {
-			ref = p.Dir
-		} else {
-			return p.Path, nil
-		}
+		ref = scanRefOf(p)
 	}
 	if dir := r.anchor(ref); dirExists(dir) {
 		abs, err := filepath.Abs(dir)
