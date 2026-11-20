@@ -301,6 +301,11 @@ func (w *Walker) resolvePatterns(ctx context.Context, patterns []string) ([]stri
 			if !d.IsDir() {
 				return nil
 			}
+			// the go tool's exclusions: vendor, testdata, dot- and
+			// underscore-prefixed dirs never hold packages
+			if name := d.Name(); path != abs && (name == "vendor" || name == "testdata" || name[0] == '.' || name[0] == '_') {
+				return filepath.SkipDir
+			}
 			// a nested module is its own tree — ./... never crosses it,
 			// the same carve-out the go tool applies
 			if modDir, _ := moduleOf(path); modDir == path && path != baseMod {
