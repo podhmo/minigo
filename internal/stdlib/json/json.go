@@ -1842,23 +1842,31 @@ func jsonMapKey(c runtime.VMCaller, k string, kt *runtime.TypeDef, ectx *jsonErr
 func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.Value, ectx *jsonErrCtx) runtime.Value {
 	// UseNumber's decoder emits json.Number for every number literal;
 	// a typed target still converts the literal like gc's direct decode.
-	// Integer literals keep their exact int64 so >2^53 values decode
-	// without float64 rounding.
+	// Integer literals keep their exact int64/uint64 so >2^53 values
+	// decode without float64 rounding, and integer targets take only
+	// integer spellings: gc hands the literal to ParseInt/ParseUint, so
+	// "1e2"/"1.0" fail here rather than rounding through float64.
 	if n, ok := dec.(json.Number); ok && td != nil {
+		un := jsonUnderlyingName(td)
+		if un == "" {
+			un = td.Name
+		}
 		switch {
-		case td.Name == "encoding/json.Number":
+		case td.Name == "encoding/json.Number" || un == "json.Number":
 			dec = n.String()
-		case td.Name == "float64" || td.Name == "float32":
+		case un == "float64" || un == "float32":
 			if f, err := n.Float64(); err == nil {
 				dec = f
 			}
-		case jsonIntName(td.Name) || jsonIntName(jsonUnderlyingName(td)):
-			if i, err := strconv.ParseInt(n.String(), 10, 64); err == nil {
+		case jsonIntName(un):
+			lit := n.String()
+			if i, err := strconv.ParseInt(lit, 10, 64); err == nil {
 				dec = i
-			} else if u, uerr := strconv.ParseUint(n.String(), 10, 64); uerr == nil && u <= math.MaxInt64 {
-				dec = int64(u)
-			} else if f, ferr := n.Float64(); ferr == nil {
-				dec = f
+			} else if u, uerr := strconv.ParseUint(lit, 10, 64); uerr == nil {
+				dec = u
+			} else {
+				ectx.fail("number "+lit, td, nil)
+				return priorOr(prior, c, td)
 			}
 		}
 	}
@@ -1916,6 +1924,13 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 			ectx.fail("number "+strconv.FormatInt(i, 10), td, nil)
 			return priorOr(prior, c, td)
 		}
+		if u, ok := dec.(uint64); ok {
+			if u2, ok := jsonUintOfInt(u, td.Name); ok {
+				return conv(u2)
+			}
+			ectx.fail("number "+strconv.FormatUint(u, 10), td, nil)
+			return priorOr(prior, c, td)
+		}
 		f, ok := dec.(float64)
 		if !ok {
 			return fail()
@@ -1956,6 +1971,39 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 				return conv(i2)
 			}
 			ectx.fail("number "+strconv.FormatInt(i, 10), td, nil)
+			return priorOr(prior, c, td)
+		}
+		if u, ok := dec.(uint64); ok {
+			if u2, ok := jsonUintOfInt(u, un); ok {
+				return conv(u2)
+			}
+			ectx.fail("number "+strconv.FormatUint(u, 10), td, nil)
+			return priorOr(prior, c, td)
+		}
+		f, ok := dec.(float64)
+		if !ok {
+			return fail()
+		}
+		i, ok := jsonIntOf(f, un)
+		if !ok {
+			ectx.fail("number "+jsonNumLit(f), td, nil)
+			return priorOr(prior, c, td)
+		}
+		return conv(i)
+	case uint64:
+		un := jsonUnderlyingName(td)
+		if i, ok := dec.(int64); ok {
+			if i2, ok := jsonIntOfInt64(i, un); ok {
+				return conv(i2)
+			}
+			ectx.fail("number "+strconv.FormatInt(i, 10), td, nil)
+			return priorOr(prior, c, td)
+		}
+		if u, ok := dec.(uint64); ok {
+			if u2, ok := jsonUintOfInt(u, un); ok {
+				return conv(u2)
+			}
+			ectx.fail("number "+strconv.FormatUint(u, 10), td, nil)
 			return priorOr(prior, c, td)
 		}
 		f, ok := dec.(float64)
@@ -2112,7 +2160,7 @@ func jsonStringOpt(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runti
 		if err != nil {
 			return numFail()
 		}
-		return conv(int64(u64))
+		return conv(u64)
 	case "float":
 		f, err := strconv.ParseFloat(inner, bits)
 		if err != nil {
@@ -2271,6 +2319,9 @@ func jsonIntOf(f float64, name string) (int64, bool) {
 func jsonIntOfInt64(i int64, name string) (int64, bool) {
 	bits, signed := jsonIntWidth(name)
 	if bits >= 64 {
+		if !signed && i < 0 {
+			return 0, false
+		}
 		return i, true
 	}
 	if signed {
@@ -2282,6 +2333,26 @@ func jsonIntOfInt64(i int64, name string) (int64, bool) {
 		return 0, false
 	}
 	return i, true
+}
+
+// jsonUintOfInt range-checks an exact uint64 literal against the
+// spelled integer type — the >2^63 path UseNumber's literal keeps.
+func jsonUintOfInt(u uint64, name string) (uint64, bool) {
+	bits, signed := jsonIntWidth(name)
+	if bits >= 64 {
+		if signed && u > math.MaxInt64 {
+			return 0, false
+		}
+		return u, true
+	}
+	if signed {
+		if u > uint64(1)<<(bits-1)-1 {
+			return 0, false
+		}
+	} else if u > uint64(1)<<bits-1 {
+		return 0, false
+	}
+	return u, true
 }
 
 // jsonIntWidth returns the bit width and signedness of a spelled integer
