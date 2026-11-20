@@ -11,8 +11,9 @@ import (
 // pointer value converts to it from any *T and back to any *T, and the
 // Named-tagged payload keeps write-through, identity and nil-ness. gc's
 // compile-time rejections (direct assignment, dereference, non-pointer
-// sources) surface as traps; uintptr -> unsafe.Pointer is the one
-// documented boundary since no ref can be minted from an integer.
+// sources) surface as traps; uintptr -> unsafe.Pointer mints an
+// address-valued pointer whose referent the process's mint table
+// records, so *T conversion revives it — across goroutines too.
 func TestUnsafePointer(t *testing.T) {
 	e := newEngine(t)
 
@@ -63,6 +64,7 @@ func TestUnsafePointer(t *testing.T) {
 			{"DerefAddrSame", int64(1)},
 			{"NilUintptr", int64(1)},
 			{"UintptrToPtr", int64(7)},
+			{"UintptrAcrossGoroutines", int64(11)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/unsafeptr", c.fn)

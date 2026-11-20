@@ -47,6 +47,9 @@ type Proc struct {
 	// register a channel.
 	chans    map[uintptr]*chanLive
 	managedN atomic.Int32
+	// mints is the process-wide uintptr-mint table shared by the
+	// process's goroutine VMs (see MintUintptr).
+	mints *uintMint
 }
 
 // chanLive is one managed host channel's liveness record. rv pins the
@@ -96,6 +99,49 @@ func (deadlockError) Error() string {
 // completed send whose receiver has not yet resumed) disarms the watch
 // during the delay instead of racing a false fatal.
 const deadlockQuiescence = 200 * time.Millisecond
+
+// uintMint is the process-wide uintptr-mint table: `unsafe.Pointer(x)`
+// on an integer payload mints an address-valued pointer, and converting
+// it back to *T revives the recorded referent — a goroutine arg minted
+// on the parent lands in the same table as the child's lookup. Entries
+// pin their referent, so the table is a bounded FIFO: gc treats
+// dereferencing a stale uintptr as UB anyway, so evicting the oldest
+// mint bounds the memory while the ordinary mint→revive window holds.
+type uintMint struct {
+	q []uint64
+	m map[uint64]any
+}
+
+const uintMintCap = 4096
+
+// MintUintptr records ref as the referent behind the minted address.
+func (p *Proc) MintUintptr(addr uint64, ref any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mints == nil {
+		p.mints = &uintMint{m: map[uint64]any{}}
+	}
+	if _, dup := p.mints.m[addr]; !dup {
+		p.mints.q = append(p.mints.q, addr)
+		for len(p.mints.q) > uintMintCap {
+			delete(p.mints.m, p.mints.q[0])
+			p.mints.q = p.mints.q[1:]
+		}
+	}
+	p.mints.m[addr] = ref
+}
+
+// ReviveUintptr reports the referent a mint recorded for addr — the
+// *T-conversion side of the uintptr round trip.
+func (p *Proc) ReviveUintptr(addr uint64) (any, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mints == nil {
+		return nil, false
+	}
+	ref, ok := p.mints.m[addr]
+	return ref, ok
+}
 
 func New() *Proc { return &Proc{done: make(chan struct{})} }
 

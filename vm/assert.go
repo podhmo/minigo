@@ -1697,13 +1697,38 @@ func hostPtrBox(x runtime.Value) bool {
 func (v *VM) unsafePtrAddr(x runtime.Value) (uint64, bool) {
 	x = runtime.Unwrap(x)
 	if addr, ok := v.unsafePtrAddrOf(x); ok {
-		if v.unsafePtrMint == nil {
-			v.unsafePtrMint = map[uint64]runtime.Value{}
-		}
-		v.unsafePtrMint[addr] = x
+		v.mintUnsafePtr(addr, x)
 		return addr, true
 	}
 	return 0, false
+}
+
+// mintUnsafePtr records the referent behind a minted address. The
+// table lives on the process so a pointer minted on one goroutine
+// revives on a sibling (goroutine args); a VM outside any process —
+// setup work before the first Call — falls back to its own table.
+func (v *VM) mintUnsafePtr(addr uint64, ref runtime.Value) {
+	if p := v.proc.Load(); p != nil {
+		p.MintUintptr(addr, ref)
+		return
+	}
+	if v.unsafePtrMint == nil {
+		v.unsafePtrMint = map[uint64]runtime.Value{}
+	}
+	v.unsafePtrMint[addr] = ref
+}
+
+// reviveUnsafePtr reports the referent a mint recorded for addr.
+func (v *VM) reviveUnsafePtr(addr uint64) (runtime.Value, bool) {
+	if p := v.proc.Load(); p != nil {
+		if ref, ok := p.ReviveUintptr(addr); ok {
+			rv, isVal := ref.(runtime.Value)
+			return rv, isVal
+		}
+		return nil, false
+	}
+	ref, ok := v.unsafePtrMint[addr]
+	return ref, ok
 }
 
 // unsafePtrAddrOf computes the minted address itself — see unsafePtrAddr
