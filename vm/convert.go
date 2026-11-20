@@ -496,6 +496,31 @@ func (v *VM) pointeeIsHostType(x runtime.Value, et *runtime.TypeDef) bool {
 	return rt != nil && hostbridge.TypeOf(gv.V) == rt
 }
 
+// pointeeShapeEq reports whether the value under an untagged pointer
+// shares et's underlying shape: the pointee's own typedef compares by
+// convShapeEq (`(*S)(&struct{X int}{1})` — a bare literal's anonymous
+// def spells differently from `typeNameOf`), falling back to the
+// type-spelling compare for scalar pointees that carry no typedef.
+func (v *VM) pointeeShapeEq(dv runtime.Value, et *runtime.TypeDef) bool {
+	var dtd *runtime.TypeDef
+	switch t := dv.(type) {
+	case *runtime.Named:
+		dtd = t.Typ
+	case *runtime.Struct:
+		dtd = t.Def
+	case *runtime.Slice:
+		dtd = t.Typ
+	case *runtime.Map:
+		dtd = t.Typ
+	}
+	if dtd != nil {
+		if ue, err := v.H.Underlying(et); err == nil && ue != nil && v.convShapeEq(ue, dtd) {
+			return true
+		}
+	}
+	return typeNameOf(dv) == v.underlyingShape(et)
+}
+
 // hostFloat reads a value as float64 for float conversions: plain
 // int64/float64 pass through, and a boxed host number converts by its
 // own kind (uint64 reads unsigned — a wide literal keeps 2^63, not
@@ -802,7 +827,7 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 			// `type SV string`'s underlying).
 			if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && declaredType(et) {
 				dv, _ := runtime.Deref(x)
-				if !v.pointeeIsHostType(x, et) && typeNameOf(dv) != v.underlyingShape(et) {
+				if !v.pointeeIsHostType(x, et) && !v.pointeeShapeEq(dv, et) {
 					return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 				}
 			}
@@ -816,7 +841,8 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 				// TypIdentical's host-identity rule.
 				mismatch := pe == nil || pp == nil || pe.Kind != pp.Kind
 				if !mismatch && (pe.HostNew != nil || pp.HostNew != nil) {
-					mismatch = pe.HostNew == nil || pp.HostNew == nil || pe.HostType() != pp.HostType()
+					mismatch = pe.HostNew == nil || pp.HostNew == nil ||
+						(pe.HostType() != pp.HostType() && !runtime.HostUnderlyingEq(pe.HostType(), pp.HostType()))
 				} else if !mismatch && pe.Kind == runtime.KindStruct {
 					mismatch = !runtime.StructFieldsEq(pe, pp)
 				} else if !mismatch {

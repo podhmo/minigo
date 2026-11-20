@@ -2426,6 +2426,61 @@ func (td *TypeDef) HostType() reflect.Type {
 	return rt
 }
 
+// HostUnderlyingEq reports whether two host types share the same
+// underlying type for a `*A -> *B` conversion — named types whose
+// declarations point at the same structural type compare equal
+// (`net.IP` and `net.IPMask` are both `[]byte`), while two distinct
+// named leaves do not (reflect exposes no Underlying(), so composite
+// kinds recurse through their elements).
+func HostUnderlyingEq(a, b reflect.Type) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Kind() != b.Kind() {
+		return false
+	}
+	switch a.Kind() {
+	case reflect.Pointer:
+		return HostUnderlyingEq(a.Elem(), b.Elem())
+	case reflect.Slice:
+		return HostUnderlyingEq(a.Elem(), b.Elem())
+	case reflect.Array:
+		return a.Len() == b.Len() && HostUnderlyingEq(a.Elem(), b.Elem())
+	case reflect.Map:
+		return HostUnderlyingEq(a.Key(), b.Key()) && HostUnderlyingEq(a.Elem(), b.Elem())
+	case reflect.Chan:
+		return a.ChanDir() == b.ChanDir() && HostUnderlyingEq(a.Elem(), b.Elem())
+	case reflect.Func:
+		if a.NumIn() != b.NumIn() || a.NumOut() != b.NumOut() || a.IsVariadic() != b.IsVariadic() {
+			return false
+		}
+		for i := 0; i < a.NumIn(); i++ {
+			if !HostUnderlyingEq(a.In(i), b.In(i)) {
+				return false
+			}
+		}
+		for i := 0; i < a.NumOut(); i++ {
+			if !HostUnderlyingEq(a.Out(i), b.Out(i)) {
+				return false
+			}
+		}
+		return true
+	case reflect.Struct:
+		if a.NumField() != b.NumField() {
+			return false
+		}
+		for i := 0; i < a.NumField(); i++ {
+			fa, fb := a.Field(i), b.Field(i)
+			if fa.Name != fb.Name || fa.Tag != fb.Tag || fa.Anonymous != fb.Anonymous ||
+				!HostUnderlyingEq(fa.Type, fb.Type) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ResetCaches drops the cached field types, interface requirements and
 // host type. Call it on a shallow copy whose Binds, Pkg, File or
 // LocalTypes differ from the original's.
