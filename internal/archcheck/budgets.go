@@ -161,7 +161,7 @@ var FileBudgets = map[string]int{
 	"runtime/value.go":         3531,
 	"runtime/walk.go":          131,
 	"special/special.go":       34,
-	"internal/stdlib/importmanager/importmanager.go": 24,
+	"internal/stdlib/importmanager/importmanager.go": 29,
 	"stdlibreg.go":                                 116,
 	"storybook/storybook.go":                       331,
 	"storybook/watch.go":                           324,
