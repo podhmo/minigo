@@ -62,7 +62,7 @@ type P int
 
 func (p P) Double() int { return int(p) * 2 }
 
-// TK is string-kinded: json uses the string itself, not MarshalText.
+// TK is string-kinded: json still honors its MarshalText ("T-a").
 type TK string
 
 func (t TK) MarshalText() ([]byte, error) { return []byte("T-" + string(t)), nil }
