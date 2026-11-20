@@ -3,6 +3,7 @@ package stdjson
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
 	"reflect"
 
 	"github.com/podhmo/minigo/internal/stdlib"
@@ -299,9 +300,71 @@ func jsonElemMarshals(c runtime.MemberShapeCaller, elems []runtime.Value) bool {
 		return false
 	}
 	pv := jsonMarshalProbe(elems[0], true)
-	if _, ok := runtime.IfaceMember(c, pv, "MarshalJSON"); ok {
+	if m, ok := runtime.IfaceMember(c, pv, "MarshalJSON"); ok && jsonMarshalerMember(m) {
 		return true
 	}
-	_, ok := runtime.IfaceMember(c, pv, "MarshalText")
-	return ok
+	m, ok := runtime.IfaceMember(c, pv, "MarshalText")
+	return ok && jsonMarshalerMember(m)
+}
+
+// jsonMarshalerMember reports whether the member m is a method
+// callable as `func() ([]byte, error)` — gc's signature for both
+// json.Marshaler and encoding.TextMarshaler. A same-named method
+// with another signature does not satisfy the interface, so the
+// base64 shortcut stays on (a `MarshalJSON() string` changes
+// nothing under gc).
+func jsonMarshalerMember(m runtime.Value) bool {
+	switch fn := m.(type) {
+	case *runtime.BoundMethod:
+		if fn.Fn == nil || fn.Fn.Decl == nil {
+			return false
+		}
+		return jsonMarshalerFuncType(fn.Fn.Decl.Type)
+	case *runtime.BuiltinFunc:
+		// the reflected method's signature carries its receiver as
+		// In(0); the bound call must return ([]byte, error).
+		if fn.Method == nil {
+			return false
+		}
+		mt := fn.Method.Type
+		return mt.NumIn() == 1 && mt.NumOut() == 2 &&
+			mt.Out(0) == reflect.TypeOf([]byte(nil)) &&
+			mt.Out(1) == reflect.TypeOf((*error)(nil)).Elem()
+	}
+	return false
+}
+
+// jsonMarshalerFuncType reports whether a declared method type
+// spells `func() ([]byte, error)`: no parameters (the BoundMethod's
+// decl carries no receiver) and exactly two results spelled
+// `[]byte` and `error`.
+func jsonMarshalerFuncType(ft *ast.FuncType) bool {
+	if ft == nil {
+		return false
+	}
+	if ft.Params != nil && len(ft.Params.List) > 0 {
+		return false
+	}
+	if ft.Results == nil || len(ft.Results.List) != 2 {
+		return false
+	}
+	// each result must be a single name or unnamed — `([]byte, b)`
+	// shapes cannot spell the marshaler signature.
+	for _, r := range ft.Results.List {
+		if len(r.Names) > 1 {
+			return false
+		}
+	}
+	if at, ok := ft.Results.List[0].Type.(*ast.ArrayType); !ok || at.Len != nil || !jsonByteIdent(at.Elt) {
+		return false
+	}
+	id, ok := ft.Results.List[1].Type.(*ast.Ident)
+	return ok && id.Name == "error"
+}
+
+// jsonByteIdent reports whether e spells the predeclared byte or
+// uint8 element of a `[]byte` result.
+func jsonByteIdent(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && (id.Name == "byte" || id.Name == "uint8")
 }
