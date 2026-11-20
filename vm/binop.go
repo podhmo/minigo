@@ -822,7 +822,9 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int)
 				iv = ti
 			}
 		}
-		if iv.Kind() == constant.Int {
+		if iv.Kind() == constant.Int && !uc.Wrap {
+			// a Wrap count carries deferred ops that decide its value —
+			// it takes the materialized-count path, which replays them.
 			if s, ok := constant.Uint64Val(iv); ok {
 				count, countOK = s, true
 			}
