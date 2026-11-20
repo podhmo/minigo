@@ -2304,7 +2304,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			}
 			return
 		}
-		b.Elems[i] = val
+		b.SetElem(i, val)
 	case *runtime.Map:
 		idx = v.mapKeyOperand(f, b.Typ, rawIdx)
 		if idx != nil && !hostbridge.TypeOf(idx).Comparable() {
@@ -2562,14 +2562,14 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 					panic(runtime.SliceBoundsPanic(r))
 				}
 			}
-			return &runtime.Slice{Elems: b.Elems[l.I:h.I:m.I], Typ: sliceTypOf(b.Typ)}
+			return &runtime.Slice{Elems: b.Elems[l.I:h.I:m.I], Typ: sliceTypOf(b.Typ), Host: b.HostReslice3(l.I, h.I, m.I)}
 		}
 		if isArr || l.Unsigned || h.Unsigned {
 			if r := hostbridge.SliceBoundsReason(l, h, boundOperand{}, cp, false, word); r != "" {
 				panic(runtime.SliceBoundsPanic(r))
 			}
 		}
-		return &runtime.Slice{Elems: b.Elems[l.I:h.I], Typ: sliceTypOf(b.Typ)}
+		return &runtime.Slice{Elems: b.Elems[l.I:h.I], Typ: sliceTypOf(b.Typ), Host: b.HostReslice(l.I, h.I)}
 	case string:
 		if three {
 			// a 3-index slice on a string is a compile reject in Go —

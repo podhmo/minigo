@@ -335,7 +335,7 @@ func Env(ee source.EmbedEnv) *runtime.Env {
 			// a virtual source vends its shared zero-size element — the
 			// fill is bounded by the real destination's length.
 			for i := int64(0); i < n; i++ {
-				dst.Elems[i] = v.Copy(src.Zero)
+				dst.SetElem(i, v.Copy(src.Zero))
 			}
 			return int64(n), nil
 		}
@@ -347,7 +347,7 @@ func Env(ee source.EmbedEnv) *runtime.Env {
 			tmp[i] = v.Copy(src.Elems[i])
 		}
 		for i := int64(0); i < n; i++ {
-			dst.Elems[i] = tmp[i]
+			dst.SetElem(i, tmp[i])
 		}
 		return int64(n), nil
 	})

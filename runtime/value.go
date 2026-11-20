@@ -787,7 +787,7 @@ func (r *IndexRef) Set(v Value) bool {
 	if s == nil || !ok || i < 0 || i >= int64(len(s.Elems)) {
 		return false
 	}
-	s.Elems[i] = v
+	s.SetElem(i, v)
 	return true
 }
 
@@ -1651,6 +1651,11 @@ type Slice struct {
 	// a `var s S` bind): element stores re-coerce and named slice types
 	// keep their identity on rebinds.
 	Typ *TypeDef
+	// Host, when valid, is the host slice or array this Slice was
+	// unboxed from (`buf.Bytes()`, an unnamed host slice field or map
+	// element): element stores through SetElem write its backing, like
+	// Go's shared array.
+	Host reflect.Value
 }
 
 // Virtual reports whether the slice holds zero-size elements that are not
