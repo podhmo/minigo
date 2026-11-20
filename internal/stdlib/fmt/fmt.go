@@ -452,6 +452,68 @@ func ptrZeroPadWidth(flags string) (int, bool) {
 	return w, w > 0
 }
 
+// badVerbBasicTypes maps a numeric/basic kind to its unnamed type — a
+// named host scalar converts here to shed its methods (gc's badVerb
+// renders with handleMethods disabled: time.Duration must print "3",
+// not "3ns").
+var badVerbBasicTypes = map[reflect.Kind]reflect.Type{
+	reflect.Bool:       reflect.TypeOf(false),
+	reflect.Int:        reflect.TypeOf(int(0)),
+	reflect.Int8:       reflect.TypeOf(int8(0)),
+	reflect.Int16:      reflect.TypeOf(int16(0)),
+	reflect.Int32:      reflect.TypeOf(int32(0)),
+	reflect.Int64:      reflect.TypeOf(int64(0)),
+	reflect.Uint:       reflect.TypeOf(uint(0)),
+	reflect.Uint8:      reflect.TypeOf(uint8(0)),
+	reflect.Uint16:     reflect.TypeOf(uint16(0)),
+	reflect.Uint32:     reflect.TypeOf(uint32(0)),
+	reflect.Uint64:     reflect.TypeOf(uint64(0)),
+	reflect.Uintptr:    reflect.TypeOf(uintptr(0)),
+	reflect.Float32:    reflect.TypeOf(float32(0)),
+	reflect.Float64:    reflect.TypeOf(float64(0)),
+	reflect.Complex64:  reflect.TypeOf(complex64(0)),
+	reflect.Complex128: reflect.TypeOf(complex128(0)),
+	reflect.String:     reflect.TypeOf(""),
+}
+
+// badVerbOperand picks the operand a bad-verb marker's inner %v sees.
+// gc renders it via printValue — reflection over the underlying value
+// with handleMethods disabled — so the marshalled host arg is
+// unusable: its String() would fire. Script scalars cross unwrapped
+// (an int64 keeps gc's numeric width/precision), a named host scalar
+// converts to its basic kind, and composites render to text through
+// fmtValue under the method-suppressing zeroState.
+func badVerbOperand(c runtime.MemberCaller, x runtime.Value) runtime.Value {
+	n := runtime.Unwrap(x)
+	if uc, ok := n.(*runtime.UConst); ok {
+		if nv, err := runtime.UConstNative(uc); err == nil {
+			n = nv
+		}
+	}
+	if gv, ok := n.(*runtime.GoValue); ok {
+		n = gv.V
+	}
+	switch n.(type) {
+	case int64, float64, string, bool, nil:
+		return n // script basics carry no methods
+	case *runtime.Struct, *runtime.Slice, *runtime.Map, *runtime.Tuple:
+		fv := &fmtValue{c: c, x: n}
+		return fv.render('v', zeroState{})
+	}
+	// a host value: reflection like gc's printValue — a named basic
+	// (time.Duration) sheds its methods at the unnamed kind; a bare
+	// basic passes through.
+	if rv := reflect.ValueOf(n); rv.IsValid() {
+		if rv.Type().NumMethod() > 0 {
+			if bt := badVerbBasicTypes[rv.Kind()]; bt != nil {
+				return rv.Convert(bt).Interface()
+			}
+		}
+		return n
+	}
+	return nil
+}
+
 func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 	zs := zeroState{}
 	switch t := x.(type) {
@@ -885,7 +947,14 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			pBadVerb = strings.HasPrefix(spelling, "%!")
 			if pBadVerb && !strings.ContainsRune(spelling, '=') {
 				// a %!p(<nil>) marker consumes no operand — its width/
-				// precision operands leave the operand list too.
+				// precision operands leave the operand list too — but a
+				// * precision is still validated first, so a bad operand
+				// reports %!(BADPREC) ahead of the marker.
+				for _, sp := range d.stars[len(d.stars)-precStars:] {
+					if !precIntOK(vals[sp]) {
+						badPrec = true
+					}
+				}
 				stars = nil
 			} else if precAt >= 0 {
 				// a * precision operand is validated even on the
@@ -940,7 +1009,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 					sb.WriteString(flags)
 					sb.WriteByte('v')
 					sb.WriteByte(')')
-					na = append(na, a[off+d.pos])
+					na = append(na, badVerbOperand(c, vals[d.pos]))
 				} else {
 					sb.WriteString("%%")
 					sb.WriteString(spelling[1:])
@@ -1191,9 +1260,12 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 	// fmt consults Formatter before the Stringer family, for every verb
 	// but %T/%p — a script Formatter writes to the live state itself, so
 	// a successful call already emitted its output. zeroState is the
-	// flag-less stand-in for nested renderings (bad-verb markers, %p)
-	// where Go invokes no Formatter; nothing real writes to it.
-	if s.c != nil && verb != 'T' && verb != 'p' {
+	// flag-less stand-in for nested renderings (bad-verb markers, %p):
+	// gc's badVerb sets p.erroring, so handleMethods declines every
+	// Formatter AND every Stringer-family method there — a Stringer
+	// argument renders its fields, never its String() output.
+	_, nested := f.(zeroState)
+	if s.c != nil && !nested && verb != 'T' && verb != 'p' {
 		if cs, isCap := f.(*captureState); isCap {
 			wrote, pan := callFormatReport(s.c, s.x, cs, verb)
 			if pan != nil {
@@ -1202,7 +1274,7 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 			if wrote {
 				return cs.buf.String()
 			}
-		} else if _, isZero := f.(zeroState); !isZero {
+		} else {
 			wrote, pan := callFormatReport(s.c, s.x, f, verb)
 			if pan != nil {
 				return fmtPanicMarker(verb, "Format", pan)
@@ -1213,7 +1285,7 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 		}
 	}
 	// Stringer family first, like fmt does.
-	if s.c != nil {
+	if s.c != nil && !nested {
 		switch verb {
 		case 'v':
 			if f.Flag('#') {
