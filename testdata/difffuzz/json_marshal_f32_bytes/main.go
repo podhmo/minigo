@@ -25,6 +25,7 @@ func main() {
 	p([3]byte{104, 105, 33}) // an array stays element-wise
 	p([]MJByte{104, 105})    // element marshaler demotes base64
 	p([]SigByte{104, 105})   // wrong MarshalJSON sig: base64 stays
+	p([]AlByte{104, 105})    // alias results still marshal per element
 	p(map[string]float32{"x": 0.1})
 	p(S{F: 0.1})
 }
@@ -38,3 +39,12 @@ type SigByte byte
 // MarshalJSON() string does not satisfy json.Marshaler — gc keeps
 // the base64 encoding for []SigByte.
 func (s SigByte) MarshalJSON() string { return "x" }
+
+type AliasBytes = []byte
+type AliasErr = error
+
+type AlByte byte
+
+// Alias results satisfy the marshaler signature identically (gc:
+// type X = []byte IS []byte), so []AlByte marshals per element.
+func (a AlByte) MarshalJSON() (AliasBytes, AliasErr) { return []byte(`"A!"`), nil }
