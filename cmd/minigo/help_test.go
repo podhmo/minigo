@@ -76,8 +76,8 @@ func TestHelpTopic(t *testing.T) {
 		{[]string{"help", "-h"}, ""},
 		{[]string{"help", "--help"}, ""},
 	} {
-		if got := helpTopic(tc.args); got != tc.want {
-			t.Errorf("helpTopic(%v) = %q, want %q", tc.args, got, tc.want)
+		if diff := cmp.Diff(tc.want, helpTopic(tc.args)); diff != "" {
+			t.Errorf("helpTopic(%v) mismatch (-want +got):\n%s", tc.args, diff)
 		}
 	}
 }
