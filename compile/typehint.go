@@ -1937,6 +1937,14 @@ func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 			// package clause's name is what gc prints.
 			name = c.pkgDispName(ref)
 		}
+		if f := c.selMember(ref, t.Sel.Name).Val; f != nil && f.td != nil && f.td.Pkg != nil && f.td.Name != "" {
+			// the materialized member typedef is the canonical
+			// descriptor — a bound `type A = B` member interned to
+			// its target (os.FileMode -> io/fs's FileMode td) carries
+			// the target's package, so the alias compares identical
+			// to the spelled target like gc.
+			return namedTypID{id: f.td.Pkg.Path + "." + f.td.Name, name: name + "." + t.Sel.Name}, true
+		}
 		return namedTypID{id: ref.Path + "." + t.Sel.Name, name: name + "." + t.Sel.Name}, true
 	case *ast.StarExpr:
 		// a pointer's identity wraps its base's — `i == &d` reads
