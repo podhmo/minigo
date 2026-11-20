@@ -825,7 +825,15 @@ func PackSlice(vc runtime.VMCaller, s *runtime.Slice, kept []runtime.Value) *run
 	for i := len(kept); i < len(s.Elems); i++ {
 		s.SetElem(int64(i), runtime.Copy(zero))
 	}
-	return &runtime.Slice{Elems: s.Elems[:len(kept)], Typ: s.Typ, Host: s.HostReslice(0, int64(len(kept)))}
+	out := &runtime.Slice{Elems: s.Elems[:len(kept)], Typ: s.Typ}
+	// alias the shared backing only when every kept element actually
+	// landed there — a slot that refused the store (an interface slot
+	// holding a script composite, say) still shows its old value, so
+	// aliasing it would return stale elements instead of the packed ones.
+	if s.CommitHostRange(int64(len(kept))) {
+		out.Host = s.HostReslice(0, int64(len(kept)))
+	}
+	return out
 }
 
 // SeqElems collects a seq argument's elements: a *runtime.Slice reads

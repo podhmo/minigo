@@ -30,20 +30,33 @@ func (s *Slice) SetElem(i int64, v Value) {
 // CommitHost writes every element through to the host backing — the
 // bulk counterpart of SetElem for operations that reorder or rewrite
 // Elems in one pass (sort, pack): the host slot takes each converted
-// value like a SetElem store.
-func (s *Slice) CommitHost() {
+// value like a SetElem store. It reports whether every slot took its
+// element; a caller about to alias the backing as its result should
+// check that — a slot the value could not convert into keeps its old
+// contents, so aliasing would hand back stale elements.
+func (s *Slice) CommitHost() bool {
+	return s.CommitHostRange(int64(len(s.Elems)))
+}
+
+// CommitHostRange commits Elems[:hi] the way CommitHost does.
+func (s *Slice) CommitHostRange(hi int64) bool {
 	if !s.Host.IsValid() {
-		return
+		return false
 	}
-	for i := range s.Elems {
-		dst := s.Host.Index(i)
+	ok := true
+	for i := int64(0); i < hi; i++ {
+		dst := s.Host.Index(int(i))
 		if !dst.CanSet() {
+			ok = false
 			continue
 		}
-		if ev, ok := hostScalarOf(s.Elems[i], dst.Type()); ok {
+		if ev, conv := hostScalarOf(s.Elems[i], dst.Type()); conv {
 			dst.Set(ev)
+		} else {
+			ok = false
 		}
 	}
+	return ok
 }
 
 // HostReslice returns the sub-view of s's host backing a two-index
@@ -101,6 +114,23 @@ func hostScalarOf(v Value, t reflect.Type) (reflect.Value, bool) {
 		return reflect.Zero(t), true
 	}
 	switch t.Kind() {
+	case reflect.Interface:
+		// an empty-interface slot takes the scalar's Go value as-is;
+		// anything else (a script Slice/Map/Struct) stays unwritten.
+		if t.NumMethod() == 0 {
+			switch x := v.(type) {
+			case string:
+				return reflect.ValueOf(x), true
+			case bool:
+				return reflect.ValueOf(x), true
+			case int64:
+				return reflect.ValueOf(x), true
+			case float64:
+				return reflect.ValueOf(x), true
+			case complex128:
+				return reflect.ValueOf(x), true
+			}
+		}
 	case reflect.String:
 		if s, ok := v.(string); ok {
 			return reflect.ValueOf(s).Convert(t), true
