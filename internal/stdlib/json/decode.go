@@ -1,7 +1,6 @@
 package stdjson
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,12 +11,13 @@ import (
 
 // jsonDecoder backs the bound encoding/json.Decoder: the host decoder
 // walks the buffered input while the script-arg Decode shapes one value
-// through jsonInject, like json.Unmarshal's two-arg form. The literal
-// span InputOffset brackets feeds both the top-level UnmarshalJSON
-// probe and error-position collation. The other members forward.
+// through jsonInject, like json.Unmarshal's two-arg form. Decoding into
+// a RawMessage captures the value's own byte span, which the DOM keeps
+// per node so a nested UnmarshalJSON sees the original literal — and a
+// Token+Decode mix lands on the host decoder's own mid-stream rules.
+// The other members forward.
 type jsonDecoder struct {
 	dec *json.Decoder
-	buf []byte
 	// num/strict mirror the UseNumber and DisallowUnknownFields
 	// flags: they only steer how jsonInject shapes the DOM.
 	num    bool
@@ -41,25 +41,18 @@ func (d *jsonDecoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtim
 			}
 			return stdlib.ErrVal(fmt.Errorf("json: Decode(non-pointer %s)", runtime.DisplayName(atd))), nil
 		}
-		start := d.dec.InputOffset()
-		var sink any
-		if err := d.dec.Decode(&sink); err != nil {
+		var raw json.RawMessage
+		if err := d.dec.Decode(&raw); err != nil {
 			return stdlib.ErrVal(err), nil
 		}
-		span := d.buf[start:d.dec.InputOffset()]
-		dec := sink
-		if !d.num {
-			// a float64 DOM drops an int64 literal's low bits — the
-			// span is re-read with UseNumber so jsonScalar parses the
-			// literal itself; the user's UseNumber only decides whether
-			// `any` targets keep json.Number.
-			var d2 = json.NewDecoder(bytes.NewReader(span))
-			d2.UseNumber()
-			if err := d2.Decode(&dec); err != nil {
-				return stdlib.ErrVal(err), nil
-			}
+		// the DOM is built with UseNumber semantics so jsonScalar
+		// parses each number literal itself — the caller's UseNumber
+		// only decides whether `any` targets keep json.Number.
+		node, err := jsonDomParse(raw)
+		if err != nil {
+			return stdlib.ErrVal(err), nil
 		}
-		return jsonInject(v, span, dec, args[0], jsonDecFlags{Number: d.num, Strict: d.strict})
+		return jsonInject(v, raw, node, args[0], jsonDecFlags{Number: d.num, Strict: d.strict})
 	}, true
 }
 
