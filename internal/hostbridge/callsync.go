@@ -261,15 +261,11 @@ func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 // so after each callback every entry syncs, not just the resolved
 // ones.
 func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
-	gid := m.callGid()
-	if gid == 0 {
-		return
-	}
-	st, ok := callScopes.Load(gid)
+	st, ok := m.ownStack()
 	if !ok {
 		return
 	}
-	s := st.(*callScopeStack)
+	s := st
 	s.mu.Lock()
 	var es []*projEntry
 	for i := range s.scopes {
@@ -288,15 +284,11 @@ func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
 // landed after the last callback (or on a child only a callback held,
 // never the arg itself) still reaches the script value.
 func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
-	gid := m.callGid()
-	if gid == 0 {
-		return
-	}
-	st, ok := callScopes.Load(gid)
+	st, ok := m.ownStack()
 	if !ok {
 		return
 	}
-	s := st.(*callScopeStack)
+	s := st
 	s.mu.Lock()
 	var es []*projEntry
 	for i := range s.scopes {
@@ -317,15 +309,11 @@ func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
 // the projection with this pointer — its script value is authoritative
 // now, so write-back must not restore the host copy's stale contents.
 func (m *Marshal) projectedUsed(p uintptr) bool {
-	gid := m.callGid()
-	if gid == 0 {
-		return false
-	}
-	st, ok := callScopes.Load(gid)
+	st, ok := m.ownStack()
 	if !ok {
 		return false
 	}
-	s := st.(*callScopeStack)
+	s := st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.used[p]

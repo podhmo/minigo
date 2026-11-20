@@ -145,6 +145,21 @@ func sameSlot(cur, old runtime.Value) bool {
 	return pa == pb
 }
 
+// ownStack returns the calling goroutine's projection stack; a foreign
+// goroutine (a parked call's helper, a template on another proc) has
+// none and misses the lookup.
+func (m *Marshal) ownStack() (*callScopeStack, bool) {
+	gid := m.callGid()
+	if gid == 0 {
+		return nil, false
+	}
+	v, ok := callScopes.Load(gid)
+	if !ok {
+		return nil, false
+	}
+	return v.(*callScopeStack), true
+}
+
 // registerProjected records v for the duration of the running host
 // call: v is a script map or slice that crossed an `any` parameter as
 // the plain host container out — the projection keeps no method set,
@@ -171,11 +186,7 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	if rv.Pointer() == 0 {
 		return
 	}
-	gid := m.callGid()
-	if gid == 0 {
-		return
-	}
-	st, ok := callScopes.Load(gid)
+	st, ok := m.ownStack()
 	if !ok {
 		return
 	}
@@ -184,7 +195,7 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 		e.snap = scriptSnap(sm)
 		e.host = hostSnap(rv)
 	}
-	s := st.(*callScopeStack)
+	s := st
 	s.mu.Lock()
 	if n := len(s.scopes); n > 0 {
 		s.scopes[n-1][rv.Pointer()] = e
@@ -207,15 +218,11 @@ func (m *Marshal) projectedVal(rv reflect.Value) *projEntry {
 		return nil
 	}
 	p = rv.Pointer()
-	gid := m.callGid()
-	if gid == 0 {
-		return nil
-	}
-	st, ok := callScopes.Load(gid)
+	st, ok := m.ownStack()
 	if !ok {
 		return nil
 	}
-	s := st.(*callScopeStack)
+	s := st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := len(s.scopes) - 1; i >= 0; i-- {
