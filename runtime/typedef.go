@@ -1069,9 +1069,11 @@ func sigNamedIface(td *TypeDef) bool {
 // name the same instantiation when A = int. Decl-site identity for
 // func-local types is untouched — Spec equality still decides.
 func (c sigComparer) namedTypEq(a, b *TypeDef) bool {
-	ca, cb := *a, *b
+	// CloneUncached: a `*a` copy races with the atomic cache Stores
+	// (fieldTypes, ifaceReqs, hostType, typeTag).
+	ca, cb := a.CloneUncached(), b.CloneUncached()
 	ca.Binds, cb.Binds = nil, nil
-	if !TypIdentical(&ca, &cb) {
+	if !TypIdentical(ca, cb) {
 		return false
 	}
 	return c.bindsEqSig(a.Binds, b.Binds)
