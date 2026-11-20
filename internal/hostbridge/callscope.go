@@ -136,6 +136,12 @@ func sameSlot(cur, old runtime.Value) bool {
 	if pa == nil || pb == nil {
 		return false
 	}
+	switch runtime.Unwrap(pa).(type) {
+	case *runtime.Map, *runtime.Slice, *runtime.Struct, *runtime.Cell:
+		// writes land inside the pointee — the per-child merge
+		// decides whether the entry still matches its projection.
+		return false
+	}
 	return pa == pb
 }
 
