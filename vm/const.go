@@ -131,6 +131,12 @@ func constTruthy(u *runtime.UConst) bool {
 	case constant.Bool:
 		return constant.BoolVal(u.V)
 	case constant.Int, constant.Float, constant.Complex:
+		if u.Wrap && len(u.WrapOps) > 0 {
+			// the deferred ops decide the value — `if (1<<n)/999` is
+			// false although the base payload is nonzero.
+			i, _ := runtime.WrapReplay(u, nil)
+			return i != 0
+		}
 		return constant.Sign(u.V) != 0
 	case constant.String:
 		return constant.StringVal(u.V) != ""
