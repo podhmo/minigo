@@ -275,9 +275,9 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	index := func(i int) int {
 		if i < len(spec) && spec[i] == '[' {
 			if k := strings.IndexByte(spec[i:], ']'); k > 1 {
+				dirIndexed = true
+				hadIndex = true
 				if n, err := strconv.Atoi(spec[i+1 : i+k]); err == nil && n >= 1 {
-					dirIndexed = true
-					hadIndex = true
 					if n-1 >= len(ops) {
 						dirBad = true
 					} else {
@@ -285,6 +285,10 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 					}
 					return i + k + 1
 				}
+				// [0] / [x]: a parsed index that is not a positive
+				// operand number fails like an out-of-range one.
+				dirBad = true
+				return i + k + 1
 			}
 			dirBad = true
 			return i + 1
@@ -298,12 +302,14 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		return i
 	}
 	// a verb's operand indexes: the star args plus the value arg.
-	// pos is the post-flags offset where an explicit [n] would sit;
+	// pos, posP, posV are the offsets where an explicit [n] would sit —
+	// after the flags (the width star's index site), after the `.`
+	// (the precision star's), and before the verb (the value's).
 	// indexed/badIdx record a valid / failed [n] in this directive.
 	type verbEv struct {
-		pct, pos, i, arg int
-		stars            []int
-		indexed, badIdx  bool
+		pct, pos, posP, posV, i, arg int
+		stars                        []int
+		indexed, badIdx              bool
 	}
 	var evs []verbEv
 	argNums := []int{}
@@ -330,7 +336,9 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		} else {
 			i = digits(i)
 		}
+		posP := -1
 		if i < len(spec) && spec[i] == '.' {
+			posP = i + 1
 			i = index(i + 1)
 			if i < len(spec) && spec[i] == '*' {
 				stars = append(stars, argNum)
@@ -342,13 +350,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 				i = digits(i)
 			}
 		}
+		if posP < 0 {
+			posP = i
+		}
+		posV := i
 		i = index(i)
 		if i >= len(spec) {
 			break
 		}
 		verb := spec[i]
 		i++
-		evs = append(evs, verbEv{pct, pos, i, argNum, stars, dirIndexed, dirBad})
+		evs = append(evs, verbEv{pct, pos, posP, posV, i, argNum, stars, dirIndexed, dirBad})
 		if verb != '%' {
 			argNums = append(argNums, argNum)
 			if !dirBad {
@@ -383,6 +395,26 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 			}
 		}
 	}
+	// pin emits a directive with every operand index made explicit —
+	// width and precision stars get theirs at their own index sites —
+	// so the host's cursor lands where gc's argNum stood, even after a
+	// directive that consumed nothing.
+	pin := func(sb *strings.Builder, spec string, ev verbEv, ops []any, tail string) {
+		sb.WriteString(spec[ev.pct:ev.pos])
+		if len(ev.stars) > 0 && ev.stars[0] < len(ops) {
+			sb.WriteString("[" + strconv.Itoa(ev.stars[0]+1) + "]")
+		}
+		sb.WriteString(spec[ev.pos:ev.posP])
+		if len(ev.stars) > 1 && ev.stars[1] < len(ops) {
+			sb.WriteString("[" + strconv.Itoa(ev.stars[1]+1) + "]")
+		}
+		sb.WriteString(spec[ev.posP:ev.posV])
+		if ev.arg < len(ops) {
+			sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
+		}
+		sb.WriteString(spec[ev.posV:ev.i])
+		_ = tail
+	}
 	last := 0
 	fixRest := false
 	for n, ev := range evs {
@@ -390,13 +422,20 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		last = ev.i
 		c := spec[ev.i-1]
 		if c != 'w' {
-			if fixRest && !ev.indexed && ev.arg < len(ops) {
+			switch {
+			case c == '%':
+				// %% takes no operand — never pin it.
+				sb.WriteString(spec[ev.pct:ev.i])
+			case fixRest && !ev.indexed && ev.arg >= len(ops):
+				// gc reads past the operand list and prints the
+				// verb's MISSING marker — emit it as text since the
+				// host's cursor may sit earlier.
+				sb.WriteString("%%!" + spec[ev.i-1:ev.i] + "(MISSING)")
+			case fixRest && !ev.indexed && ev.arg < len(ops):
 				// the host's implicit cursor no longer matches the
 				// operand gc reads here — pin it explicitly.
-				sb.WriteString(spec[ev.pct:ev.pos])
-				sb.WriteString("[" + strconv.Itoa(ev.arg+1) + "]")
-				sb.WriteString(spec[ev.pos:ev.i])
-			} else {
+				pin(&sb, spec, ev, ops, "")
+			default:
 				sb.WriteString(spec[ev.pct:ev.i])
 			}
 			continue
@@ -415,8 +454,17 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		wAt++
 		switch {
 		case lit == "":
-			sb.WriteString(spec[ev.pct : ev.i-1])
-			sb.WriteByte('v')
+			if fixRest && !ev.indexed && ev.arg < len(ops) {
+				pin(&sb, spec, verbEv{
+					pct: ev.pct, pos: ev.pos, posP: ev.posP,
+					posV: ev.posV, i: ev.i - 1, arg: ev.arg,
+					stars: ev.stars,
+				}, ops, "")
+				sb.WriteByte('v')
+			} else {
+				sb.WriteString(spec[ev.pct : ev.i-1])
+				sb.WriteByte('v')
+			}
 		case ev.badIdx:
 			// a bad [n] makes gc print %!w(BADINDEX) and consume
 			// nothing — emit the marker as text and pin the operand
@@ -496,6 +544,10 @@ func rewriteWrapVerbs(spec string, numArgs int) (string, []int, []string, [][]in
 					}
 					return i + k + 1
 				}
+				// [0] / [x]: a parsed index that is not a positive
+				// operand number fails like an out-of-range one.
+				dirBad = true
+				return i + k + 1
 			}
 			dirBad = true
 			return i + 1

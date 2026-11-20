@@ -42,6 +42,18 @@ func main() {
 	fmt.Println(fmt.Errorf("%*w", "x"))
 	fmt.Println(fmt.Errorf("%[2]*[1]w", "x"))
 	fmt.Println(fmt.Errorf("%[2]*w", "x"))
+	// [0] is a bad index like an out-of-range one; a bad-index
+	// directive consumes nothing, so a later implicit verb — including
+	// a `*` width and another %w — still reads gc's operand, while an
+	// operand run-out there prints %!verb(MISSING).
+	fmt.Println(fmt.Errorf("a %[0]*w b", 7, fmt.Errorf("e0")))
+	fmt.Println(fmt.Errorf("%[0]*w %w", 7, fmt.Errorf("e0")))
+	fmt.Println(fmt.Errorf("%[9]w %*s", "x", 5, "ab"))
+	fmt.Println(fmt.Errorf("%[9]w %3s", "x", "ab"))
+	fmt.Println(fmt.Errorf("%[9]w %*.*s", "x", 8, 3, "abcdef"))
+	fmt.Println(fmt.Errorf("%[9]w %w %w", "x", fmt.Errorf("e1"), fmt.Errorf("e2")))
+	fmt.Println(fmt.Errorf("%[2]*[1]w %w %w", "x", 9, fmt.Errorf("e1"), fmt.Errorf("e2")))
+	fmt.Println(fmt.Errorf("%[2]*w %d", "x"))
 }
 
 type S struct{}
