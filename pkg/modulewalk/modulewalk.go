@@ -365,7 +365,8 @@ func (w *Walker) walkRepoPackages(ctx context.Context, pkgs []*resolve.RepoPacka
 
 // FindImporters scans the locator's root module and returns the
 // packages importing targetImportPath — the reverse-dependency query.
-// Nested modules under the root report their own import paths.
+// Nested modules under the root report their own import paths; with
+// IncludeTests, test-file imports count too.
 func (w *Walker) FindImporters(ctx context.Context, targetImportPath string) ([]*PackageImports, error) {
 	if w.Locator == nil {
 		return nil, fmt.Errorf("modulewalk: no locator")
@@ -375,7 +376,15 @@ func (w *Walker) FindImporters(ctx context.Context, targetImportPath string) ([]
 		for _, imp := range pi.Imports {
 			if imp == targetImportPath {
 				out = append(out, pi)
-				break
+				return nil, nil
+			}
+		}
+		if w.IncludeTests {
+			for _, imp := range pi.TestImports {
+				if imp == targetImportPath {
+					out = append(out, pi)
+					return nil, nil
+				}
 			}
 		}
 		return nil, nil
@@ -393,6 +402,11 @@ func (w *Walker) ReverseDependencyMap(ctx context.Context) (map[string][]string,
 	err := w.WalkRepo(ctx, w.Locator.RootDir(), VisitorFunc(func(pi *PackageImports) ([]string, error) {
 		for _, imp := range pi.Imports {
 			deps[imp] = append(deps[imp], pi.ImportPath)
+		}
+		if w.IncludeTests {
+			for _, imp := range pi.TestImports {
+				deps[imp] = append(deps[imp], pi.ImportPath)
+			}
 		}
 		return nil, nil
 	}))
