@@ -43,7 +43,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           121,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           642,
-	"internal/archcheck/budgets.go":             365,
+	"internal/archcheck/budgets.go":             366,
 	"internal/archcheck/rules.go":               150,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -101,7 +101,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/strings/strings.go":        177,
 	"intrinsics.go":                             229,
 	"internal/stdlib/errors/errors.go":          130,
-	"internal/stdlib/atomic/atomic.go":          300,
+	"internal/stdlib/atomic/atomic.go":          305,
 	"internal/stdlib/goruntime/goruntime.go":    290,
 	"internal/stdlib/wraperr.go":                63,
 	"internal/stdlib/maps/maps.go":              95,
@@ -262,6 +262,7 @@ var FileBudgets = map[string]int{
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
 var FileBudgetExceptions = map[string]string{
+	"internal/stdlib/atomic/atomic.go": "stores retag the value with the cell declared type",
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
 	"internal/hostbridge/callhost.go":     "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box",
