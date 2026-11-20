@@ -1499,6 +1499,9 @@ func TestHostStubPackage(t *testing.T) {
 	if diff := cmp.Diff("ok", run(t, e, "./testdata/importmgr", "ManagerRef")); diff != "" {
 		t.Fatalf("minigo.dev/importmanager type reference (-want +got): %s", diff)
 	}
+	if diff := cmp.Diff("12|{\"x\":[1,2]}", run(t, e, "./testdata/jsondec", "main")); diff != "" {
+		t.Fatalf("bound json decoder/rawmessage (-want +got): %s", diff)
+	}
 	// host.Exit never terminates the host, like os.Exit
 	_, err := e.Run(context.Background(), "./testdata/hostpkg", "Exit")
 	if err == nil || !strings.Contains(err.Error(), "cannot terminate the host") {
