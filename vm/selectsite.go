@@ -8,6 +8,7 @@ import (
 	"go/ast"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -30,6 +31,7 @@ func (v *VM) selSite(f *frame, ins bytecode.Instruction) *bytecode.GlobalSite {
 // re-resolving.
 type selectSlot struct {
 	tid   runtime.TypeID
+	rt    hostbridge.Type // selHostMember/selHostMiss: the receiver's host type guard
 	epoch uint64
 	name  string // the member name resolved — one site serves many
 	res   *selRes
@@ -43,6 +45,7 @@ type selRes struct {
 	m    *runtime.Function // selMethod/selMemberSet: the method
 	via  byte              // selMemberSet: 0 method, 1 iface dispatch, 2 host member
 	ntd  *runtime.TypeDef  // selNamedMethod: the peeled typedef the receiver re-tags to
+	hm   *hostSelSlot      // selHostMember: the method-table replay
 }
 
 type selKind uint8
@@ -53,6 +56,8 @@ const (
 	selPath
 	selMemberSet
 	selNamedMethod
+	selHostMember
+	selHostMiss
 )
 
 func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime.Value, site *bytecode.GlobalSite) runtime.Value {
