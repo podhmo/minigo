@@ -249,6 +249,7 @@ var FileBudgetExceptions = map[string]string{
 	"stdlibreg.go":                     "registers the moved stdlib installers (P2-12)",
 	"internal/archcheck/budgets.go":    "new file budgets for the moved internal/stdlib packages (P2-12) + profiler call counts + lightparse",
 	"internal/archcheck/rules.go":      "allow-list entries for the moved internal/stdlib packages (P2-12)",
+	"syntax/lightparse.go":             "partial import table on an unquotable spec (name + imports returned with the error)",
 	"internal/stdlib/io/io.go":         "AsReader became an Adapters method so the fmt-box unwrap stays faithful (P2-12)",
 	"intrinsics.go":                    "engineFileOf hook for the moved net installer (P2-12)",
 	"intrinsics_fmt.go":                "stdruntime import line for the moved CleanupHandle type switch (P2-12)",
