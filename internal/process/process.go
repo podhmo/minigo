@@ -48,7 +48,7 @@ type Proc struct {
 	chans    map[uintptr]*chanLive
 	managedN atomic.Int32
 	// mints is the process-wide uintptr-mint table shared by the
-	// process's goroutine VMs (see MintUintptr).
+	// process's goroutine VMs (see UpsertUintptr).
 	mints *uintMint
 }
 
@@ -119,17 +119,26 @@ type mintDead interface {
 	Dead() bool
 }
 
-// MintUintptr records ref as the referent behind the minted address.
-func (p *Proc) MintUintptr(addr uint64, ref any) {
+// UpsertUintptr merges into addr's live entry via merge, or records
+// make() when none exists — the atomic attach-or-mint a second mint of
+// the same address needs so it keeps the earlier boxes' liveness
+// records instead of replacing them.
+func (p *Proc) UpsertUintptr(addr uint64, make_ func() any, merge func(entry any)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.mints == nil {
 		p.mints = &uintMint{m: map[uint64]any{}}
 	}
-	if _, dup := p.mints.m[addr]; !dup {
-		p.mints.q = append(p.mints.q, addr)
+	if old, dup := p.mints.m[addr]; dup {
+		if d, dead := old.(mintDead); dead && d.Dead() {
+			delete(p.mints.m, addr)
+		} else {
+			merge(old)
+			return
+		}
 	}
-	p.mints.m[addr] = ref
+	p.mints.q = append(p.mints.q, addr)
+	p.mints.m[addr] = make_()
 	if len(p.mints.q) > uintMintCap {
 		// reap dead entries first: they can never revive, and a
 		// long-running mint loop (a temp buffer per iteration) mostly
