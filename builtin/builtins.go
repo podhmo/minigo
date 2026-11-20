@@ -810,7 +810,14 @@ func unifyMinMaxArgs(v runtime.ConvertTyper, args []runtime.Value) ([]runtime.Va
 	var td *runtime.TypeDef
 	switch {
 	case typed != nil:
-		if _, rt, host := runtime.HostNamedScalar(typed); host {
+		// a host named scalar rides either boxed (*GoValue) or raw —
+		// `3 * time.Second` stores a bare stdtime.Duration as the
+		// runtime value, so probe both shapes.
+		_, rt, host := runtime.HostNamedScalar(typed)
+		if !host {
+			_, rt, host = runtime.HostNamedPayload(typed)
+		}
+		if host {
 			// a host named basic (fs.FileMode from os.Stat): its
 			// constants become host values of that type.
 			out := make([]runtime.Value, len(args))
