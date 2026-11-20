@@ -883,13 +883,15 @@ func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value, ms *runtime.Me
 			return false, err
 		}
 	}
-	return v.memberSigsMatch(reqFns, dynFns), nil
+	return v.memberSigsMatch(reqFns, dynFns, x), nil
 }
 
 // memberSigsMatch reports whether every signature-bearing requirement
 // is met by a same-named member with an identical signature. A member
-// absent from dynFns kept its name-only pass.
-func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
+// absent from dynFns kept its name-only pass — except on a host box,
+// whose reflect method signature is compared by spelling instead
+// (`*fmt.wrapError`'s `Unwrap() error` never fulfills `Unwrap() []error`).
+func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function, x runtime.Value) bool {
 	// a pkg-qualified requirement (a.m) also lists its plain alias (m)
 	// for member selection — but satisfaction resolves the qualified
 	// key, so comparing the alias too would match a different package's
@@ -905,11 +907,42 @@ func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
 		if aliased[m] {
 			continue
 		}
-		if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
+		if dynFn, ok := dynFns[m]; ok {
+			if !v.memberSigEq(reqFn, dynFn) {
+				return false
+			}
+			continue
+		}
+		if !v.hostMethodSigMatch(reqFn, m, x) {
 			return false
 		}
 	}
 	return true
+}
+
+// hostMethodSigMatch compares a signature-bearing requirement against
+// the reflect method on a host box — reflect methods carry no declared
+// signature for dynFns, so without this their name alone satisfied any
+// same-named requirement regardless of signature. Non-host values and
+// unspellable requirements keep the name-only pass.
+func (v *VM) hostMethodSigMatch(reqFn *runtime.Function, m string, x runtime.Value) bool {
+	gv, ok := runtime.Unwrap(x).(*runtime.GoValue)
+	if !ok {
+		return true
+	}
+	rv := hostbridge.RVOf(gv.V)
+	if !rv.IsValid() {
+		return true
+	}
+	hm := rv.MethodByName(m)
+	if !hm.IsValid() {
+		return true // the name pass already decided presence
+	}
+	want, ok := runtime.FuncGoSpelling(reqFn)
+	if !ok {
+		return true
+	}
+	return hm.Type().String() == want
 }
 
 // memberSigEq compares two members' declared signatures — an interface
@@ -1024,7 +1057,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 				if err != nil {
 					f.trap("%s", err)
 				}
-				return v.memberSigsMatch(reqFns, dynFns)
+				return v.memberSigsMatch(reqFns, dynFns, nil)
 			}
 		}
 		return true
