@@ -310,7 +310,10 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 	type verbEv struct {
 		pct, pos, posP, posV, i, arg int
 		stars                        []int
-		indexed, badIdx              bool
+		// nw counts the leading width stars — stars[nw:] are
+		// precision stars, whose marker is BADPREC, not BADWIDTH.
+		nw              int
+		indexed, badIdx bool
 	}
 	var evs []verbEv
 	argNums := []int{}
@@ -326,10 +329,12 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 			i++
 		}
 		stars := []int{}
+		nw := 0
 		pos := i
 		i = index(i)
 		if i < len(spec) && spec[i] == '*' {
 			stars = append(stars, argNum)
+			nw++
 			if argNum < len(ops) {
 				argNum++
 			}
@@ -361,7 +366,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 		}
 		verb := spec[i]
 		i++
-		evs = append(evs, verbEv{pct, pos, posP, posV, i, argNum, stars, dirIndexed, dirBad})
+		evs = append(evs, verbEv{pct, pos, posP, posV, i, argNum, stars, nw, dirIndexed, dirBad})
 		if verb != '%' {
 			argNums = append(argNums, argNum)
 			if !dirBad {
@@ -436,7 +441,7 @@ func rewriteWrapVerbsOps(spec string, ops []any, bad []string) (string, []any) {
 				// whole rune, not one byte.
 				for k, st := range ev.stars {
 					mk := "%%!(BADWIDTH)"
-					if k == 1 {
+					if k >= ev.nw {
 						mk = "%%!(BADPREC)"
 					}
 					if st >= len(ops) {
@@ -793,6 +798,9 @@ func nested(f fmt.State) fmt.State {
 // qualifies), wrapper boxes and const tokens peeled first.
 func starInt(v runtime.Value) (int, bool) {
 	n := runtime.Unwrap(v)
+	if fv, ok := n.(*fmtValue); ok {
+		n = runtime.Unwrap(fv.x)
+	}
 	if uc, ok := n.(*runtime.UConst); ok {
 		if nv, err := runtime.UConstNative(uc); err == nil {
 			n = nv
