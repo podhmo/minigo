@@ -224,14 +224,27 @@ func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runt
 			if r, done, err := jsonUnmarshalHostVal(v, data, prior, prior, target); done || err != nil {
 				return r, err
 			}
-		} else if dv, isRef := runtime.Deref(prior); isRef {
-			// an interface holding a pointer: gc's indirect descends
-			// for any non-null literal — the decode then addresses the
-			// pointee's own storage — and under `null` only when the
-			// pointee is itself a pointer; a value inside an interface
-			// is replaced, never consulted.
+		}
+		if dv, isRef := runtime.Deref(prior); isRef {
+			// gc's indirect: a non-null literal descends into any
+			// held pointer — the decode then addresses the pointee's
+			// own storage at every level — and under `null` descends
+			// only when the pointee is itself a pointer, otherwise
+			// the nil lands at this level.
 			if _, dvIsPtr := runtime.Deref(dv); domVal(node) != nil || dvIsPtr {
 				return jsonInjectLevel(v, data, node, prior, flags, false)
+			}
+		}
+		if isIfaceSlot {
+			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && (len(it.MReqs) != 0 || len(it.IEmbeds) != 0) {
+				// a method-ful interface holding a non-pointer value:
+				// gc refuses the literal outright (NumMethod>0 never
+				// reaches value()) — a fmt.Stringer cell does not
+				// take a string.
+				return stdlib.ErrVal(&jsonUnmarshalTypeError{
+					value: jsonValueName(domVal(node)),
+					typ:   runtime.DisplayName(it),
+				}), nil
 			}
 		}
 		ectx := &jsonErrCtx{keepNum: flags.Number, strict: flags.Strict}
