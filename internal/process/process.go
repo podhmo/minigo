@@ -103,16 +103,22 @@ const deadlockQuiescence = 200 * time.Millisecond
 // uintMint is the process-wide uintptr-mint table: `unsafe.Pointer(x)`
 // on an integer payload mints an address-valued pointer, and converting
 // it back to *T revives the recorded referent — a goroutine arg minted
-// on the parent lands in the same table as the child's lookup. Entries
-// pin their referent, so the table is a bounded FIFO: gc treats
-// dereferencing a stale uintptr as UB anyway, so evicting the oldest
-// mint bounds the memory while the ordinary mint→revive window holds.
+// on the parent lands in the same table as the child's lookup. An entry
+// may implement `Dead() bool` (the vm's weak mints): a dead referent is
+// unreachable, so inserting past the cap sweeps dead entries before any
+// live one is evicted — gc's own rule, since a uintptr→unsafe.Pointer
+// revive is only valid while the object stays reachable.
 type uintMint struct {
 	q []uint64
 	m map[uint64]any
 }
 
 const uintMintCap = 4096
+
+// mintDead is the contract a vm mint entry satisfies for reaping.
+type mintDead interface {
+	Dead() bool
+}
 
 // MintUintptr records ref as the referent behind the minted address.
 func (p *Proc) MintUintptr(addr uint64, ref any) {
@@ -123,6 +129,23 @@ func (p *Proc) MintUintptr(addr uint64, ref any) {
 	}
 	if _, dup := p.mints.m[addr]; !dup {
 		p.mints.q = append(p.mints.q, addr)
+		if len(p.mints.q) > uintMintCap {
+			// reap dead referents first: they can never revive, and a
+			// long-running mint loop (a temp buffer per iteration)
+			// mostly accumulates those.
+			for a, r := range p.mints.m {
+				if d, ok := r.(mintDead); ok && d.Dead() {
+					delete(p.mints.m, a)
+				}
+			}
+			q := p.mints.q[:0]
+			for _, a := range p.mints.q {
+				if _, ok := p.mints.m[a]; ok {
+					q = append(q, a)
+				}
+			}
+			p.mints.q = q
+		}
 		for len(p.mints.q) > uintMintCap {
 			delete(p.mints.m, p.mints.q[0])
 			p.mints.q = p.mints.q[1:]
@@ -132,7 +155,8 @@ func (p *Proc) MintUintptr(addr uint64, ref any) {
 }
 
 // ReviveUintptr reports the referent a mint recorded for addr — the
-// *T-conversion side of the uintptr round trip.
+// *T-conversion side of the uintptr round trip. A dead entry reports
+// miss and frees its key.
 func (p *Proc) ReviveUintptr(addr uint64) (any, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -140,7 +164,14 @@ func (p *Proc) ReviveUintptr(addr uint64) (any, bool) {
 		return nil, false
 	}
 	ref, ok := p.mints.m[addr]
-	return ref, ok
+	if !ok {
+		return nil, false
+	}
+	if d, isDead := ref.(mintDead); isDead && d.Dead() {
+		delete(p.mints.m, addr)
+		return nil, false
+	}
+	return ref, true
 }
 
 func New() *Proc { return &Proc{done: make(chan struct{})} }

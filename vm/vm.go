@@ -208,7 +208,7 @@ type VM struct {
 	// unsafePtrMint is the no-proc fallback for the uintptr-mint table
 	// (mintUnsafePtr) — live VMs record on the shared process table so
 	// a pointer minted on one goroutine revives on a sibling.
-	unsafePtrMint map[uint64]runtime.Value
+	unsafePtrMint map[uint64]*mintEnt
 
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
