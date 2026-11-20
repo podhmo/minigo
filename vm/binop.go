@@ -220,6 +220,14 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 		if !sameTypeDef(an.Typ, bn.Typ) {
 			return false
 		}
+		// `r := *p` snapshots a host pointee's storage — gc's `r == *p`
+		// compares the structs, so the boxes' contents decide, not the
+		// payload pointers.
+		if runtime.HostStructTagged(an) && runtime.HostStructTagged(bn) {
+			if eq, ok := hostbridge.HostPointeeEql(an.V, bn.V); ok {
+				return eq
+			}
+		}
 		a, b = an.V, bn.V
 	}
 	switch a.(type) {
@@ -395,6 +403,22 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	// declared complex type is checked too.
 	var tag *runtime.TypeDef
 	var aTd, bTd *runtime.TypeDef
+	// `r := *p` snapshots a host pointee's storage — gc's `r == *p`
+	// compares the pointees' contents, so the tagged boxes compare
+	// before TwinOperands peels them to payload pointers.
+	if (op == bytecode.BinEql || op == bytecode.BinNeq) &&
+		runtime.HostStructTagged(a) && runtime.HostStructTagged(b) {
+		an := a.(*runtime.Named)
+		bn := b.(*runtime.Named)
+		if sameTypeDef(an.Typ, bn.Typ) {
+			if eq, ok := hostbridge.HostPointeeEql(an.V, bn.V); ok {
+				if op == bytecode.BinNeq {
+					return !eq
+				}
+				return eq
+			}
+		}
+	}
 	if op >= bytecode.BinEql && op <= bytecode.BinEqlIface && (isGoValue(a) || isGoValue(b)) {
 		// comparisons only: an arithmetic result keeps the host value's
 		// own type, whose host String prints it (Go sees one type)
@@ -1276,6 +1300,14 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	// with an `any` field stays false like Go.
 	if isGoValue(a) || isGoValue(b) {
 		if eq, ok := v.hostNamedEql(a, b); ok {
+			return eq
+		}
+	}
+	// `r := *p` snapshots a host pointee's storage — gc's `r == *p`
+	// compares the pointees, so the boxes' contents decide, not the
+	// payload pointers.
+	if runtime.HostStructTagged(a) && runtime.HostStructTagged(b) {
+		if eq, ok := hostbridge.HostPointeeEql(a.(*runtime.Named).V, b.(*runtime.Named).V); ok {
 			return eq
 		}
 	}
