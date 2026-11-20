@@ -24,6 +24,7 @@ func main() {
 	p([]MyByte{104, 105})    // named byte element still base64
 	p([3]byte{104, 105, 33}) // an array stays element-wise
 	p([]MJByte{104, 105})    // element marshaler demotes base64
+	p([]SigByte{104, 105})   // wrong MarshalJSON sig: base64 stays
 	p(map[string]float32{"x": 0.1})
 	p(S{F: 0.1})
 }
@@ -31,3 +32,9 @@ func main() {
 type MJByte byte
 
 func (m MJByte) MarshalJSON() ([]byte, error) { return []byte(`"X!"`), nil }
+
+type SigByte byte
+
+// MarshalJSON() string does not satisfy json.Marshaler — gc keeps
+// the base64 encoding for []SigByte.
+func (s SigByte) MarshalJSON() string { return "x" }
