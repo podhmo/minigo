@@ -27,6 +27,25 @@ func (s *Slice) SetElem(i int64, v Value) {
 	}
 }
 
+// CommitHost writes every element through to the host backing — the
+// bulk counterpart of SetElem for operations that reorder or rewrite
+// Elems in one pass (sort, pack): the host slot takes each converted
+// value like a SetElem store.
+func (s *Slice) CommitHost() {
+	if !s.Host.IsValid() {
+		return
+	}
+	for i := range s.Elems {
+		dst := s.Host.Index(i)
+		if !dst.CanSet() {
+			continue
+		}
+		if ev, ok := hostScalarOf(s.Elems[i], dst.Type()); ok {
+			dst.Set(ev)
+		}
+	}
+}
+
 // HostReslice returns the sub-view of s's host backing a two-index
 // reslice shares, or the zero Value when s has no backing.
 func (s *Slice) HostReslice(lo, hi int64) reflect.Value {
