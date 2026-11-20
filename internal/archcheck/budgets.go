@@ -259,6 +259,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/stdlib/io/io.go":         "AsReader became an Adapters method so the fmt-box unwrap stays faithful (P2-12)",
 	"intrinsics.go":                    "engineFileOf hook for the moved net installer (P2-12)",
 	"intrinsics_fmt.go":                "stdruntime import line for the moved CleanupHandle type switch (P2-12)",
+	"internal/stdlib/json/json.go":     "bound Decoder/NewDecoder/RawMessage/UnmarshalTypeError + jsonInject extraction + named-delegate chase + Number literals (oapi --src drop)",
 	"internal/stdlib/num.go":           "DurOf helper + NaN/signed-zero probes for slices extremes",
 	"internal/stdlib/sortslice.go":     "exact signed/unsigned scalar ordering + shared SortScript comparator + SnapshotKeys for tombstone-skipping reads",
 	"minireflect/rvalue.go":            "tombstone skips in the MapKeys and valueEqual Order walks",
