@@ -824,6 +824,13 @@ func Copy(v Value) Value {
 			return &Slice{Elems: el, Typ: x.Typ}
 		}
 		return v
+	case *GoValue:
+		// a host struct boxed by value copies on assignment — `var
+		// i2 = i` keeps i2's field writes off i's storage.
+		if cp, ok := HostValueStructCopy(x); ok {
+			return cp
+		}
+		return v
 	case *Named:
 		// a host-struct payload copies the struct on assignment like gc
 		// (`var b bytes.Buffer = a` must not alias a's storage). The tag

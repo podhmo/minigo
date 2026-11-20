@@ -49,6 +49,13 @@ func main() {
 	dst := NIC(src)
 	dst.Index = 1
 	fmt.Println(dst.Index, src.Index)
+	// assignment copies the value-boxed struct — a later write on the
+	// copy leaves the source, and a by-value call arg does too.
+	dst2 := dst
+	dst2.Index = 5
+	fmt.Println(dst.Index)
+	bumpNIC(NIC(src))
+	fmt.Println(src.Index)
 	shadowP()
 }
 
@@ -56,6 +63,8 @@ type P *bytes.Buffer
 type Q P
 
 type NIC net.Interface
+
+func bumpNIC(n NIC) { n.Index = 9 }
 
 func makeBuffer() bytes.Buffer {
 	var b bytes.Buffer
