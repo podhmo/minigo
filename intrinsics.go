@@ -169,8 +169,15 @@ func proxyHostType(rt reflect.Type) reflect.Type {
 }
 
 // proxyUnwrapHost is the facade's UnwrapHost hook — the inverse of
-// proxyHostType (P2-12c).
+// proxyHostType (P2-12c). A facade spelling UnwrapHost() answers the
+// wrapped value itself (scriptFile, EngineStdout); the time boxes keep
+// their package-level switch.
 func proxyUnwrapHost(v any, t reflect.Type) (reflect.Value, bool) {
+	if uw, ok := v.(interface{ UnwrapHost() any }); ok {
+		if rv := reflect.ValueOf(uw.UnwrapHost()); rv.IsValid() && rv.Type().AssignableTo(t) {
+			return rv, true
+		}
+	}
 	return stdtime.ProxyUnwrapHost(v, t)
 }
 

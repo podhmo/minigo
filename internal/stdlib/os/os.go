@@ -400,6 +400,10 @@ func (w *EngineStdout) out() io.Writer {
 // internal wrapper name is not part of the script's type vocabulary.
 func (w *EngineStdout) APIType() reflect.Type { return reflect.TypeFor[*os.File]() }
 
+// UnwrapHost gives a *os.File slot the real file, like scriptFile's —
+// os.Stdout as an exec.Cmd.ExtraFiles element reaches the child.
+func (w *EngineStdout) UnwrapHost() any { return w.File }
+
 // EngineFileOf unwraps the script-visible os.Stdout facade to the real
 // file for net's FileConn/FilePacketConn adapters.
 func EngineFileOf(v any) *os.File {

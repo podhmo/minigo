@@ -489,7 +489,16 @@ func kindOfValue(x runtime.Value) reflect.Kind {
 func (v *RValue) Type() *RType {
 	v.mustValid("Type")
 	if v.host() {
-		return v.e.hostTypeOf(v.rv.Type())
+		rt := v.rv.Type()
+		// a host facade reports its API type — reflect.TypeOf(os.Stdout)
+		// is *os.File, not the engine's wrapper, and assert/compare on
+		// the RType sees the same identity (APITypeBox).
+		if v.rv.CanInterface() {
+			if at, ok := v.rv.Interface().(interface{ APIType() reflect.Type }); ok {
+				rt = at.APIType()
+			}
+		}
+		return v.e.hostTypeOf(rt)
 	}
 	// A boxed host object reports its real reflect.Type when the stamped
 	// td only echoes the payload's type name — a bare td carries no

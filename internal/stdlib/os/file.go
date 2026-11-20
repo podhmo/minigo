@@ -58,6 +58,11 @@ type scriptFile struct {
 func (f *scriptFile) Name() string          { return f.name }
 func (f *scriptFile) APIType() reflect.Type { return reflect.TypeFor[*os.File]() }
 
+// UnwrapHost hands host call sites demanding the API type the file the
+// facade wraps — a []*os.File arg (exec.Cmd.ExtraFiles) gets *os.File,
+// never the wrapper.
+func (f *scriptFile) UnwrapHost() any { return f.File }
+
 // err rewrites the path an op error reports back to the spelled name —
 // gc builds the PathError with f.name as passed to Open.
 func (f *scriptFile) err(err error) error {
