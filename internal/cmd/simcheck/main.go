@@ -51,9 +51,10 @@ type gsPair struct {
 }
 
 type gsDecl struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	File string `json:"file"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	File     string `json:"file"`
+	Receiver string `json:"receiver"`
 }
 
 var skipDirs = map[string]bool{
@@ -61,28 +62,66 @@ var skipDirs = map[string]bool{
 	"tools": true, "docs": true, "vendor": true, "node_modules": true,
 }
 
-func normLines(path string) []string {
+// normLines returns the file's non-blank lines whitespace-normalized
+// plus, per line, whether it carries only comment text — a comment
+// edit across duplicated doc blocks must not read as new duplicate
+// code.
+func normLines(path string) ([]string, []bool) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	var out []string
+	var cmt []bool
+	inBlock := false
 	for _, l := range strings.Split(string(raw), "\n") {
+		code := stripComments(l, &inBlock)
 		l = strings.Join(strings.Fields(l), " ")
 		if l != "" {
 			out = append(out, l)
+			cmt = append(cmt, strings.TrimSpace(code) == "")
 		}
 	}
-	return out
+	return out, cmt
 }
 
-// trivialWindow skips windows that are only delimiters — `}` runs and
-// similar hash-collide everywhere without meaning anything.
-func trivialWindow(ls []string) bool {
-	for _, l := range ls {
+// stripComments removes a line's comment text, tracking /* */ spans
+// across lines via inBlock.
+func stripComments(l string, inBlock *bool) string {
+	var b strings.Builder
+	for i := 0; i < len(l); i++ {
+		if *inBlock {
+			if l[i] == '*' && i+1 < len(l) && l[i+1] == '/' {
+				*inBlock = false
+				i++
+			}
+			continue
+		}
+		if l[i] == '/' && i+1 < len(l) {
+			if l[i+1] == '/' {
+				return b.String()
+			}
+			if l[i+1] == '*' {
+				*inBlock = true
+				i++
+				continue
+			}
+		}
+		b.WriteByte(l[i])
+	}
+	return b.String()
+}
+
+// trivialWindow skips windows that are only delimiters or comments —
+// `}` runs and shared doc text hash-collide everywhere without
+// meaning anything.
+func trivialWindow(ls []string, cmt []bool) bool {
+	for i, l := range ls {
 		switch l {
 		case "}", "{", ")", "]", ",", "};", "})", "},":
-		default:
+			continue
+		}
+		if !cmt[i] {
 			return false
 		}
 	}
@@ -92,7 +131,7 @@ func trivialWindow(ls []string) bool {
 // scanWindows collects the repo's 8-line window pairs: hash -> the
 // unordered file pairs that share it.
 func scanWindows(root string, size int) ([]string, error) {
-	byHash := map[string]map[string]bool{}
+	byHash := map[string]map[string]int{}
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -107,18 +146,19 @@ func scanWindows(root string, size int) ([]string, error) {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
-		ls := normLines(path)
+		ls, cmt := normLines(path)
+		rel = filepath.ToSlash(rel)
 		for i := 0; i+size <= len(ls); i++ {
 			w := ls[i : i+size]
-			if trivialWindow(w) {
+			if trivialWindow(w, cmt[i:i+size]) {
 				continue
 			}
 			h := sha1.Sum([]byte(strings.Join(w, "\n")))
 			k := hex.EncodeToString(h[:])
 			if byHash[k] == nil {
-				byHash[k] = map[string]bool{}
+				byHash[k] = map[string]int{}
 			}
-			byHash[k][rel] = true
+			byHash[k][rel]++
 		}
 		return nil
 	})
@@ -127,12 +167,19 @@ func scanWindows(root string, size int) ([]string, error) {
 	}
 	var out []string
 	for h, files := range byHash {
-		if len(files) < 2 {
-			continue
-		}
 		var fs2 []string
-		for f := range files {
+		dup := false
+		for f, n := range files {
 			fs2 = append(fs2, f)
+			if n > 1 {
+				// the same fragment twice inside one file is a dup
+				// too — gosimilarity compares functions, not spans.
+				out = append(out, h+"@"+f+"|"+f)
+				dup = true
+			}
+		}
+		if !dup && len(files) < 2 {
+			continue
 		}
 		sort.Strings(fs2)
 		for i := 0; i < len(fs2); i++ {
@@ -154,8 +201,8 @@ func pairIDs(g *gsOutput) []string {
 	var out []string
 	for _, p := range g.Pairs {
 		a, b := decl[p.A], decl[p.B]
-		x := a.File + ":" + a.Name
-		y := b.File + ":" + b.Name
+		x := declID(a)
+		y := declID(b)
 		if x > y {
 			x, y = y, x
 		}
@@ -163,6 +210,16 @@ func pairIDs(g *gsOutput) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// declID names a declaration baseline-uniquely: same-named methods
+// on different types in one file stay distinct via the receiver.
+func declID(d gsDecl) string {
+	name := d.Name
+	if d.Receiver != "" {
+		name = strings.TrimPrefix(d.Receiver, "*") + "." + name
+	}
+	return filepath.ToSlash(d.File) + ":" + name
 }
 
 func setOf(xs []string) map[string]bool {
