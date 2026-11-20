@@ -44,13 +44,14 @@ func jsonTypIsIface(td *runtime.TypeDef) bool {
 	if td.Kind == runtime.KindInterface {
 		return true
 	}
-	switch x := td.TypeExpr().(type) {
-	case *ast.InterfaceType:
+	// ident-spelled interface underlyings (`type T any`, `type E error`)
+	// resolve through IfaceBase — reading the spelling instead would
+	// misjudge a shadowed `any` (`type any = int`) as an interface.
+	if td.IfaceBase {
 		return true
-	case *ast.Ident:
-		return x.Name == "any"
 	}
-	return false
+	_, ok := td.TypeExpr().(*ast.InterfaceType)
+	return ok
 }
 
 // jsonIfaceElem reports whether a slice/array typedef's element is
