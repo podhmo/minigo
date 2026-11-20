@@ -29,6 +29,11 @@ type Inferer struct {
 	// ResolveType resolves a type expr in `from`'s declaring context;
 	// (nil, nil) means "unresolvable".
 	ResolveType func(from *TypeDef, x ast.Expr) (*TypeDef, error)
+	// MethodSigs maps a typedef's method names to their signature
+	// shells — the interface's requirements and the concrete type's
+	// methods alike. Nil means "unresolvable" (interface-method
+	// inference is skipped).
+	MethodSigs func(td *TypeDef) map[string]*Function
 }
 
 func (i *Inferer) underlying(td *TypeDef) *TypeDef {
@@ -194,6 +199,16 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	sameDecl := bt.Spec != nil && conc.Spec == bt.Spec ||
 		bt.Spec == nil && conc.Spec == nil && bt.Name != "" &&
 			conc.Name == bt.Name && conc.Pkg == bt.Pkg
+	if !sameDecl && conc.Name != "" {
+		// a named arg of another decl cannot lend its binds — but an
+		// interface pattern still unifies through the method set:
+		// Getter[K,V] against M{} binds K,V from M.Get's signature,
+		// like gc.
+		if bt.Kind == KindInterface && i.MethodSigs != nil && !i.expanding {
+			i.unifyIfaceMethods(ctx, tset, binds, bt, idxs, conc)
+		}
+		return
+	}
 	var bound bool
 	for j, x := range idxs {
 		if !sameDecl {
@@ -406,5 +421,37 @@ func typedefOfBind(v Value) *TypeDef {
 			return nil
 		}
 		v = dv
+	}
+}
+
+// unifyIfaceMethods binds a generic interface pattern's index args from
+// the concrete type's method signatures: each requirement `M(P...) R...`
+// is substituted with the pattern's index exprs (the caller's own type
+// params, which UnifyDef then binds) and unified against conc's method
+// of the same name.
+func (i *Inferer) unifyIfaceMethods(ctx *TypeDef, tset map[string]bool, binds map[string]Value, bt *TypeDef, idxs []ast.Expr, conc *TypeDef) {
+	reqs := i.MethodSigs(bt)
+	cms := i.MethodSigs(conc)
+	if reqs == nil || cms == nil {
+		return
+	}
+	subs := map[string]ast.Expr{}
+	for j, name := range bt.TParams {
+		if j < len(idxs) {
+			subs[name] = idxs[j]
+		}
+	}
+	for name, req := range reqs {
+		cm := cms[name]
+		if req == nil || cm == nil || req.Decl == nil || cm.Decl == nil ||
+			req.Decl.Type == nil || cm.Decl.Type == nil {
+			continue
+		}
+		ps, ok := substTypeExprs(req.Decl.Type, subs).(*ast.FuncType)
+		if !ok || ps == nil {
+			continue
+		}
+		ct := &TypeDef{Kind: KindFunc, Anon: cm.Decl.Type, Pkg: cm.Pkg, File: cm.File, Binds: cm.Binds}
+		i.UnifyDef(ctx, tset, binds, ps, ct)
 	}
 }
