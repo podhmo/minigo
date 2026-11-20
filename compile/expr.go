@@ -604,6 +604,14 @@ func (c *compiler) checkTypeExprMembers(e ast.Expr) {
 		if !isPkg {
 			return
 		}
+		// Only a source-indexed package can demonstrate a member is
+		// missing — bound packages expose types through their host
+		// bindings instead (`exec.Cmd` is usable but never indexed),
+		// so a Missing answer there stays lazy like before.
+		res := c.askIndexed(ref)
+		if res.Val == nil || res.Val.Index == nil {
+			return
+		}
 		if c.selMember(ref, t.Sel.Name).Kind == semantics.Missing {
 			c.trap(t.Pos(), "undefined: %s.%s", id.Name, t.Sel.Name)
 		}
