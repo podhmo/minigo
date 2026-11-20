@@ -1,0 +1,4 @@
+map[string]time.Duration
+[3]time.Duration
+[]time.Duration
+map[string]*time.Time
