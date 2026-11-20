@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -30,4 +31,22 @@ func main() {
 	fmt.Println(errNil != nil)
 	var t3 *E
 	fmt.Println(errors.As(errNil, &t3))
+
+	asIntoErrorSlot()
+}
+
+func asIntoErrorSlot() {
+	// As stores through reflect.Value.Set — the target error slot must
+	// keep the typed nil's tag through a host error parameter.
+	ctx, cancel := context.WithCancelCause(context.Background())
+	var nilE *E
+	var err error = nilE
+	var target error
+	if !errors.As(err, &target) {
+		fmt.Println("as failed")
+		return
+	}
+	cancel(target)
+	c := context.Cause(ctx)
+	fmt.Println(c != nil, errors.Is(c, context.Canceled))
 }

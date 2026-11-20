@@ -526,10 +526,10 @@ func (m *Marshal) errOut(vc runtime.MemberCaller, rs []runtime.Value, i int) err
 		return nil
 	}
 	switch e := runtime.Unwrap(rs[i]).(type) {
-	case nil, runtime.Nil, *runtime.TypedNil:
+	case nil, runtime.Nil:
 		return nil
-	case *runtime.IfaceNil:
-		if runtime.BoxedNilTyp(e) == nil {
+	case *runtime.TypedNil, *runtime.IfaceNil:
+		if runtime.NilDeclaredTyp(e) == nil {
 			return nil
 		}
 		return m.hostErr(vc, rs[i])
