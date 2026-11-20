@@ -349,119 +349,6 @@ func (r *Resolver) TypeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Meth
 // aliasOf implements the Hooks.AliasOf hook: a KindAlias typedef resolves
 // its target expression — one hop only, so `type A = B` gives B's own
 // typedef even when B is itself a declared type (unlike underlying).
-func (r *Resolver) AliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
-	if td == nil || td.Kind != runtime.KindAlias || td.Anon == nil {
-		return td, nil
-	}
-	x := td.Anon
-	n := 0
-	for {
-		for {
-			p, ok := x.(*ast.ParenExpr)
-			if !ok {
-				break
-			}
-			x = p.X
-		}
-		st, ok := x.(*ast.StarExpr)
-		if !ok {
-			break
-		}
-		n++
-		x = st.X
-	}
-	// resolveTypeRef peels `*T` to T (it serves embed lookup), so an
-	// alias `type A = *T` would otherwise lose the pointer: rebuild it
-	// like the underlying hook does — A IS *T, not T.
-	expr := x
-	elem, err := r.ResolveTypeRef(td, x)
-	if err != nil || elem == nil || n == 0 {
-		return elem, err
-	}
-	for ; n > 0; n-- {
-		expr = &ast.StarExpr{X: expr}
-		elem = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds, LocalTypes: td.LocalTypes}
-	}
-	return elem, nil
-}
-
-// underlying implements the Hooks.Underlying hook: a KindAlias typedef
-// resolves through its aliased expression to the real typedef.
-func (r *Resolver) Underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
-	// aliases and named basics both peel to their underlying typedef —
-	// `type S string` bottoms out at the builtin "string" typedef so a
-	// zero value picks the right literal kind.
-	for td != nil && (td.Kind == runtime.KindAlias || td.Kind == runtime.KindNamedBasic) && td.Anon != nil {
-		x := td.Anon
-		for {
-			p, ok := x.(*ast.ParenExpr)
-			if !ok {
-				break
-			}
-			x = p.X
-		}
-		if _, isStar := x.(*ast.StarExpr); isStar {
-			// the declared underlying is a pointer type (`type P *S`,
-			// `type P A` with `type A = *S`): resolveTypeRef peels the
-			// star for embed lookup, so rebuild it here — a defined
-			// pointer type's underlying IS the pointer, and it promotes
-			// nothing the pointee carries.
-			n := 0
-			for {
-				for {
-					p, ok := x.(*ast.ParenExpr)
-					if !ok {
-						break
-					}
-					x = p.X
-				}
-				st, ok := x.(*ast.StarExpr)
-				if !ok {
-					break
-				}
-				n++
-				x = st.X
-			}
-			elem, err := r.ResolveTypeRef(td, x)
-			if err != nil || elem == nil {
-				return nil, err
-			}
-			// the rebuilt pointer keeps an underlying spelling so
-			// anonymous comparisons (*S vs *R) stay distinct, and the
-			// generic binds so *T spells *int when P[int]'s underlying
-			// compares against an anonymous *int (convShapeEq).
-			expr := ast.Expr(x)
-			pt := elem
-			for ; n > 0; n-- {
-				expr = &ast.StarExpr{X: expr}
-				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds, LocalTypes: td.LocalTypes}
-			}
-			return pt, nil
-		}
-		next, err := r.ResolveTypeRef(td, td.Anon)
-		if err != nil || next == nil || next == td {
-			return nil, err
-		}
-		td = next
-	}
-	return td, nil
-}
-
-// peelAliasTd follows a typedef's alias links — `type A = B` IS B, so
-// method sets, interface requirements and signatures all read through
-// the alias to the aliased declaration. Named basics stay put: `type A B`
-// declares a distinct method set, not B's.
-func (r *Resolver) PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef {
-	for i := 0; td != nil && td.Kind == runtime.KindAlias && i < 32; i++ {
-		next, err := r.AliasOf(td)
-		if err != nil || next == nil || next == td {
-			break
-		}
-		td = next
-	}
-	return td
-}
-
 // methodWalkU is the single traversal behind the method-set views (the
 // callable-name set) and methodFuncs (the member-function map): one
 // walk applies alias peeling, the anonymous-*T elem peel, Go's receiver
@@ -1105,19 +992,26 @@ func SpecType(td *runtime.TypeDef) ast.Expr {
 // import refs, *T / T[...] peel to the base. Anything else fails —
 // constraints and underlying-only types don't participate in method sets.
 func (r *Resolver) ResolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	return r.resolveTypeRef(from, x, seedPath(from))
+}
+
+// resolveTypeRef is the path-carrying walk: each hop to another decl
+// appends to p so a failure deep in the chain reports where resolution
+// walked. The record is call-local — nothing persists on the typedefs.
+func (r *Resolver) resolveTypeRef(from *runtime.TypeDef, x ast.Expr, p respath) (*runtime.TypeDef, error) {
 	switch t := x.(type) {
 	case *ast.StarExpr:
-		return r.ResolveTypeRef(from, t.X)
+		return r.resolveTypeRef(from, t.X, p)
 	case *ast.ParenExpr:
-		return r.ResolveTypeRef(from, t.X)
+		return r.resolveTypeRef(from, t.X, p)
 	case *ast.IndexExpr:
-		base, err := r.ResolveTypeRef(from, t.X)
+		base, err := r.resolveTypeRef(from, t.X, p)
 		if err != nil {
 			return nil, err
 		}
 		return r.InstantiateRef(from, base, []ast.Expr{t.Index}), nil
 	case *ast.IndexListExpr:
-		base, err := r.ResolveTypeRef(from, t.X)
+		base, err := r.resolveTypeRef(from, t.X, p)
 		if err != nil {
 			return nil, err
 		}
@@ -1179,7 +1073,7 @@ func (r *Resolver) ResolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.T
 			if info, ok := from.Pkg.Index.Types[t.Name]; ok && info.Decl != nil {
 				vv, err := r.materialize(from.Pkg, info.Decl)
 				if err != nil {
-					return nil, err
+					return nil, p.errf("%s", err)
 				}
 				if td, ok := vv.(*runtime.TypeDef); ok {
 					// `type A = T` — an alias IS its target, so a type
@@ -1188,11 +1082,11 @@ func (r *Resolver) ResolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.T
 					// stays put: its target mentions the decl's own type
 					// parameters, which only instantiateRef can bind.
 					if td.Kind == runtime.KindAlias && len(td.TParams) == 0 {
-						return r.PeelAliasTd(td), nil
+						return r.peelAliasTd(td, p.push(td))
 					}
 					return td, nil
 				}
-				return nil, fmt.Errorf("%s is not a type", t.Name)
+				return nil, p.errf("%s is not a type", t.Name)
 			}
 		}
 		// a materialized typedef may sit in package globals without an
@@ -1218,28 +1112,28 @@ func (r *Resolver) ResolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.T
 				if !token.IsExported(t.Name) && !ref.AllNames {
 					continue
 				}
-				p, err := ref.Materialize()
-				if err != nil || p == nil {
+				pkg, err := ref.Materialize()
+				if err != nil || pkg == nil {
 					continue
 				}
-				_, inGlobals := p.Globals.Get(t.Name)
+				_, inGlobals := pkg.Globals.Get(t.Name)
 				inIndex := false
-				if p.Index != nil {
-					_, inIndex = p.Index.Lookup(t.Name)
+				if pkg.Index != nil {
+					_, inIndex = pkg.Index.Lookup(t.Name)
 				}
 				if !inGlobals && !inIndex {
 					continue
 				}
-				m, err := p.Member(t.Name, r.materialize)
+				m, err := pkg.Member(t.Name, r.materialize)
 				if err != nil {
-					return nil, fmt.Errorf("dot import %s: %s", ref.Path, err)
+					return nil, p.errf("dot import %s: %s", ref.Path, err)
 				}
 				td, _ := m.(*runtime.TypeDef)
 				if td == nil {
 					continue
 				}
 				if itd != nil {
-					return nil, fmt.Errorf("ambiguous dot-imported name: %s", t.Name)
+					return nil, p.errf("ambiguous dot-imported name: %s", t.Name)
 				}
 				itd = td
 			}
@@ -1252,35 +1146,35 @@ func (r *Resolver) ResolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.T
 				return td, nil
 			}
 		}
-		return nil, fmt.Errorf("cannot resolve type %s", t.Name)
+		return nil, p.errf("cannot resolve type %s", t.Name)
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok || from.Pkg == nil {
-			return nil, fmt.Errorf("cannot resolve embedded type")
+			return nil, p.errf("cannot resolve embedded type")
 		}
-		p, err := r.ImportPackageAt(from, id.Name)
+		pkg, err := r.ImportPackageAt(from, id.Name)
 		if err != nil {
-			return nil, err
+			return nil, p.errf("%s", err)
 		}
-		if p == from.Pkg {
-			return r.ResolveTypeRef(from, ast.NewIdent(t.Sel.Name))
+		if pkg == from.Pkg {
+			return r.resolveTypeRef(from, ast.NewIdent(t.Sel.Name), p)
 		}
-		m, err := p.Member(t.Sel.Name, r.materialize)
+		m, err := pkg.Member(t.Sel.Name, r.materialize)
 		if err != nil {
-			return nil, err
+			return nil, p.errf("%s", err)
 		}
 		td, ok := m.(*runtime.TypeDef)
 		if !ok {
-			return nil, fmt.Errorf("%s.%s is not a type", id.Name, t.Sel.Name)
+			return nil, p.errf("%s.%s is not a type", id.Name, t.Sel.Name)
 		}
 		// same alias transparency as the ident case: pkg.A where A is
 		// `type A = T` resolves to T's own typedef.
 		if td.Kind == runtime.KindAlias && len(td.TParams) == 0 {
-			td = r.PeelAliasTd(td)
+			return r.peelAliasTd(td, p.push(td))
 		}
 		return td, nil
 	}
-	return nil, fmt.Errorf("unsupported embedded type expression %T", x)
+	return nil, p.errf("unsupported embedded type expression %T", x)
 }
 
 // deferredTypeOf implements the Hooks.DeferredType hook (M4-7a): a
@@ -1309,7 +1203,7 @@ func (r *Resolver) StarKeepingTypedef(ctx *runtime.TypeDef, expr ast.Expr) (*run
 		}
 	}
 peeled:
-	td, err := r.ResolveTypeRef(ctx, expr)
+	td, err := r.resolveTypeRef(ctx, expr, seedPath(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -1328,13 +1222,13 @@ peeled:
 // resolved from its underlying type AST (Anon or Spec.Type). Used by
 // elided composite literal elements and pointer member dispatch.
 func (r *Resolver) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
-	return r.elemOfFuel(td, 8)
+	return r.elemOfFuel(td, 8, seedPath(td))
 }
 
 // elemOfFuel is elemOf with a bound on the named-container hops a bare
 // underlying (`type N Ms`, `type N AS` with an alias AS) takes to reach
 // the container whose element it shares.
-func (r *Resolver) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, error) {
+func (r *Resolver) elemOfFuel(td *runtime.TypeDef, fuel int, p respath) (*runtime.TypeDef, error) {
 	if td.Elem != nil {
 		return td.Elem, nil
 	}
@@ -1352,22 +1246,22 @@ func (r *Resolver) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, 
 			// a pointer when the pointee is itself a star (`**T`'s
 			// element is `*T`, not T: resolveTypeRef would collapse the
 			// inner star and lose the pointer level).
-			return r.ElemTypeRef(td, t.X)
+			return r.elemTypeRef(td, t.X, p)
 		case *ast.ArrayType:
-			return r.ElemTypeRef(td, t.Elt)
+			return r.elemTypeRef(td, t.Elt, p)
 		case *ast.MapType:
-			return r.ElemTypeRef(td, t.Value)
+			return r.elemTypeRef(td, t.Value, p)
 		case *ast.ChanType:
-			return r.ElemTypeRef(td, t.Value)
+			return r.elemTypeRef(td, t.Value, p)
 		}
 		// bare underlying naming a container (`type N Ms`, `type N AS`
 		// with an alias AS = []map[K]V): N shares that container's
 		// element — the named type itself is not its element.
-		etd, err := r.ResolveTypeRef(td, x)
+		etd, err := r.resolveTypeRef(td, x, p)
 		if err == nil && etd != nil && etd != td && fuel > 0 {
 			switch etd.Kind {
 			case runtime.KindSlice, runtime.KindMap, runtime.KindChan, runtime.KindPointer, runtime.KindAlias:
-				return r.elemOfFuel(etd, fuel-1)
+				return r.elemOfFuel(etd, fuel-1, p.push(etd))
 			}
 		}
 		// any other bare underlying (e.g. `type T MyStruct`): the elem
@@ -1461,10 +1355,14 @@ func (r *Resolver) InstantiateBinds(base *runtime.TypeDef, binds map[string]runt
 // typedef. Named pointer types (`*P` where P is `type P *Sq`) resolve
 // through resolveTypeRef to P's own typedef, which memberOfType peels.
 func (r *Resolver) ElemTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.TypeDef, error) {
+	return r.elemTypeRef(from, x, seedPath(from))
+}
+
+func (r *Resolver) elemTypeRef(from *runtime.TypeDef, x ast.Expr, p respath) (*runtime.TypeDef, error) {
 	if st, ok := x.(*ast.StarExpr); ok {
 		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: st, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
 	}
-	return r.ResolveTypeRef(from, x)
+	return r.resolveTypeRef(from, x, p)
 }
 
 // ---- shared helpers ----
