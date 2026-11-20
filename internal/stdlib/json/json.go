@@ -190,6 +190,30 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 			return jsonErrResult(r), nil
 		}
 		prior, _ := runtime.Deref(target)
+		// a conversion result boxes the host value itself
+		// (json.RawMessage(s) stores RawMessage, where `var r
+		// json.RawMessage` stores *RawMessage) — pointer methods like
+		// UnmarshalJSON escape the member probe. gc's indirect reaches
+		// them because &r is addressable: mint an address box, call
+		// the pointer method on it, then write the pointee back.
+		if gv, ok := runtime.Unwrap(prior).(*runtime.GoValue); ok {
+			if rv := reflect.ValueOf(gv.V); rv.IsValid() && rv.Kind() != reflect.Pointer {
+				pv := reflect.New(rv.Type())
+				pv.Elem().Set(rv)
+				if m, ok := runtime.IfaceMember(v, &runtime.GoValue{V: pv.Interface()}, "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
+					r, cerr := v.Call(m, []runtime.Value{stdlib.ScriptVal(data)})
+					if cerr != nil {
+						return nil, cerr
+					}
+					var back runtime.Value = &runtime.GoValue{V: pv.Elem().Interface()}
+					if n, ok := prior.(*runtime.Named); ok && n.Typ != nil {
+						back = runtime.Tag(n.Typ, back)
+					}
+					runtime.SetRef(target, back)
+					return jsonErrResult(r), nil
+				}
+			}
+		}
 		ectx := &jsonErrCtx{keepNum: flags.Number, strict: flags.Strict}
 		if std := derefTyp(v.TypeOf(target)); std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
 			ectx.strct = jsonBareName(std)
