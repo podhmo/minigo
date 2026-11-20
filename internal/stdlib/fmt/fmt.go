@@ -149,9 +149,21 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			// they index the raw args; rewriteTypeVerbs renumbers the
 			// directives and rebuilds the operand list for printing.
 			_, wrapPos := rewriteWrapVerbs(spec)
+			// gc prints %!w(...) for a %w operand that wraps nothing —
+			// nil or a non-error — instead of its %v. Substitute the
+			// literal marker for the operand so %v prints it verbatim.
+			for _, p := range wrapPos {
+				if p+1 >= len(a) || p+1 >= len(flat) {
+					continue
+				}
+				if lit, bad := badWrapOperand(v, flat[p+1], a[p+1]); bad {
+					a[p+1] = lit
+				}
+			}
 			spec, tail := rewriteTypeVerbs(spec, a, flat, 0, v)
 			a = append(a[:1], tail...)
-			spec, _ = rewriteWrapVerbs(spec)
+			spec, a2 := rewriteWrapVerbsOps(spec, a[1:])
+			a = append(a[:1], a2...)
 			msg := fmt.Sprintf(spec, a[1:]...)
 			// like gc: the shape follows the raw count of %w verbs that
 			// had an operand — one makes a wrapError (Unwrap() error),
@@ -180,6 +192,114 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 			return stdlib.ErrVal(&stdlib.WrapErrors{Msg: msg, Errs: errs}), nil
 		}},
 	})
+}
+
+// badWrapOperand classifies a %w operand like gc's handleMethods: a
+// valid error wraps (and prints under %v); nil and non-error operands
+// print %!w(<nil>) / %!w(TYPE=value) literal markers instead — the
+// marker text is substituted for the operand so %v emits it verbatim.
+func badWrapOperand(v runtime.VMCaller, x runtime.Value, hostArg any) (any, bool) {
+	if stdlib.WrapOperand(v, x) != nil {
+		return nil, false
+	}
+	switch runtime.Unwrap(x).(type) {
+	case nil, runtime.Nil, *runtime.Nil, *runtime.IfaceNil:
+		return "%!w(<nil>)", true
+	}
+	return fmt.Sprintf("%%!w(%s=%v)", ScriptTypeString(x), hostArg), true
+}
+
+// rewriteWrapVerbsOps rewrites each %w to %v like rewriteWrapVerbs, and
+// for an operand index past the operand list emits %[K]v over an
+// appended "%!w(MISSING)" literal (gc's bad-verb text for a %w with no
+// operand — a bare %v would print %!v(MISSING) instead).
+func rewriteWrapVerbsOps(spec string, ops []any) (string, []any) {
+	if !strings.Contains(spec, "w") {
+		return spec, ops
+	}
+	var sb strings.Builder
+	argNum := 0
+	var miss []int
+	// index mirrors rewriteWrapVerbs' cursor handling for `[n]`.
+	index := func(i int) int {
+		if i < len(spec) && spec[i] == '[' {
+			if k := strings.IndexByte(spec[i:], ']'); k > 1 {
+				if n, err := strconv.Atoi(spec[i+1 : i+k]); err == nil && n >= 1 {
+					argNum = n - 1
+					return i + k + 1
+				}
+			}
+		}
+		return i
+	}
+	digits := func(i int) int {
+		for i < len(spec) && spec[i] >= '0' && spec[i] <= '9' {
+			i++
+		}
+		return i
+	}
+	for i := 0; i < len(spec); {
+		j := strings.IndexByte(spec[i:], '%')
+		if j < 0 {
+			sb.WriteString(spec[i:])
+			break
+		}
+		sb.WriteString(spec[i : i+j])
+		i += j
+		pct := i
+		i++
+		for i < len(spec) && strings.IndexByte("#+- 0", spec[i]) >= 0 {
+			i++
+		}
+		i = index(i)
+		if i < len(spec) && spec[i] == '*' {
+			argNum++
+			i++
+		} else {
+			i = digits(i)
+		}
+		if i < len(spec) && spec[i] == '.' {
+			i = index(i + 1)
+			if i < len(spec) && spec[i] == '*' {
+				argNum++
+				i++
+			} else {
+				i = digits(i)
+			}
+		}
+		i = index(i)
+		if i >= len(spec) {
+			sb.WriteString(spec[pct:])
+			break
+		}
+		verb := spec[i]
+		i++
+		switch verb {
+		case '%':
+			sb.WriteString(spec[pct:i])
+		case 'w':
+			if argNum < len(ops) {
+				sb.WriteString(spec[pct : i-1])
+				sb.WriteByte('v')
+			} else {
+				// %[K]v reaches the appended literal; flags and any
+				// stale [n] index drop — gc prints %!w(MISSING) for a
+				// missing %w operand regardless.
+				miss = append(miss, argNum)
+				sb.WriteString("%[")
+				sb.WriteString(strconv.Itoa(len(ops) + len(miss)))
+				sb.WriteString("]v")
+			}
+			argNum++
+		default:
+			sb.WriteString(spec[pct:i])
+			argNum++
+		}
+	}
+	for range miss {
+		ops = append(ops, "%!w(MISSING)")
+	}
+	return sb.String(), ops
 }
 
 // rewriteWrapVerbs rewrites %w verbs to %v (flags, width and explicit
