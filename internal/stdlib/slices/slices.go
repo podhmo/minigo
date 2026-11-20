@@ -14,11 +14,11 @@ import (
 func Install(bind stdlib.Bind, h stdlib.Helpers, typedSeq func(*runtime.BuiltinFunc, ...*runtime.TypeDef) runtime.Value) {
 	bind("slices", stdlib.GenericFns(stdlib.HostSliceBoundary(stdlib.SlicesSeqHelpers(typedSeq, map[string]runtime.Value{
 		"Sort": stdlib.SortInPlace("slices.Sort"),
-		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Contains": &runtime.BuiltinFunc{Name: "slices.Contains", KeepConstArgs: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			i, err := stdlib.SliceIndexScript(vc, "slices.Contains", args)
 			return i >= 0, err
 		}},
-		"Index": &runtime.BuiltinFunc{Name: "slices.Index", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Index": &runtime.BuiltinFunc{Name: "slices.Index", KeepConstArgs: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			i, err := stdlib.SliceIndexScript(vc, "slices.Index", args)
 			return int64(i), err
 		}},
