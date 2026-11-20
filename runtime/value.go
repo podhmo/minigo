@@ -28,10 +28,12 @@
 package runtime
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/printer"
 	"go/token"
 	"maps"
 	"math"
@@ -986,8 +988,12 @@ func CanonicalKey(v Value) Value {
 		// pointers to it may compare equal — the choice the spec
 		// allows, and the same one binop's `==` already takes. Key by
 		// the pointee typedef: two *F keys meet while *F and *G stay
-		// apart, matching the interface equality gc gives.
-		if IsZeroSizeValue(x.Elem) {
+		// apart, matching the interface equality gc gives. A cell whose
+		// declared type is an interface holds a real (nonzero) slot:
+		// `var x any = struct{}{}` — `&x` is the slot's own address and
+		// stays distinct even while x holds a zero-size value.
+		if IsZeroSizeValue(x.Elem) &&
+			(x.Typ == nil || x.Typ.Kind != KindInterface) {
 			if tag := zeroSizePointeeTag(x); tag != "" {
 				return mapKey{typ: tag, repr: "zerobase"}
 			}
@@ -1774,13 +1780,33 @@ func IsZeroSizeValue(v Value) bool {
 // for an untyped composite literal. "" when neither is known; the key
 // then falls back to pointer identity.
 func zeroSizePointeeTag(c *Cell) string {
+	tag := ""
 	if c.Typ != nil {
-		return "zb:" + typeTagOf(c.Typ)
+		tag = zbTagOf(c.Typ)
+	} else if st, ok := c.Elem.(*Struct); ok && st.Def != nil {
+		tag = zbTagOf(st.Def)
 	}
-	if st, ok := c.Elem.(*Struct); ok && st.Def != nil {
-		return "zb:" + typeTagOf(st.Def)
+	if tag == "" {
+		return ""
 	}
-	return ""
+	return "zb:" + tag
+}
+
+// zbTagOf keys a zero-size pointee by its type. A named type keys by
+// its package-qualified name; an anonymous type renders its full type
+// syntax, since anonTag collapses signatures (`[0]func()` vs
+// `[0]func(int)` are distinct types sharing one zerobase each).
+func zbTagOf(td *TypeDef) string {
+	if td.Name != "" {
+		return typeTagOf(td)
+	}
+	if e := td.TypeExpr(); e != nil {
+		var b bytes.Buffer
+		if printer.Fprint(&b, token.NewFileSet(), e) == nil {
+			return b.String()
+		}
+	}
+	return typeTagOf(td)
 }
 
 // Map is a map value: a header over a [mapStore]. Pairs is keyed by the

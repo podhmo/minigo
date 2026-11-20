@@ -21,4 +21,16 @@ func main() {
 	fmt.Println(errors.Is(ErrF, ErrF))
 	fmt.Println(errors.Is(a, &F{}))
 	fmt.Println(errors.Is(fmt.Errorf("w: %w", a), b))
+	var ax any = struct{}{}
+	m := map[any]int{&ax: 1}
+	ax = 42
+	fmt.Println(m[&ax]) // &ax is the interface slot — stays distinct
+	var ay any = struct{}{}
+	m[&ay] = 5
+	fmt.Println(m[&ax], len(m))
+	pa := new([0]func())
+	pb := new([0]func(int))
+	na := map[any]int{pa: 1}
+	na[pb] = 2
+	fmt.Println(len(na)) // distinct anonymous array types
 }
