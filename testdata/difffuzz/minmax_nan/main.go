@@ -16,4 +16,6 @@ func main() {
 	fmt.Println(min(F(1), F(math.NaN())))
 	fmt.Println(max(3, 1))
 	fmt.Println(min(3, 1))
+	fmt.Println(uint64(min(1 << 63)))
+	fmt.Println(uint64(max(1 << 63)))
 }

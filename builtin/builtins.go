@@ -967,6 +967,9 @@ func isFloatNaN(x runtime.Value) bool {
 	if n, ok := x.(*runtime.Named); ok {
 		x = n.V
 	}
+	if _, ok := x.(*runtime.UConst); ok {
+		return false // constants have no NaN — materializing an oversized one panics
+	}
 	switch f := hostbridge.ConstNative(runtime.Unwrap(x)).(type) {
 	case float64:
 		return math.IsNaN(f)
