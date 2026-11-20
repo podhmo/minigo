@@ -714,6 +714,12 @@ func jsonEmbedHasMethods(pkg *runtime.Package, locals map[string]*runtime.TypeDe
 		// imported named embed is conservatively method-ful —
 		// matching gc for io.Reader-style embeds.
 		return ex.Name != "any"
+	case *ast.IndexExpr:
+		return jsonEmbedHasMethods(pkg, locals, ex.X, depth+1)
+	case *ast.IndexListExpr:
+		// a generic instantiation keeps the origin's method set —
+		// `type A = Empty[int]` resolves to Empty's spec.
+		return jsonEmbedHasMethods(pkg, locals, ex.X, depth+1)
 	case *ast.InterfaceType:
 		if ex.Methods == nil {
 			return false
