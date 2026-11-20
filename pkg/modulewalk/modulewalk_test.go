@@ -339,3 +339,32 @@ func TestDiscoverModules_WorkAbsoluteUse(t *testing.T) {
 		t.Errorf("modules (-want +got):\n%s", diff)
 	}
 }
+
+func TestScanDir_SameImportPathTwoDirs(t *testing.T) {
+	mk := func(body string) string {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "p.go"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	d1 := mk("package p\n\nimport \"strings\"\n\nvar _ = strings.Repeat\n")
+	d2 := mk("package p\n\nimport \"bytes\"\n\nvar _ = bytes.NewBuffer\n")
+
+	// two checkouts claiming one import path: one walker must not conflate them
+	w := &Walker{}
+	pi, err := w.ScanDir(context.Background(), d1, "x.test/p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"strings"}, pi.Imports); diff != "" {
+		t.Fatalf("d1 (-want +got):\n%s", diff)
+	}
+	pi, err = w.ScanDir(context.Background(), d2, "x.test/p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]string{"bytes"}, pi.Imports); diff != "" {
+		t.Errorf("d2 (-want +got):\n%s", diff)
+	}
+}
