@@ -343,6 +343,33 @@ type fmtValue struct {
 // live Format call — %p substitution happens before host fmt runs.
 type zeroState struct{}
 
+// markerState is the state a bad-verb marker's inner %v renders
+// against: it carries the directive's own flags/width/precision (gc
+// applies them inside the parens — %!p(int=         1)) while methods
+// stay suppressed like every other nested state.
+type markerState struct {
+	zeroState
+	w, p  int
+	hasW  bool
+	hasP  bool
+	flags string
+}
+
+func (s markerState) Width() (int, bool)     { return s.w, s.hasW }
+func (s markerState) Precision() (int, bool) { return s.p, s.hasP }
+func (s markerState) Flag(c int) bool        { return strings.IndexByte(s.flags, byte(c)) >= 0 }
+
+// suppressMethods reports whether f is a nested stand-in state —
+// zeroState or markerState — under which gc's p.erroring declines
+// every Formatter and Stringer-family call.
+func suppressMethods(f fmt.State) bool {
+	switch f.(type) {
+	case zeroState, markerState:
+		return true
+	}
+	return false
+}
+
 // captureState delegates formatting flags to the live state but
 // records writes: an element inside a composite returns its Format
 // output as the element's string for the parent's assembled output —
@@ -357,7 +384,7 @@ type captureState struct {
 // a capture of the live state; internal stand-ins pass through.
 func nested(f fmt.State) fmt.State {
 	switch f.(type) {
-	case zeroState, *captureState:
+	case zeroState, markerState, *captureState:
 		return f
 	}
 	return &captureState{f: f}
@@ -371,23 +398,158 @@ func nested(f fmt.State) fmt.State {
 // %p rewrite — the same rule as gc's intFromArg: any integer kind that
 // fits an int (a named int64 like time.Duration qualifies), and for a
 // precision non-negative.
-func precIntOK(v runtime.Value) bool {
+// starInt reads a *-operand value as an int like gc's intFromArg: any
+// integer kind that fits an int (a named int64 like time.Duration
+// qualifies), wrapper boxes and const tokens peeled first.
+func starInt(v runtime.Value) (int, bool) {
 	n := runtime.Unwrap(v)
 	if uc, ok := n.(*runtime.UConst); ok {
 		if nv, err := runtime.UConstNative(uc); err == nil {
 			n = nv
 		}
 	}
+	if gv, ok := n.(*runtime.GoValue); ok {
+		n = gv.V
+	}
 	switch rv := reflect.ValueOf(n); rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i := rv.Int()
-		return i >= 0 && int64(int(i)) == i
+		if int64(int(i)) == i {
+			return int(i), true
+		}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32,
 		reflect.Uint64, reflect.Uintptr:
 		u := rv.Uint()
-		return int64(u) >= 0 && uint64(int(u)) == u
+		if int64(u) >= 0 && uint64(int(u)) == u {
+			return int(u), true
+		}
 	}
-	return false
+	return 0, false
+}
+
+func precIntOK(v runtime.Value) bool {
+	i, ok := starInt(v)
+	return ok && i >= 0
+}
+
+// unnamedBasicTypes maps a basic kind to its unnamed type — a named
+// host scalar converts here to shed its methods where gc suppresses
+// them (bad-verb markers: time.Duration must print "3", not "3ns").
+var unnamedBasicTypes = map[reflect.Kind]reflect.Type{
+	reflect.Bool:       reflect.TypeOf(false),
+	reflect.Int:        reflect.TypeOf(int(0)),
+	reflect.Int8:       reflect.TypeOf(int8(0)),
+	reflect.Int16:      reflect.TypeOf(int16(0)),
+	reflect.Int32:      reflect.TypeOf(int32(0)),
+	reflect.Int64:      reflect.TypeOf(int64(0)),
+	reflect.Uint:       reflect.TypeOf(uint(0)),
+	reflect.Uint8:      reflect.TypeOf(uint8(0)),
+	reflect.Uint16:     reflect.TypeOf(uint16(0)),
+	reflect.Uint32:     reflect.TypeOf(uint32(0)),
+	reflect.Uint64:     reflect.TypeOf(uint64(0)),
+	reflect.Uintptr:    reflect.TypeOf(uintptr(0)),
+	reflect.Float32:    reflect.TypeOf(float32(0)),
+	reflect.Float64:    reflect.TypeOf(float64(0)),
+	reflect.Complex64:  reflect.TypeOf(complex64(0)),
+	reflect.Complex128: reflect.TypeOf(complex128(0)),
+	reflect.String:     reflect.TypeOf(""),
+}
+
+// markerInner builds the state a %p bad-verb marker's inner %v renders
+// against from the directive's tail — flags, width and precision,
+// reading * operands like gc's intFromArg. A non-integer width reports
+// badWidth, a negative or non-integer precision badPrec; gc prints the
+// matching %! marker ahead of the bad-verb marker and drops the value.
+func markerInner(tail string, stars []int, vals []runtime.Value) (st markerState, badWidth, badPrec bool) {
+	var fl strings.Builder
+	starAt := 0
+	i := 0
+	for i < len(tail) {
+		ch := tail[i]
+		if ch == '.' {
+			i++
+			break
+		}
+		if ch == '[' {
+			for i < len(tail) && tail[i] != ']' {
+				i++
+			}
+			if i < len(tail) {
+				i++
+			}
+			continue
+		}
+		if ch == '*' {
+			i++
+			if starAt < len(stars) {
+				v, ok := starInt(vals[stars[starAt]])
+				switch {
+				case !ok:
+					badWidth = true
+				case v < 0:
+					// gc treats a negative width as minus-flag + abs.
+					fl.WriteByte('-')
+					st.w, st.hasW = -v, true
+				default:
+					st.w, st.hasW = v, true
+				}
+				starAt++
+			}
+			continue
+		}
+		if strings.IndexByte("#+- 0", ch) >= 0 {
+			fl.WriteByte(ch)
+			i++
+			continue
+		}
+		start := i
+		for i < len(tail) && tail[i] >= '0' && tail[i] <= '9' {
+			i++
+		}
+		if start == i {
+			i++
+			continue
+		}
+		if w, err := strconv.Atoi(tail[start:i]); err == nil {
+			st.w, st.hasW = w, true
+		}
+	}
+	precStr := ""
+	for ; i < len(tail); i++ {
+		ch := tail[i]
+		if ch == '*' {
+			if starAt < len(stars) {
+				v, ok := starInt(vals[stars[starAt]])
+				if !ok || v < 0 {
+					badPrec = true
+				} else {
+					st.p, st.hasP = v, true
+				}
+				starAt++
+			}
+			continue
+		}
+		precStr += string(ch)
+	}
+	if precStr != "" {
+		if p, err := strconv.Atoi(precStr); err == nil {
+			if p < 0 {
+				badPrec = true
+			} else {
+				st.p, st.hasP = p, true
+			}
+		}
+	}
+	if badPrec {
+		st.hasP = false
+	}
+	flagsStr := fl.String()
+	if strings.IndexByte(flagsStr, '-') >= 0 {
+		// a left-justified field pads trailing spaces; 0 is inert.
+		flagsStr = strings.ReplaceAll(flagsStr, "0", "")
+	}
+	st.flags = flagsStr
+	return st, badWidth, badPrec
 }
 
 // starOperand lifts a *-operand arg to the integer the host fmt reads.
@@ -452,68 +614,6 @@ func ptrZeroPadWidth(flags string) (int, bool) {
 	return w, w > 0
 }
 
-// badVerbBasicTypes maps a numeric/basic kind to its unnamed type — a
-// named host scalar converts here to shed its methods (gc's badVerb
-// renders with handleMethods disabled: time.Duration must print "3",
-// not "3ns").
-var badVerbBasicTypes = map[reflect.Kind]reflect.Type{
-	reflect.Bool:       reflect.TypeOf(false),
-	reflect.Int:        reflect.TypeOf(int(0)),
-	reflect.Int8:       reflect.TypeOf(int8(0)),
-	reflect.Int16:      reflect.TypeOf(int16(0)),
-	reflect.Int32:      reflect.TypeOf(int32(0)),
-	reflect.Int64:      reflect.TypeOf(int64(0)),
-	reflect.Uint:       reflect.TypeOf(uint(0)),
-	reflect.Uint8:      reflect.TypeOf(uint8(0)),
-	reflect.Uint16:     reflect.TypeOf(uint16(0)),
-	reflect.Uint32:     reflect.TypeOf(uint32(0)),
-	reflect.Uint64:     reflect.TypeOf(uint64(0)),
-	reflect.Uintptr:    reflect.TypeOf(uintptr(0)),
-	reflect.Float32:    reflect.TypeOf(float32(0)),
-	reflect.Float64:    reflect.TypeOf(float64(0)),
-	reflect.Complex64:  reflect.TypeOf(complex64(0)),
-	reflect.Complex128: reflect.TypeOf(complex128(0)),
-	reflect.String:     reflect.TypeOf(""),
-}
-
-// badVerbOperand picks the operand a bad-verb marker's inner %v sees.
-// gc renders it via printValue — reflection over the underlying value
-// with handleMethods disabled — so the marshalled host arg is
-// unusable: its String() would fire. Script scalars cross unwrapped
-// (an int64 keeps gc's numeric width/precision), a named host scalar
-// converts to its basic kind, and composites render to text through
-// fmtValue under the method-suppressing zeroState.
-func badVerbOperand(c runtime.MemberCaller, x runtime.Value) runtime.Value {
-	n := runtime.Unwrap(x)
-	if uc, ok := n.(*runtime.UConst); ok {
-		if nv, err := runtime.UConstNative(uc); err == nil {
-			n = nv
-		}
-	}
-	if gv, ok := n.(*runtime.GoValue); ok {
-		n = gv.V
-	}
-	switch n.(type) {
-	case int64, float64, string, bool, nil:
-		return n // script basics carry no methods
-	case *runtime.Struct, *runtime.Slice, *runtime.Map, *runtime.Tuple:
-		fv := &fmtValue{c: c, x: n}
-		return fv.render('v', zeroState{})
-	}
-	// a host value: reflection like gc's printValue — a named basic
-	// (time.Duration) sheds its methods at the unnamed kind; a bare
-	// basic passes through.
-	if rv := reflect.ValueOf(n); rv.IsValid() {
-		if rv.Type().NumMethod() > 0 {
-			if bt := badVerbBasicTypes[rv.Kind()]; bt != nil {
-				return rv.Convert(bt).Interface()
-			}
-		}
-		return n
-	}
-	return nil
-}
-
 func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 	zs := zeroState{}
 	switch t := x.(type) {
@@ -555,7 +655,16 @@ func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 		fv := &fmtValue{c: c, x: t}
 		return badVerb('p', stdlib.TypedefSpelling(t.Def), fv.render('v', zs))
 	case *runtime.Named:
-		return ptrSpelling(c, t.V)
+		inner := ptrSpelling(c, t.V)
+		// a named scalar keeps its declared type in the marker — gc
+		// writes %!p(main.U=...), not the underlying kind's name.
+		if t.Typ != nil && t.Typ.Name != "" && strings.HasPrefix(inner, "%!") {
+			if eq := strings.IndexByte(inner, '='); eq >= 0 {
+				open := strings.IndexByte(inner, '(')
+				return inner[:open+1] + stdlib.TypedefSpelling(t.Typ) + "=" + inner[eq+1:]
+			}
+		}
+		return inner
 	case *runtime.UConst:
 		if nv, err := runtime.UConstNative(t); err == nil {
 			return ptrSpelling(c, nv)
@@ -940,49 +1049,44 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 		flags := fb.String()
 		stars := d.stars
 		badPrec := false
+		badWidth := false
+		innerSt := markerState{}
 		var spelling string
 		pBadVerb := false
 		if d.verb == 'p' {
 			spelling = ptrSpelling(c, vals[d.pos])
 			pBadVerb = strings.HasPrefix(spelling, "%!")
-			if pBadVerb && !strings.ContainsRune(spelling, '=') {
-				// a %!p(<nil>) marker consumes no operand — its width/
-				// precision operands leave the operand list too — but a
-				// * precision is still validated first, so a bad operand
-				// reports %!(BADPREC) ahead of the marker.
-				for _, sp := range d.stars[len(d.stars)-precStars:] {
-					if !precIntOK(vals[sp]) {
-						badPrec = true
-					}
-				}
+			if pBadVerb {
+				// a bad-verb marker renders its inner %v literally and
+				// consumes every operand — none reach the rebuilt
+				// directive — but width/precision operands are still
+				// validated first, so a bad one reports its %! marker.
+				var bw, bp bool
+				innerSt, bw, bp = markerInner(tail, d.stars, vals)
+				badWidth, badPrec = bw, bp
 				stars = nil
 			} else if precAt >= 0 {
-				// a * precision operand is validated even on the
-				// bad-verb path: a non-integer or negative operand
-				// prints %!(BADPREC) ahead of the marker. A valid one
-				// stays so the marker's inner %v honors it; for a plain
-				// pointer gc ignores precision entirely, so the text
-				// and its operands always leave the rebuilt directive
-				// (%.3p → "0x2" otherwise).
+				// for a plain pointer gc ignores precision entirely but
+				// still validates a * operand — a bad one prints
+				// %!(BADPREC) ahead of the value.
 				bad := false
 				for _, sp := range d.stars[len(d.stars)-precStars:] {
 					if !precIntOK(vals[sp]) {
 						bad = true
 					}
 				}
-				if bad || !pBadVerb {
-					badPrec = bad
-					flags = flags[:precAt]
-					stars = stars[:len(stars)-precStars]
-				}
+				badPrec = bad
+				flags = flags[:precAt]
+				stars = stars[:len(stars)-precStars]
 			}
 		}
 		for _, sp := range stars {
 			na = append(na, starOperand(a[off+sp], vals[sp]))
 		}
-		if badPrec {
+		if badPrec && !pBadVerb {
 			// gc's marker precedes the formatted directive: write it
-			// as escaped text before the directive's '%' opens.
+			// as escaped text before the directive's '%' opens. On the
+			// bad-verb path it is emitted with the marker below.
 			sb.WriteString("%%!(BADPREC)")
 		}
 		switch d.verb {
@@ -996,20 +1100,28 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 			na = append(na, ScriptTypeString(vals[d.pos]))
 		case 'p':
 			if pBadVerb {
+				if badWidth {
+					sb.WriteString("%%!(BADWIDTH)")
+				}
+				if badPrec {
+					sb.WriteString("%%!(BADPREC)")
+				}
 				// gc renders the arg inside the marker's parens:
 				// %!p(int=         1) — the value is its %v with the
-				// directive's own flags/width/precision applied. Rebuild
-				// the marker around a %v of the raw arg so the host fmt
-				// applies them and consumes the operands.
+				// directive's own flags/width/precision applied and
+				// display methods suppressed. fmtValue renders it under
+				// the marker's state, so unsigned/float32 tags, +/#
+				// flags and composite spellings all survive.
 				inner := spelling[len("%!p(") : len(spelling)-1]
 				if eq := strings.IndexByte(inner, '='); eq >= 0 {
 					sb.WriteString("%%!p(")
 					sb.WriteString(inner[:eq+1])
-					sb.WriteByte('%')
-					sb.WriteString(flags)
-					sb.WriteByte('v')
+					// the rendered value is literal text in the rebuilt
+					// spec — a % inside it must not reparse as a
+					// directive.
+					innerVal := (&fmtValue{c: c, x: vals[d.pos]}).render('v', innerSt)
+					sb.WriteString(strings.ReplaceAll(innerVal, "%", "%%"))
 					sb.WriteByte(')')
-					na = append(na, badVerbOperand(c, vals[d.pos]))
 				} else {
 					sb.WriteString("%%")
 					sb.WriteString(spelling[1:])
@@ -1264,7 +1376,7 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 	// gc's badVerb sets p.erroring, so handleMethods declines every
 	// Formatter AND every Stringer-family method there — a Stringer
 	// argument renders its fields, never its String() output.
-	_, nested := f.(zeroState)
+	nested := suppressMethods(f)
 	if s.c != nil && !nested && verb != 'T' && verb != 'p' {
 		if cs, isCap := f.(*captureState); isCap {
 			wrote, pan := callFormatReport(s.c, s.x, cs, verb)
@@ -1363,8 +1475,9 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		// a bound host scalar (time.Month/time.Duration) whose payload is
 		// still script-shaped — a stored int64 or a const-domain UConst —
 		// renders through the host scalar so String() and every verb
-		// apply like gc (%v → "January", %d → 1).
-		if td := v.Typ; td != nil && td.HostScalar != nil {
+		// apply like gc (%v → "January", %d → 1). Nested bad-verb
+		// renderings skip it: gc's p.erroring suppresses String().
+		if td := v.Typ; td != nil && td.HostScalar != nil && !suppressMethods(f) {
 			if hv, ok := runtime.HostScalarOf(td, v.V); ok {
 				return fmt.Sprintf(formatOf(f, verb), hv)
 			}
@@ -1444,23 +1557,27 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		case 'q':
 			return strconv.Quote(s.renderValue(x, 'v', f))
 		}
+		// +/# field naming and the T{...} go-syntax are live-%v forms;
+		// inside a bad-verb marker gc passes the flags down to the leaf
+		// renders instead (%+p of S{X:7} prints {+7}).
+		nameFields := !suppressMethods(f)
 		parts := make([]string, len(v.Fields))
 		for i, e := range v.Fields {
 			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: stdlib.FieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
-			if f.Flag('+') && i < len(v.Def.Fields) {
+			if nameFields && f.Flag('+') && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
-			if f.Flag('#') && i < len(v.Def.Fields) {
+			if nameFields && f.Flag('#') && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
 			parts[i] = fv
 		}
 		sep := " "
-		if f.Flag('#') {
+		if nameFields && f.Flag('#') {
 			sep = ", "
 		}
 		body := strings.Join(parts, sep)
-		if f.Flag('#') {
+		if nameFields && f.Flag('#') {
 			return stdlib.TypedefSpelling(v.Def) + "{" + body + "}"
 		}
 		return "{" + body + "}"
@@ -1489,7 +1606,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			// %#v renders a byte slice as []byte{0xNN, ...} — the byte
 			// spelling applies only at the top level (reflect cannot
 			// distinguish byte from uint8 below it).
-			if f.Flag('#') && stdlib.ByteSliceTyp(v.Typ) {
+			if f.Flag('#') && !suppressMethods(f) && stdlib.ByteSliceTyp(v.Typ) {
 				if bs, ok := sliceBytes(v); ok {
 					spell := stdlib.TypedefSpelling(v.Typ)
 					if v.Typ.Name == "" && s.depth == 0 && !stdlib.IsArrayTyp(v.Typ) {
@@ -1547,7 +1664,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			vr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: vt, depth: s.depth + 1}).render(ev, nested(f))
 			parts = append(parts, kr+":"+vr)
 		}
-		if f.Flag('#') {
+		if f.Flag('#') && !suppressMethods(f) {
 			return stdlib.TypedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
 		}
 		return "map[" + strings.Join(parts, " ") + "]"
@@ -1634,7 +1751,18 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 				return rt.String()
 			}
 		}
-		return fmt.Sprintf(formatOf(f, verb), v.V)
+		hv := v.V
+		if suppressMethods(f) {
+			// gc's p.erroring suppresses display methods — a named
+			// host scalar renders at its unnamed basic kind
+			// (time.Duration → 3, not 3ns).
+			if rv := reflect.ValueOf(hv); rv.IsValid() && rv.Type().NumMethod() > 0 {
+				if bt := unnamedBasicTypes[rv.Kind()]; bt != nil {
+					hv = rv.Convert(bt).Interface()
+				}
+			}
+		}
+		return fmt.Sprintf(formatOf(f, verb), hv)
 	case *runtime.TypeDef:
 		if verb == 'T' {
 			return "type"
@@ -1654,7 +1782,7 @@ func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
 	for i, e := range v.Elems {
 		parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: et, depth: s.depth + 1}).render(ev, nested(f))
 	}
-	if f.Flag('#') && verb == 'v' {
+	if f.Flag('#') && verb == 'v' && !suppressMethods(f) {
 		return stdlib.TypedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
 	}
 	return "[" + strings.Join(parts, " ") + "]"
@@ -1667,6 +1795,15 @@ func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
 func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 	if u, ok := x.(*runtime.UConst); ok {
 		x = hostbridge.MustNativeConst(u)
+	}
+	if suppressMethods(f) {
+		// gc's p.erroring suppresses display methods — a bare named
+		// host scalar (time.Duration) renders at its unnamed kind.
+		if rv := reflect.ValueOf(x); rv.IsValid() && rv.Type().NumMethod() > 0 {
+			if bt := unnamedBasicTypes[rv.Kind()]; bt != nil {
+				x = rv.Convert(bt).Interface()
+			}
+		}
 	}
 	if leafBadVerb(x, verb) {
 		name := ""
@@ -1686,10 +1823,20 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 		// script ints store int64 but spell int — including inside
 		// composites, where %#v elements stay decimal (the 0x-hex int
 		// spelling is a top-level-only form).
+		if suppressMethods(f) {
+			// inside a bad-verb marker the flags fall to the integer
+			// itself — %+ signs and %0 pads apply like fmtInteger,
+			// %# stays inert (p.fmt.sharp, not sharpV).
+			return fmt.Sprintf(formatOfNoHash(f, 'd'), int(i))
+		}
 		if verb == 'v' && f.Flag('#') {
 			return fmt.Sprintf(formatOfNoHash(f, verb), int(i))
 		}
 		return fmt.Sprintf(formatOf(f, verb), int(i))
+	}
+	if suppressMethods(f) {
+		// same inert-# rule for the other scalar leaves.
+		return fmt.Sprintf(formatOfNoHash(f, verb), x)
 	}
 	return fmt.Sprintf(formatOf(f, verb), x)
 }
