@@ -431,7 +431,16 @@ func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
 				if !have[m] && !unsure {
 					continue // already counted above
 				}
-				if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
+				if dynFn, ok := dynFns[m]; ok {
+					sig, _, _, _ := runtime.FuncSigOf(dynFn)
+					if sig != nil {
+						if !v.memberSigEq(reqFn, dynFn) {
+							missing = append(missing, m)
+						}
+						continue
+					}
+				}
+				if !v.hostMethodSigMatch(reqFn, m, x) {
 					missing = append(missing, m)
 				}
 			}
@@ -908,10 +917,13 @@ func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function, x runt
 			continue
 		}
 		if dynFn, ok := dynFns[m]; ok {
-			if !v.memberSigEq(reqFn, dynFn) {
-				return false
+			sig, _, _, _ := runtime.FuncSigOf(dynFn)
+			if sig != nil {
+				if !v.memberSigEq(reqFn, dynFn) {
+					return false
+				}
+				continue
 			}
-			continue
 		}
 		if !v.hostMethodSigMatch(reqFn, m, x) {
 			return false

@@ -13,7 +13,11 @@ import (
 // same-named requirement regardless of signature. Non-host values and
 // unspellable requirements keep the name-only pass.
 func (v *VM) hostMethodSigMatch(reqFn *runtime.Function, m string, x runtime.Value) bool {
-	gv, ok := runtime.Unwrap(x).(*runtime.GoValue)
+	u := x
+	if d, ok := runtime.Deref(u); ok {
+		u = d
+	}
+	gv, ok := runtime.Unwrap(u).(*runtime.GoValue)
 	if !ok {
 		return true
 	}
@@ -32,6 +36,15 @@ func (v *VM) hostMethodSigMatch(reqFn *runtime.Function, m string, x runtime.Val
 	mt := hm.Type()
 	params, results := sigExprs(sig.Params), sigExprs(sig.Results)
 	if len(params) != mt.NumIn() || len(results) != mt.NumOut() {
+		return false
+	}
+	// signature identity covers variadicness too: `Write([]byte)` does
+	// not satisfy `Write(...byte)` and vice versa.
+	varReq := false
+	if sig.Params != nil && len(sig.Params.List) > 0 {
+		_, varReq = sig.Params.List[len(sig.Params.List)-1].Type.(*ast.Ellipsis)
+	}
+	if varReq != mt.IsVariadic() {
 		return false
 	}
 	from := &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds}
@@ -81,6 +94,39 @@ func sigExprs(fl *ast.FieldList) []ast.Expr {
 // Unresolvable positions stay permissive — the name pass already
 // decided presence.
 func (v *VM) sigTypeFitsHost(from *runtime.TypeDef, e ast.Expr, rt hostbridge.Type) bool {
+	// Composite type exprs compare structurally: ResolveType peels a
+	// `*` to the element's typedef, so `Equal(*T)` would look like
+	// `Equal(T)` if the leaf typedef answered for the whole expr.
+	switch t := e.(type) {
+	case *ast.ParenExpr:
+		return v.sigTypeFitsHost(from, t.X, rt)
+	case *ast.StarExpr:
+		return rt.Kind() == hostbridge.KindPointer && v.sigTypeFitsHost(from, t.X, rt.Elem())
+	case *ast.ArrayType:
+		if t.Len == nil {
+			return rt.Kind() == hostbridge.KindSlice && v.sigTypeFitsHost(from, t.Elt, rt.Elem())
+		}
+		return rt.Kind() == hostbridge.KindArray && v.sigTypeFitsHost(from, t.Elt, rt.Elem())
+	case *ast.MapType:
+		return rt.Kind() == hostbridge.KindMap &&
+			v.sigTypeFitsHost(from, t.Key, rt.Key()) &&
+			v.sigTypeFitsHost(from, t.Value, rt.Elem())
+	case *ast.ChanType:
+		dir := hostbridge.KindBothDir
+		if t.Dir == ast.SEND {
+			dir = hostbridge.KindSendDir
+		} else if t.Dir == ast.RECV {
+			dir = hostbridge.KindRecvDir
+		}
+		return rt.Kind() == hostbridge.KindChan && rt.ChanDir() == dir &&
+			v.sigTypeFitsHost(from, t.Value, rt.Elem())
+	}
+	// `any` is not in the basic-name table so the resolver may not
+	// answer — but it is a real type for signature identity: the host
+	// position must itself be the empty interface.
+	if id, ok := e.(*ast.Ident); ok && id.Name == "any" {
+		return rt.Kind() == hostbridge.KindInterface && rt.NumMethod() == 0
+	}
 	td, err := v.H.ResolveType(from, e)
 	if err != nil || td == nil {
 		return true
@@ -91,6 +137,11 @@ func (v *VM) sigTypeFitsHost(from *runtime.TypeDef, e ast.Expr, rt hostbridge.Ty
 		return rt == ht || rt.AssignableTo(ht)
 	}
 	if td.Kind == runtime.KindInterface {
+		if len(td.MReqs) == 0 {
+			// `any`/`interface{}` is a type, not a wildcard — the
+			// host position must itself be the empty interface.
+			return rt.Kind() == hostbridge.KindInterface && rt.NumMethod() == 0
+		}
 		// name-level method-set cover: a host result spelling the
 		// facade's concrete type (*RType) still satisfies reflect.Type.
 		for _, name := range td.MReqs {
