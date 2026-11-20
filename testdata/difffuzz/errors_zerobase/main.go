@@ -42,4 +42,11 @@ func main() {
 	mm[mk2()] = 2
 	mm[mk3()] = 3
 	fmt.Println(len(mm))
+	// same-named local types in different scopes are different types.
+	lt1 := func() any { type T struct{ x int }; return &[0]T{} }
+	lt2 := func() any { type T struct{ y int }; return &[0]T{} }
+	lm := map[any]int{lt1(): 1}
+	lm[lt2()] = 2
+	lm[lt2()] = 3
+	fmt.Println(len(lm))
 }
