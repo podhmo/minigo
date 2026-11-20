@@ -122,12 +122,16 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 				// only fills in when the tag declares none (host box).
 				// Host reflect methods carry no decl signature, so the
 				// func view reports nil for the pure host box.
-				if n.Typ != nil && (len(n.Typ.Methods) > 0 || n.Typ.File != nil || declOverHost(n.Typ)) {
+				if n.Typ != nil && n.Typ.Kind != runtime.KindInterface && !n.Typ.IfaceBase &&
+					(len(n.Typ.Methods) > 0 || n.Typ.File != nil || declOverHost(n.Typ)) {
 					// a script-declared typedef (File set, or the
 					// pointee of an anonymous *T over one) reports its
 					// own walk — `type MyBuf bytes.Buffer` inherits
 					// none of the host methods, so its set is just
-					// what the declaration adds.
+					// what the declaration adds. A declared-over-
+					// interface tag is transparent instead: the
+					// payload's method set answers (`var a A = buf`
+					// with `type A any` still calls buf.String()).
 					return r.TypeMethodInfoU(n.Typ, ptr)
 				}
 				return &runtime.MethodSet{Names: hostMethodSet(gv.V)}, nil
