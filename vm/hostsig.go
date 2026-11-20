@@ -104,7 +104,15 @@ func (v *VM) sigTypeFitsHost(from *runtime.TypeDef, e ast.Expr, rt hostbridge.Ty
 	case *ast.ParenExpr:
 		return v.sigTypeFitsHost(from, t.X, rt)
 	}
-	if rt.Name() == "" {
+	if rt.Name() != "" {
+		switch e.(type) {
+		case *ast.StarExpr, *ast.ArrayType, *ast.MapType, *ast.ChanType:
+			// a composite spelling never names a named type —
+			// `*string` is not `string` even though ResolveType
+			// would peel the `*` and answer the element typedef.
+			return false
+		}
+	} else {
 		switch t := e.(type) {
 		case *ast.StarExpr:
 			return rt.Kind() == hostbridge.KindPointer && v.sigTypeFitsHost(from, t.X, rt.Elem())
