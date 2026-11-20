@@ -1,0 +1,9 @@
+x %!w(<nil>)
+x %!w(<nil>) %!w(MISSING)
+x %!w(int=3)
+x %!w(MISSING)
+a e1 b e2
+x %!w(*main.P=<nil>)
+x %!w(string=s)
+ok
+e e
