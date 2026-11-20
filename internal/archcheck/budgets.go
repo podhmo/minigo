@@ -265,6 +265,7 @@ var FileBudgets = map[string]int{
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
 var FileBudgetExceptions = map[string]string{
+	"compile/expr.go":                 "#162: checkTypeExprMembers walks a type expression and traps on a missing package member",
 	"internal/stdlib/atomic/atomic.go": "stores retag the value with the cell declared type",
 	"internal/stdlib/math/math.go":     "math.Sincos tuple bind",
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
