@@ -104,10 +104,9 @@ const deadlockQuiescence = 200 * time.Millisecond
 // on an integer payload mints an address-valued pointer, and converting
 // it back to *T revives the recorded referent — a goroutine arg minted
 // on the parent lands in the same table as the child's lookup. An entry
-// may implement `Dead() bool` (the vm's weak mints): a dead referent is
-// unreachable, so inserting past the cap sweeps dead entries before any
-// live one is evicted — gc's own rule, since a uintptr→unsafe.Pointer
-// revive is only valid while the object stays reachable.
+// may implement `Dead() bool` (the vm's box-gated mints): a dead entry
+// has no live unsafe.Pointer box carrying the address, so inserting
+// past the cap sweeps dead entries before any live one is evicted.
 type uintMint struct {
 	q []uint64
 	m map[uint64]any
@@ -129,29 +128,52 @@ func (p *Proc) MintUintptr(addr uint64, ref any) {
 	}
 	if _, dup := p.mints.m[addr]; !dup {
 		p.mints.q = append(p.mints.q, addr)
-		if len(p.mints.q) > uintMintCap {
-			// reap dead referents first: they can never revive, and a
-			// long-running mint loop (a temp buffer per iteration)
-			// mostly accumulates those.
-			for a, r := range p.mints.m {
-				if d, ok := r.(mintDead); ok && d.Dead() {
-					delete(p.mints.m, a)
-				}
+	}
+	p.mints.m[addr] = ref
+	if len(p.mints.q) > uintMintCap {
+		// reap dead entries first: they can never revive, and a
+		// long-running mint loop (a temp buffer per iteration) mostly
+		// accumulates those. The compaction only keeps keys still in
+		// the map — the new address must already be recorded above or
+		// it would drop out of the queue and stay in the map forever.
+		for a, r := range p.mints.m {
+			if d, ok := r.(mintDead); ok && d.Dead() {
+				delete(p.mints.m, a)
 			}
-			q := p.mints.q[:0]
-			for _, a := range p.mints.q {
-				if _, ok := p.mints.m[a]; ok {
-					q = append(q, a)
-				}
-			}
-			p.mints.q = q
 		}
+		q := p.mints.q[:0]
+		for _, a := range p.mints.q {
+			if _, ok := p.mints.m[a]; ok {
+				q = append(q, a)
+			}
+		}
+		p.mints.q = q
 		for len(p.mints.q) > uintMintCap {
 			delete(p.mints.m, p.mints.q[0])
 			p.mints.q = p.mints.q[1:]
 		}
 	}
-	p.mints.m[addr] = ref
+}
+
+// AttachUintptr runs fn on the live entry for addr under the table
+// lock — the vm records each minted unsafe.Pointer box against its
+// entry this way. Reports whether a live entry was found.
+func (p *Proc) AttachUintptr(addr uint64, fn func(entry any)) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mints == nil {
+		return false
+	}
+	ref, ok := p.mints.m[addr]
+	if !ok {
+		return false
+	}
+	if d, isDead := ref.(mintDead); isDead && d.Dead() {
+		delete(p.mints.m, addr)
+		return false
+	}
+	fn(ref)
+	return true
 }
 
 // ReviveUintptr reports the referent a mint recorded for addr — the

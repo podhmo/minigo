@@ -714,11 +714,15 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 					// `p == nil` holds and uintptr(p) round-trips 0.
 					return &runtime.TypedNil{Typ: td}, nil
 				}
-				return runtime.Tag(td, x), nil
+				box := runtime.Tag(td, x)
+				v.unsafePtrRoot(box)
+				return box, nil
 			}
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 		}
-		return runtime.Tag(td, x), nil
+		box := runtime.Tag(td, x)
+		v.unsafePtrRoot(box)
+		return box, nil
 	}
 	if !srcUnsafe && v.hostPtrConv(td, x) {
 		// a host pointer (time.UTC) converts to a pointer type whose
