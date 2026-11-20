@@ -26,4 +26,15 @@ func main() {
 	fmt.Println((*bytes.Buffer)(&mb).Len())
 	pmb := (*MyBuf)(bytes.NewBufferString("s"))
 	fmt.Printf("%T %v\n", pmb, pmb != nil)
+	// a composite literal is a value, so its conversion snapshots too.
+	ml := MyBuf(bytes.Buffer{})
+	fmt.Println((*bytes.Buffer)(&ml).Len())
+	// a declared pointer-underlying tag shares its box like a pointer.
+	p := P(bytes.NewBufferString("xy"))
+	q := Q(p)
+	(*bytes.Buffer)(q).WriteString("!")
+	fmt.Println((*bytes.Buffer)(p).String())
 }
+
+type P *bytes.Buffer
+type Q P
