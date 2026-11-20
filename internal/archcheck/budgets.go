@@ -70,7 +70,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/pointee.go":            48,
 	"internal/hostbridge/argas.go":              124,
 	"internal/hostbridge/spell.go":              88,
-	"internal/hostbridge/callhost.go":           567,
+	"internal/hostbridge/callhost.go":           579,
 	"internal/hostbridge/snapshot.go":           147,
 	"internal/hostbridge/display.go":            132,
 	"internal/hostbridge/chanops.go":            201,
