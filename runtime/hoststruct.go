@@ -98,9 +98,11 @@ func HostStructCopy(v Value) (Value, bool) {
 }
 
 // HostStructSnapshot copies the host struct v boxes — *T storage or a
-// bare T value alike — into a fresh *T box, the shape [HostNew] types
-// store. ok is false when v is not a host struct box.
-func HostStructSnapshot(v Value) (Value, bool) {
+// bare T value alike — into a fresh box of the shape the type stores:
+// wantPtr (the bound type's [HostNew] spells *T) selects a *T box, a
+// T-spelled HostNew a T box. ok is false when v is not a host struct
+// box.
+func HostStructSnapshot(v Value, wantPtr bool) (Value, bool) {
 	gv, ok := v.(*GoValue)
 	if !ok {
 		return nil, false
@@ -108,8 +110,17 @@ func HostStructSnapshot(v Value) (Value, bool) {
 	rv := reflect.ValueOf(gv.V)
 	switch rv.Kind() {
 	case reflect.Ptr:
-		return HostStructCopy(v)
+		if wantPtr {
+			return HostStructCopy(v)
+		}
+		if rv.IsNil() || rv.Elem().Kind() != reflect.Struct {
+			return nil, false
+		}
+		return &GoValue{V: rv.Elem().Interface()}, true
 	case reflect.Struct:
+		if !wantPtr {
+			return &GoValue{V: rv.Interface()}, true
+		}
 		cp := reflect.New(rv.Type())
 		cp.Elem().Set(rv)
 		return &GoValue{V: cp.Interface()}, true

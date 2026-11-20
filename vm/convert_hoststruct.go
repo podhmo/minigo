@@ -30,7 +30,9 @@ func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value, srcTag *runtime
 		// error like gc.
 		if u := v.peelNamed(td); u != nil && u.HostNew != nil {
 			if gv, isGV := v.hostStructBox(x, u, srcTag); isGV {
-				if nv, ok := runtime.HostStructSnapshot(gv); ok {
+				want := hostbridge.TypeOf(u.HostNew())
+				wantPtr := want != nil && want.Kind() == hostbridge.KindPtr
+				if nv, ok := runtime.HostStructSnapshot(gv, wantPtr); ok {
 					return &runtime.Named{Typ: td, V: nv}, nil
 				}
 			}
