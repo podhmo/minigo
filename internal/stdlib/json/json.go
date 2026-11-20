@@ -665,31 +665,38 @@ func jsonIfaceHasMethodsDepth(td *runtime.TypeDef, depth int) bool {
 		return true
 	}
 	for _, e := range td.IEmbeds {
-		if jsonEmbedHasMethods(td, e, depth+1) {
+		if jsonEmbedHasMethods(td.Pkg, td.LocalTypes, e, depth+1) {
 			return true
 		}
+	}
+	if len(td.IEmbeds) == 0 && td.Spec != nil {
+		// a defined type over a non-literal spec — `type E error`
+		// inherits the spec's method set.
+		return jsonEmbedHasMethods(td.Pkg, td.LocalTypes, td.Spec.Type, depth+1)
 	}
 	return false
 }
 
 // jsonEmbedHasMethods reports whether one embedded element carries
-// methods; depth bounds the shadowed-`any` resolution chain.
-func jsonEmbedHasMethods(td *runtime.TypeDef, e ast.Expr, depth int) bool {
+// methods; depth bounds the shadowed-`any` resolution chain. pkg and
+// locals are the scope the element's names resolve in — the typedef's
+// own declaring package and function-local type table, never the
+// caller's running package (which shadows nothing here). Descending
+// into a package-level spec drops locals: that spec's names live at
+// package scope.
+func jsonEmbedHasMethods(pkg *runtime.Package, locals map[string]*runtime.TypeDef, e ast.Expr, depth int) bool {
 	if depth > 16 {
 		return true
 	}
-	switch ex := e.(type) {
+	switch ex := ast.Unparen(e).(type) {
 	case *ast.Ident:
-		// a named embed resolves where the typedef declared it:
-		// function-local decls first, then the declaring package's
-		// index (the running package shadows nothing here).
-		if lt, ok := td.LocalTypes[ex.Name]; ok {
-			return lt != nil && lt != td && jsonIfaceHasMethodsDepth(lt, depth+1)
+		if lt, ok := locals[ex.Name]; ok {
+			return lt != nil && jsonIfaceHasMethodsDepth(lt, depth+1)
 		}
-		if p := td.Pkg; p != nil && p.Index != nil {
-			if tdi := p.Index.Types[ex.Name]; tdi != nil && tdi.Decl != nil {
+		if pkg != nil && pkg.Index != nil {
+			if tdi := pkg.Index.Types[ex.Name]; tdi != nil && tdi.Decl != nil {
 				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
-					return jsonEmbedHasMethods(td, ts.Type, depth+1)
+					return jsonEmbedHasMethods(pkg, nil, ts.Type, depth+1)
 				}
 			}
 		}
@@ -707,7 +714,7 @@ func jsonEmbedHasMethods(td *runtime.TypeDef, e ast.Expr, depth int) bool {
 			}
 			// an embedded element (no Names) counts only when it is
 			// itself method-ful — `interface{ any }` stays empty.
-			if jsonEmbedHasMethods(td, f.Type, depth+1) {
+			if jsonEmbedHasMethods(pkg, locals, f.Type, depth+1) {
 				return true
 			}
 		}
