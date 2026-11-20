@@ -42,6 +42,16 @@ func HostErrOf(c runtime.MemberCaller, v runtime.Value) error {
 			// peel to it so the helpers see the real error.
 			return HostErrOf(c, x.V)
 		}
+		// a bound host scalar (syscall.Errno) stands for the host
+		// value: reconstruct it so Is/As see the native error and
+		// `errno == ENOENT` compares across spellings.
+		if x.Typ != nil && x.Typ.HostScalar != nil {
+			if hv, ok := runtime.HostScalarOf(x.Typ, x.V); ok {
+				if e, ok := hv.(error); ok {
+					return e
+				}
+			}
+		}
 		// keep the tag: a named script type's methods (Error,
 		// Timeout, Is) live on it, and boxing the bare payload
 		// would drop them.
