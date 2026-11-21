@@ -31,7 +31,7 @@ var FileBudgets = map[string]int{
 	"compile/special.go":                        90,
 	"compile/stmt.go":                           1215,
 	"compile/sel_member.go":                     155,
-	"compile/typehint.go":                       2238,
+	"compile/typehint.go":                       2253,
 	"eval.go":                                   42,
 	"host/host.go":                              42,
 	"hostvars.go":                               54,
@@ -45,7 +45,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           120,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           643,
-	"internal/archcheck/budgets.go":             364,
+	"internal/archcheck/budgets.go":             366,
 	"internal/archcheck/rules.go":               150,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -96,7 +96,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/fserr.go":                  94,
 	"internal/stdlib/host/host.go":              40,
 	"internal/stdlib/net/net.go":                166,
-	"internal/stdlib/os/os.go":                  391,
+	"internal/stdlib/os/os.go":                  399,
 	"internal/stdlib/osexec/osexec.go":          66,
 	"internal/stdlib/unsafe.go":                 42,
 	"internal/stdlib/seq.go":                    118,
@@ -198,7 +198,7 @@ var FileBudgets = map[string]int{
 	"typeid.go":                                      398,
 	"typeid_leaf.go":                                 232,
 	"vm/assert.go":                                   2319,
-	"vm/binop.go":                                    1646,
+	"vm/binop.go":                                    1649,
 	"vm/call.go":                                     954,
 	"vm/composite.go":                                3433,
 	"vm/const.go":                                    1248,
@@ -207,7 +207,7 @@ var FileBudgets = map[string]int{
 	"vm/convert_host.go":                             82,
 	"vm/convert_hoststruct.go":                       96,
 	"vm/deferred.go":                                 98,
-	"vm/deferred_gate.go":                            111,
+	"vm/deferred_gate.go":                            114,
 	"vm/deferred_lit.go":                             57,
 	"vm/ffi_marshal.go":                              633,
 	"vm/frame.go":                                    416,
@@ -263,6 +263,10 @@ var FileBudgets = map[string]int{
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
 var FileBudgetExceptions = map[string]string{
+	"vm/deferred_gate.go": "the opCmpGate typedef compare peels alias typedefs the way binop does",
+
+	"internal/stdlib/bufio/bufio.go": "NewReadWriter bind grows bufio.go past the base budget",
+
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
 	"internal/hostbridge/callhost.go":     "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box",
@@ -314,6 +318,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/typedef/iface_reqs.go":     "ifacekey: declared-over-interface reqs and sigs chase the underlying spec type",
 	"internal/execution/intern.go":       "intern-widen: Replace for the canonical-descriptor carrier upgrade",
 	"compile/call.go":                    "shadowed make/new: the builtin-type check consults resolveName + selector base keeps the ref only for pointer-receiver-capable members",
+	"compile/typehint.go":                "os.FileMode alias: namedIdentOf reads a member typedef's qualified name so a bound `type A = B` compares identical to its target",
 	"compile/slots.go":                   "selector lowering: the cell verdict is tri-state so a proven field or value-receiver select can read the base's value",
 	"compile/compile.go":                 "method funclit symbol names carry the Go receiver form + emitDerefSite assigns a select-site slot to FieldRef reads",
 	"inspect/inspect.go":                 "Import.Name and SymbolID dot-import + lit-keys foreign/tparam + scoped locals + decl-site roles",

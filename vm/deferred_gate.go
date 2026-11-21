@@ -98,7 +98,10 @@ func (v *VM) typGate(f *frame, siteA, siteB *bytecode.CallSite, mask int) {
 	if v.ifaceTypedef(tda) || v.ifaceTypedef(tdb) {
 		return
 	}
-	if !sameTypeDef(tda, tdb) {
+	// a `type A = B` alias operand is the target type itself —
+	// `var m os.FileMode` compares equal to an `fs.FileMode`
+	// value, like gc.
+	if !sameTypeDef(v.peelAlias(tda), v.peelAlias(tdb)) {
 		f.trap("invalid operation: mismatched types %s and %s", tdNameIn(f.fn.Pkg, tda), tdNameIn(f.fn.Pkg, tdb))
 	}
 }
