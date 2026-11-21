@@ -239,7 +239,7 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 	case nil, runtime.Nil:
 		return reflect.Zero(t), nil
 	case *runtime.TypedNil, *runtime.IfaceNil:
-		if t == ErrorType && runtime.BoxedNilTyp(orig) != nil {
+		if t == ErrorType && runtime.NilDeclaredTyp(orig) != nil {
 			// `var e *E; error(e)` is a non-nil error carrying a
 			// typed nil — boxing it as zero drops the cause (gc's
 			// context.Cause returns the (*E)(nil), not Canceled).

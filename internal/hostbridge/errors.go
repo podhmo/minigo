@@ -46,11 +46,12 @@ func HostErrOf(c runtime.MemberCaller, v runtime.Value) error {
 		// Timeout, Is) live on it, and boxing the bare payload
 		// would drop them.
 		return &ScriptError{C: c, V: v}
-	case runtime.Nil, *runtime.IfaceNil:
-		// an untyped nil error unwraps to nothing — but a boxed typed
-		// nil (`var err error = (*E)(nil)`) is a real error value: its
-		// concrete tag unwraps to the TypedNil As/Is match on.
-		if td := runtime.BoxedNilTyp(v); td != nil {
+	case runtime.Nil, *runtime.IfaceNil, *runtime.TypedNil:
+		// an untyped nil error unwraps to nothing — but a typed nil
+		// (`var err error = (*E)(nil)`, or the TypedNil `errors.As`
+		// stores through reflect.Value.Set) is a real error value:
+		// its concrete tag unwraps to the TypedNil As/Is match on.
+		if td := runtime.NilDeclaredTyp(v); td != nil {
 			return &ScriptError{C: c, V: &runtime.TypedNil{Typ: td}}
 		}
 		return nil

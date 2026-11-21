@@ -368,7 +368,7 @@ func ScriptVal(v any) runtime.Value {
 		*runtime.Map, *runtime.Struct, *runtime.Function, *runtime.Closure,
 		*runtime.BoundMethod, *runtime.BuiltinFunc, *runtime.GoValue,
 		*runtime.Chan, *runtime.TypeDef, *runtime.Iterator, *runtime.Package,
-		*runtime.ImportRef, *runtime.Named, *runtime.TypedNil:
+		*runtime.ImportRef, *runtime.Named, *runtime.TypedNil, *runtime.IfaceNil:
 		return x
 	default:
 		// a nil *T of a named host type (os.Open's file on error), or a

@@ -33,6 +33,7 @@ import (
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
 	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
 	stdreflect "github.com/podhmo/minigo/internal/stdlib/reflect"
+	stdreflectlite "github.com/podhmo/minigo/internal/stdlib/reflectlite"
 	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
 	stdlibsha256 "github.com/podhmo/minigo/internal/stdlib/sha256"
 	stdlibslices "github.com/podhmo/minigo/internal/stdlib/slices"
@@ -75,6 +76,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("html", func() { stdlibhtml.Install(e.bindBound) })
 	e.pending.Register("path", func() { stdlibpath.Install(e.bindBound) })
 	e.pending.Register("reflect", func() { stdreflect.Install(e.bindBound, e.reflectHooks()) })
+	e.pending.Register("internal/reflectlite", func() { stdreflectlite.Install(e.bindBound, e.reflectHooks()) })
 	e.pending.Register("sort", func() { stdlibsort.Install(e.bindBound, h) })
 	e.pending.Register("slices", func() { stdlibslices.Install(e.bindBound, h, e.td.TypedSeq) })
 	e.pending.Register("maps", func() { stdlibmaps.Install(e.bindBound, h, e.td.TypedSeq) })
