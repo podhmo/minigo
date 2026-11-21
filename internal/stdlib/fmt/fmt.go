@@ -2780,6 +2780,9 @@ func ScriptTypeString(x runtime.Value) string {
 			return "reflect.StructField"
 		case *minireflect.Method:
 			return "reflect.Method"
+		case runtime.PlainError:
+			// the host type is exported; gc's payload is runtime.plainError.
+			return "runtime.plainError"
 		}
 		if at, ok := t.V.(stdlib.APITypeBox); ok {
 			// a facade spells its API type, not the box's name.
