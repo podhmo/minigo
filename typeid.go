@@ -87,7 +87,33 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	if td.Elem != nil {
 		return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, e.typeIDOf(td.Elem), args))
 	}
-	return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, runtime.TypUnderlyingSpelling(td), args))
+	s := runtime.TypUnderlyingSpelling(td)
+	if s == "" {
+		// no spec, no carrier, no expr, no spelling: a bare placeholder
+		// descriptor — unidentifiable, so it must not intern. A lone
+		// declared name is still an identity ("host:pkg:name").
+		if pkg, name, ok := splitHostName(td.Name); ok {
+			return runtime.TypeID(fmt.Sprintf("host:%s:%s%s", pkg, name, args))
+		}
+		return "?"
+	}
+	return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, s, args))
+}
+
+// internTypedef returns the session's canonical descriptor for td's
+// type identity (M4-3b): the first typedef stored under td's TypeID
+// wins, later equivalents are dropped. Typedefs with no stable
+// identity (the "?" fallback — no Spec, no host carrier, no expr)
+// pass through uninterned.
+func (e *Engine) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || e.typeIntern == nil {
+		return td
+	}
+	tid := e.typeIDOf(td)
+	if tid == "" || tid == "?" {
+		return td
+	}
+	return e.typeIntern.Of(tid, td)
 }
 
 // boundTypedefOf unwraps a Binds value to its typedef (type arguments
