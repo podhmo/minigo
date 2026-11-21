@@ -115,7 +115,7 @@ const (
 	// types / interfaces / generics
 	OpAssert        // pop typedef, pop value -> push asserted value (script panic on mismatch); B=1: a static-typedef operand sits between value and typedef
 	OpAssertOK      // pop typedef, pop value -> push Tuple{value, ok} (comma-ok assert)
-	OpInstantiate   // A: ntypeargs; pop type args, pop generic -> push specialized value
+	OpInstantiate   // A: ntypeargs; pop type args, pop generic -> push specialized value; C indexes Chunk.Sites
 	OpElemType      // pop typedef -> push element typedef ([]T->T, map[K]V->V, chan T->T, *T->T)
 	OpElemTypeOrNil // OpElemType that pushes NIL instead of trapping when the operand or its element type is unknown (fold probes only)
 

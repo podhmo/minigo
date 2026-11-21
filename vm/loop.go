@@ -459,7 +459,7 @@ func (v *VM) loop(f *frame) {
 				targs[i] = f.pop()
 			}
 			base := f.pop()
-			f.push(v.instantiate(f, base, targs, ins.Pos))
+			f.push(v.instantiate(f, base, targs, ins.Pos, v.selSite(f, ins)))
 		case bytecode.OpLocalType:
 			// A function-local type decl runs per call; inside an
 			// instantiated generic function — including a literal that
