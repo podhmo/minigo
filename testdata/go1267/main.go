@@ -219,6 +219,70 @@ func PromotedNilMethodAmbig() int {
 	return o.V
 }
 
+// &w.V pins the promoted field's slot — a write through the pointer
+// reads back through the embedded field.
+func PromotedAddrIdentity() int {
+	w := Wrap{Y: 1}
+	p := &w.V
+	*p = 7
+	return w.E1.V + w.Y // 8
+}
+
+// writing a promoted field behind a nil embedded pointer panics on the
+// implicit dereference, like the read.
+func PromotedPtrWritePanic() int {
+	p := PE{}
+	p.V = 1
+	return 0
+}
+
+// &p.V evaluates the dereference path — a nil embedded pointer panics.
+func PromotedPtrAddrPanic() int {
+	p := PE{}
+	q := &p.V
+	*q = 1
+	return 0
+}
+
+// `w.PRIn.X = f()`: PRIn promotes through a nil embedded *PRMid. Go defers
+// the target's pointer dereference to the store, so f's side effect
+// survives the panic.
+type PRIn struct{ X int }
+type PRMid struct{ PRIn }
+type PROut struct{ *PRMid }
+
+func PromotedStoreRhsFirst() (r int) {
+	n := 0
+	f := func() int { n = 7; return 1 }
+	defer func() { recover(); r = n }()
+	w := PROut{}
+	w.PRIn.X = f()
+	return -1
+}
+
+// `a[0].In.Y = f()`: In promotes through a nil embedded *PRA2 at
+// depth 1, shadowing PRBB's deeper In. Go panics on the nil
+// dereference at the store, after f ran — the deeper In must not
+// absorb the write.
+type PRInn struct{ Y int }
+type PRA2 struct{ In PRInn }
+type PRBB struct{ PRA2 }
+type PRS2 struct {
+	*PRA2
+	PRBB
+}
+
+func PromotedIndexStoreRhsFirst() (r int) {
+	a := []PRS2{{PRBB: PRBB{PRA2{In: PRInn{Y: 5}}}}}
+	n := 0
+	f := func() int { n = 9; return 1 }
+	// silent write to the deeper In lands at 9*100+1 = 901; the
+	// declared path's nil panic leaves it at 9*100+5 = 905.
+	defer func() { recover(); r = n*100 + a[0].PRBB.PRA2.In.Y }()
+	a[0].In.Y = f()
+	return -1
+}
+
 // ---- Go 1.27: generalized function-type inference ----
 
 func Id[T any](v T) T { return v }

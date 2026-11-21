@@ -516,14 +516,24 @@ func (v *VM) promotedValue(f *frame, name string, pr *promoted) runtime.Value {
 // embedded pointer on the way panics on the implicit dereference, like
 // the hit-through-nil path of the value search.
 func (v *VM) fieldAtPath(f *frame, s *runtime.Struct, path []int, name string) runtime.Value {
+	st, ix := v.fieldSlotAtPath(f, s, path, name)
+	if st == nil {
+		return nil
+	}
+	return st.Fields[ix]
+}
+
+// fieldSlotAtPath resolves the declared index path to its (struct,
+// field index) slot — the write-target shape of fieldAtPath.
+func (v *VM) fieldSlotAtPath(f *frame, s *runtime.Struct, path []int, name string) (*runtime.Struct, int) {
 	st := s
 	for i, ix := range path {
 		if ix < 0 || ix >= len(st.Fields) {
 			f.trap("field %s: index %d out of range on %s", name, ix, st.Def.Name)
-			return nil
+			return nil, 0
 		}
 		if i == len(path)-1 {
-			return st.Fields[ix]
+			return st, ix
 		}
 		k := -1
 		for j, ei := range st.Def.EmbedIdx {
@@ -534,7 +544,7 @@ func (v *VM) fieldAtPath(f *frame, s *runtime.Struct, path []int, name string) r
 		}
 		if k < 0 || k >= len(st.Def.EmbedSpecs) {
 			f.trap("field %s: no embed spec at index %d on %s", name, ix, st.Def.Name)
-			return nil
+			return nil, 0
 		}
 		spec := st.Def.EmbedSpecs[k]
 		var ptr bool
@@ -544,7 +554,7 @@ func (v *VM) fieldAtPath(f *frame, s *runtime.Struct, path []int, name string) r
 		embTd, err := v.H.ResolveType(st.Def, spec)
 		if err != nil || embTd == nil {
 			f.trap("field %s: cannot resolve embed on %s", name, st.Def.Name)
-			return nil
+			return nil, 0
 		}
 		inner, ok := v.embedValue(f, st, ix, v.peelNamed(embTd), ptr)
 		if !ok {
@@ -552,7 +562,166 @@ func (v *VM) fieldAtPath(f *frame, s *runtime.Struct, path []int, name string) r
 		}
 		st = inner
 	}
+	return nil, 0
+}
+
+// declaredFieldPath resolves a selector's field to its declared index
+// path for pinning into a runtime.FieldRef — nil keeps the ref's
+// name-search. Field and member collisions stay observable through the
+// ref's own rules, same as the BFS. The second result is the typedef
+// the field resolves to, pinned onto the ref so a deeper selection
+// never has to dereference it for its type.
+//
+// The base's typedef must come without evaluating lazy storage refs:
+// Go evaluates a store target's indirections and element fetches at
+// the store, after the right side runs (`w.In.X = f()` runs f before
+// the nil panic on w.In). refTypedef is the type-level walk parallel
+// to the storage walk — a ref's typedef answers from pinned or
+// declared information, never from the value it points at, so the
+// declared path pins even through nil embedded pointers and
+// out-of-bounds indexes.
+func (v *VM) declaredFieldPath(f *frame, base runtime.Value, name string) ([]int, *runtime.TypeDef) {
+	if v.H.FieldPath == nil {
+		return nil, nil
+	}
+	def := v.peelStructTypedef(v.refTypedef(f, base))
+	if def == nil || len(def.LocalTypes) > 0 {
+		return nil, nil
+	}
+	if idx, found, decided := v.H.FieldPath(def, name); decided && found {
+		return idx, v.pathTypedef(def, idx)
+	}
+	return nil, nil
+}
+
+// refTypedef answers the typedef of the value base resolves to —
+// statically. A lazy ref answers from what it already carries or what
+// its base's type declares (an IndexRef's element type, a DerefRef's
+// pointee), so neither the ref nor its target is ever evaluated: Go
+// runs those fetches and derefs at the store, after the right side.
+func (v *VM) refTypedef(f *frame, base runtime.Value) *runtime.TypeDef {
+	switch b := base.(type) {
+	case *runtime.FieldRef:
+		return b.Def
+	case *runtime.IndexRef:
+		// the element type of the container — a type query on the
+		// base's declared type, not an element fetch.
+		return v.elemTypedef(f, v.refTypedef(f, b.Base))
+	case *runtime.DerefRef:
+		return v.elemTypedef(f, v.refTypedef(f, b.Ptr))
+	case *runtime.Cell:
+		// an inferred slot (`a := []S{...}`) stamps no declared type
+		// on the cell — the stored value carries it instead.
+		if b.Typ != nil {
+			return b.Typ
+		}
+		return v.refTypedef(f, b.Elem)
+	case *runtime.Named:
+		return b.Typ
+	case *runtime.Slice:
+		return b.Typ
+	case *runtime.Map:
+		return b.Typ
+	case *runtime.Chan:
+		return b.Typ
+	default:
+		if s := runtime.StructOf(base); s != nil {
+			return s.Def
+		}
+		return nil
+	}
+}
+
+// peelStructTypedef peels aliases, named scalars and pointers down to
+// the struct typedef a selector would see — the same hops pathTypedef
+// makes per level. Nil stays nil.
+func (v *VM) peelStructTypedef(def *runtime.TypeDef) *runtime.TypeDef {
+	def = v.peelNamed(def)
+	for def != nil && def.Kind == runtime.KindPointer && def.Elem != nil {
+		def = def.Elem
+	}
+	return def
+}
+
+// pathTypedef reports the typedef a declared index path lands on —
+// statically, off the embed specs and field typedefs, so a nil
+// embedded pointer in the base is never touched by a type query.
+func (v *VM) pathTypedef(def *runtime.TypeDef, path []int) *runtime.TypeDef {
+	for i, ix := range path {
+		var nt *runtime.TypeDef
+		if i == len(path)-1 {
+			if fts := v.fieldTypedefs(def); 0 <= ix && ix < len(fts) {
+				nt = fts[ix]
+			}
+			if nt == nil {
+				nt = v.embedTypedef(def, ix)
+			}
+		} else {
+			nt = v.embedTypedef(def, ix)
+		}
+		if nt == nil {
+			return nil
+		}
+		// a `*T` field's pointee typedef is already resolved on Elem;
+		// named fields holding pointers reach the struct through it.
+		def = v.peelStructTypedef(nt)
+		if def == nil {
+			return nil
+		}
+	}
+	return def
+}
+
+// embedTypedef resolves the typedef of the embedded field at struct
+// field index ix — nil when ix is not an embed or cannot resolve.
+func (v *VM) embedTypedef(def *runtime.TypeDef, ix int) *runtime.TypeDef {
+	for j, ei := range def.EmbedIdx {
+		if ei != ix || j >= len(def.EmbedSpecs) {
+			continue
+		}
+		spec := def.EmbedSpecs[j]
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			spec = sx.X
+		}
+		nt, _ := v.H.ResolveType(def, spec)
+		return nt
+	}
 	return nil
+}
+
+// pathPtr reports whether the declared index path crosses a pointer
+// embedded field — composite-literal keys reject those outright (Go's
+// "invalid implicit pointer indirection"), whatever the stored value.
+func (v *VM) pathPtr(def *runtime.TypeDef, path []int) bool {
+	for _, ix := range path[:len(path)-1] {
+		k := -1
+		for j, ei := range def.EmbedIdx {
+			if ei == ix {
+				k = j
+				break
+			}
+		}
+		if k < 0 || k >= len(def.EmbedSpecs) {
+			return false
+		}
+		spec := def.EmbedSpecs[k]
+		var ptr bool
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			ptr, spec = true, sx.X
+		}
+		if ptr {
+			return true
+		}
+		nt, err := v.H.ResolveType(def, spec)
+		if err != nil {
+			return false
+		}
+		def = v.peelNamed(nt)
+		if def == nil {
+			return false
+		}
+	}
+	return false
 }
 
 // ptrReceiver binds the receiver of a `func (p *T) M` call for `x.M()`:
@@ -758,6 +927,42 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 					b.Fields[i] = nv
 				}
 				return
+			}
+		}
+		// the declaration answers the field side when it can — a
+		// declared path binds its slot directly, and only non-field
+		// members compete at a shallower-or-equal depth.
+		if v.H.FieldPath != nil && len(b.Def.LocalTypes) == 0 {
+			if idx, found, decided := v.H.FieldPath(b.Def, name); decided {
+				if found {
+					if pr, ok := v.promotedMemberEx(f, b, name, true, false, len(idx)-1); ok {
+						if pr.host != nil {
+							v.setField(f, pr.host, name, val)
+							return
+						}
+						f.trap("%s has no field %s", b.Def.Name, name)
+					}
+					st, fi := v.fieldSlotAtPath(f, b, idx, name)
+					if st == nil {
+						return
+					}
+					var ft *runtime.TypeDef
+					if fts := v.fieldTypedefs(st.Def); fi < len(fts) {
+						ft = fts[fi]
+					}
+					nv := v.coerce(f, val, ft)
+					if !overwriteArrayIn(st.Fields[fi], nv) {
+						st.Fields[fi] = nv
+					}
+					return
+				}
+				if pr, ok := v.promotedMemberEx(f, b, name, true, false, -1); ok {
+					if pr.host != nil {
+						v.setField(f, pr.host, name, val)
+						return
+					}
+				}
+				f.trap("%s has no field %s", b.Def.Name, name)
 			}
 		}
 		if pr, ok := v.promotedMember(f, b, name, true); ok {
@@ -2839,6 +3044,36 @@ func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts 
 				ft = fts[fi]
 			}
 			s.Fields[fi] = v.coerce(f, val, ft)
+			return true
+		}
+	}
+	if v.H.FieldPath != nil && def != nil && len(def.LocalTypes) == 0 {
+		if idx, found, decided := v.H.FieldPath(def, name); decided {
+			if !found || v.pathPtr(def, idx) {
+				// no declared field, or one a key cannot reach — only a
+				// host member can still bind the key.
+				if pr, ok := v.promotedMemberEx(f, s, name, false, false, -1); ok && pr.host != nil {
+					v.setField(f, pr.host, name, val)
+					return true
+				}
+				return false
+			}
+			if pr, ok := v.promotedMemberEx(f, s, name, false, false, len(idx)-1); ok {
+				if pr.host != nil {
+					v.setField(f, pr.host, name, val)
+					return true
+				}
+				return false // methods don't promote into literal keys
+			}
+			st, fi := v.fieldSlotAtPath(f, s, idx, name)
+			if st == nil {
+				return false
+			}
+			var ft *runtime.TypeDef
+			if ifts := v.fieldTypedefs(st.Def); fi < len(ifts) {
+				ft = ifts[fi]
+			}
+			st.Fields[fi] = v.coerce(f, val, ft)
 			return true
 		}
 	}
