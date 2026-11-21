@@ -721,7 +721,10 @@ func (e *Env) makeFunc(vc runtime.VMCaller, args []runtime.Value) (runtime.Value
 					if n != numIn {
 						return nil, fmt.Errorf("reflect.MakeFunc: unsupported spread argument")
 					}
-					spread, cargs = sp.S, cargs[:n-1]
+					if !sp.Nil {
+						spread = sp.S
+					}
+					cargs = cargs[:n-1]
 				}
 			}
 			ins := make([]*RValue, len(cargs))
