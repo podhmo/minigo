@@ -61,13 +61,15 @@ func (v *RValue) LinkCopiedKey(orig any) {
 	v.keyID = orig
 }
 
-// rkey pairs a viewed location with the view's type — gc's map key
+// rkey tags a viewed location with the view's domain — gc's map key
 // for a reflect.Value includes typ alongside the data pointer, so a
-// pointer Value and its Elem() (same location, different type) do
-// not collide.
+// pointer Value and its Elem() (same location, different kind of
+// view) do not collide. The typedef itself is not the key: repeated
+// Elem() walks mint a fresh descriptor per call, so keying on it
+// would split equal views.
 type rkey struct {
-	td *runtime.TypeDef
-	id any
+	via int // 0 = value view, 1 = settable ref view
+	id  any
 }
 
 func (v *RValue) ContentKey() any {
@@ -78,7 +80,7 @@ func (v *RValue) ContentKey() any {
 	// view by the location it reads through (gc's data ptr), and any
 	// other view by the root box copies link back to.
 	if v.ref != nil {
-		return rkey{v.td, v.ref}
+		return rkey{1, v.ref}
 	}
 	// a reference-like viewed value IS gc's data word — reflect.ValueOf
 	// on the same pointer/map/chan keys identically across calls,
@@ -86,7 +88,7 @@ func (v *RValue) ContentKey() any {
 	// the copy-linked root box.
 	switch v.val.(type) {
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.Map, *runtime.Chan:
-		return v.val
+		return rkey{0, v.val}
 	}
 	if v.keyID != nil {
 		return v.keyID
