@@ -31,6 +31,7 @@ var Rules = map[string][]string{
 	"internal/cmd/archcheck":        {"internal/archcheck"},
 	"internal/cmd/genbind":          {".", "index"},
 	"internal/cmd/genifaces":        {},
+	"internal/cmd/simcheck":         {},
 	"internal/execution":            {},
 	"internal/hostbridge":           {"internal/process", "minireflect", "runtime"},
 	"internal/process":              {},
