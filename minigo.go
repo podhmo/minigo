@@ -42,6 +42,7 @@ import (
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/assetaudit"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
@@ -90,6 +91,7 @@ type sharedAssets struct {
 	cwd        string                               // virtual cwd for os.* path intrinsics (defaults to startDir)
 	args       []string                             // script-visible os.Args; nil = host process argv
 	prof       *ScriptProfiler                      // samples script stacks; nil = off
+	assetAudit bool                                 // hash package AST+index and verify on Call (M3-2; off = no hash cost)
 }
 
 // sessionState is the per-session part of an engine: a forked session
@@ -223,6 +225,15 @@ func NewScriptProfiler(period time.Duration) *ScriptProfiler {
 // WithScriptProfiler samples every script goroutine the engine runs into p.
 func WithScriptProfiler(p *ScriptProfiler) Option {
 	return func(e *Engine) { e.prof = p }
+}
+
+// WithAssetAudit enables the opt-in asset audit (M3-2): the engine
+// fingerprints every built package's AST + index and re-verifies the
+// fingerprint in [Engine.Call], erroring when a shared asset was
+// mutated since load. Off by default — hashing a real package costs
+// roughly 1-1.6 s (see references/ownership.md).
+func WithAssetAudit() Option {
+	return func(e *Engine) { e.assetAudit = true }
 }
 
 // WithWorkingDir sets the engine's virtual working directory: relative
@@ -665,6 +676,22 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	// running it here would alias state across sessions.
 	if pkg.Owner != nil && pkg.Owner != e {
 		return nil, fmt.Errorf("minigo: package %q belongs to a different session", pkg.Path)
+	}
+	if e.assetAudit {
+		// a concurrently-loading package writes AssetHash inside
+		// indexFiles; wait for indexing to finish so the read cannot
+		// race the write (and so a half-built package is still audited
+		// — skipping on "" would let one slip through).
+		pkg.WaitIndexed()
+	}
+	if e.assetAudit && pkg.AssetHash != "" {
+		h, err := assetaudit.HashPackage(e.fset, pkg.Files, pkg.Index)
+		if err != nil {
+			return nil, err
+		}
+		if h != pkg.AssetHash {
+			return nil, fmt.Errorf("minigo: asset audit: package %q mutated since load", pkg.Path)
+		}
 	}
 	// one Call = one process = one root VM: concurrent Calls never share
 	// interpreter state, and lazy inits triggered inside the run join this
@@ -1169,6 +1196,13 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 	}
 	p.Index = ix
 	p.SetState(runtime.Indexed)
+	if e.assetAudit {
+		h, err := assetaudit.HashPackage(e.fset, p.Files, ix)
+		if err != nil {
+			return err
+		}
+		p.AssetHash = h
+	}
 
 	// file-scope import refs
 	for _, sf := range files {

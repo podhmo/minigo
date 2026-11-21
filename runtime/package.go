@@ -205,6 +205,11 @@ type Package struct {
 	// __init__ chunk mixes decls from several files).
 	FileByName map[string]*syntax.File
 
+	// AssetHash is the asset audit's fingerprint of this package's AST
+	// and index (see WithAssetAudit); empty when the audit is off so the
+	// default path pays no hashing cost.
+	AssetHash string
+
 	// Owner is the session that built this package: the engine sets it on
 	// source-built packages, and Engine.Call refuses a package another
 	// session owns — per-session package state (globals, init results,
