@@ -45,7 +45,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           120,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           643,
-	"internal/archcheck/budgets.go":             382,
+	"internal/archcheck/budgets.go": 383,
 	"internal/archcheck/rules.go":               151,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -63,7 +63,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/opaque.go":             146,
 	"internal/hostbridge/valueof.go":            605,
 	"internal/hostbridge/native.go":             128,
-	"internal/hostbridge/adapt.go":              226,
+	"internal/hostbridge/adapt.go": 247,
 	"internal/hostbridge/iface.go":              634,
 	"internal/hostbridge/maketype.go":           145,
 	"internal/hostbridge/marshal.go":            1154,
@@ -269,6 +269,7 @@ var FileBudgets = map[string]int{
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
 var FileBudgetExceptions = map[string]string{
+	"internal/hostbridge/adapt.go":               "panicstruct: funcMapPanicValue derefs a struct projection to the struct value the script panicked with",
 	"vm/deferred_gate.go": "the opCmpGate typedef compare peels alias typedefs the way binop does",
 
 	"internal/stdlib/bufio/bufio.go": "NewReadWriter bind grows bufio.go past the base budget",
