@@ -2325,16 +2325,20 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			return fmt.Sprintf("(*%s)(%p)", ScriptTypeString(dv), v)
 		}
 		if verb == 'x' || verb == 'X' {
-			// %x of a pointer prints the bare hex address; %#x's 0x
-			// prefix lands the same as %p's shape.
-			sp := fmt.Sprintf("%p", v)
-			if !f.Flag('#') {
-				sp = strings.TrimPrefix(sp, "0x")
-			}
-			if verb == 'X' {
+			// %x of a pointer prints the bare hex address; # restores
+			// the 0x/0X prefix (%p's shape) and width/precision pad
+			// the spelled address.
+			sp := strings.TrimPrefix(fmt.Sprintf("%p", v), "0x")
+			if f.Flag('#') {
+				if verb == 'X' {
+					sp = "0X" + strings.ToUpper(sp)
+				} else {
+					sp = "0x" + sp
+				}
+			} else if verb == 'X' {
 				sp = strings.ToUpper(sp)
 			}
-			return sp
+			return fmt.Sprintf(formatOfNoHash(f, 's'), sp)
 		}
 		return fmt.Sprintf("%p", v)
 	case *runtime.Struct:
@@ -2701,8 +2705,10 @@ func hostFieldsAt(rv reflect.Value, verb rune, f fmt.State, typ string, top bool
 		}
 		// %x prints the bare hex address; every other verb keeps %p's
 		// 0xADDR shape (%#x's 0x prefix lands the same).
-		if (verb == 'x' || verb == 'X') && !f.Flag('#') {
-			return fmt.Sprintf("%"+string(verb), rv.Pointer())
+		if verb == 'x' || verb == 'X' {
+			// fmt's own # flag on %x spells the 0x/0X prefix and
+			// width/precision apply to the hex like %p's.
+			return fmt.Sprintf(formatOf(f, verb), rv.Pointer())
 		}
 		return fmt.Sprintf("0x%x", rv.Pointer())
 	case reflect.Struct:
