@@ -430,6 +430,12 @@ func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.
 		if args, err = v.matBuiltinArgs(args, c.Target, c.KeepConstArgs); err != nil {
 			return nil, fmt.Errorf("%s %w", c.Name, err)
 		}
+	} else if c.Target != nil {
+		// a bound host method carries no Pkg — its args marshal raw,
+		// but gc's assignability rules still apply.
+		if err := v.boundArgsCheck(args, c.Target); err != nil {
+			return nil, fmt.Errorf("%s %w", c.Name, err)
+		}
 	}
 	// a builtin may retain its args slice past the call — task.F
 	// binds it into a taskCall — while args may ride the caller

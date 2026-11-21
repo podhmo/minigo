@@ -385,6 +385,34 @@ func hostParamType(ft hostbridge.Type, i, nargs int) hostbridge.Type {
 	return ft.In(nin - 1).Elem()
 }
 
+// boundArgsCheck runs just the assignability checks of matBuiltinArgs
+// against a callee carrying only a host Target — a bound host method's
+// box has no Pkg, so its args marshal raw and never materialize, but gc
+// still rejects a typed arg whose declared type mismatches a basic
+// parameter (`bytes.Buffer.WriteByte` refuses an int8).
+func (v *VM) boundArgsCheck(args []runtime.Value, target any) error {
+	t := hostbridge.TypeOf(target)
+	if t == nil || t.Kind() != hostbridge.KindFunc {
+		return nil
+	}
+	for i, a := range args {
+		pt := hostParamType(t, i, len(args))
+		if n, ok := a.(*runtime.Named); ok {
+			if err := boundNamedArgErr(v, pt, n); err != nil {
+				return fmt.Errorf("arg %d: %w", i, err)
+			}
+			continue
+		}
+		if _, ok := a.(*runtime.UConst); ok {
+			continue
+		}
+		if err := boundHostArgErr(v, pt, boundArgHostType(a)); err != nil {
+			return fmt.Errorf("arg %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
 // boundNamedArgErr reports gc's compile-time assignability failure a
 // bound call would otherwise skip: a typed variable or typed constant
 // may not cross into a host parameter of a different type —
