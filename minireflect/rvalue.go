@@ -49,11 +49,6 @@ type RValue struct {
 // host reports whether this value delegates to a real reflect.Value.
 func (v *RValue) host() bool { return v != nil && v.rv.IsValid() }
 
-// ContentKey implements runtime.ContentKeyer: a reflect.Value is copied
-// on assignment like any struct, so the box pointer is not the map-key
-// identity — the wrapped reflect.Value is (gc compares Value by its
-// typ/ptr/flag fields). A script-domain view carries no host Value and
-// keys by its own pointer.
 // LinkCopiedKey implements runtime.CopyKeyLinker: an assignment copy
 // keys like its root box — gc's copied Value keeps the same data
 // pointer, so copies of one Value compare equal while two distinct
@@ -75,6 +70,14 @@ func (v *RValue) ContentKey() any {
 	// other view by the root box copies link back to.
 	if v.ref != nil {
 		return v.ref
+	}
+	// a reference-like viewed value IS gc's data word — reflect.ValueOf
+	// on the same pointer/map/chan keys identically across calls,
+	// while scalar and slice operands box fresh each call and key on
+	// the copy-linked root box.
+	switch v.val.(type) {
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.Map, *runtime.Chan:
+		return v.val
 	}
 	if v.keyID != nil {
 		return v.keyID

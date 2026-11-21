@@ -894,6 +894,9 @@ func Copy(v Value) Value {
 // linkCopiedKey hands a copied host box its original so a
 // [CopyKeyLinker] payload can share the original's key identity.
 func linkCopiedKey(cp, orig Value) {
+	if og, ok := orig.(*GoValue); ok {
+		orig = og.V
+	}
 	if g, ok := cp.(*GoValue); ok {
 		if lk, ok := g.V.(CopyKeyLinker); ok {
 			lk.LinkCopiedKey(orig)
