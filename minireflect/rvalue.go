@@ -30,6 +30,9 @@ type RValue struct {
 	// (Go's flagEmbedRO): selecting an exported field below it clears
 	// the restriction, as reflect does for `type T struct{ inner }`.
 	embedRO bool
+	// keyID holds the root box a copy's map-key identity links back
+	// to — set by LinkCopiedKey during an assignment copy.
+	keyID any
 	// mexpr marks the Func value of a host type's Method(i)/MethodByName:
 	// the method expression's name. Call dispatches the receiver (in[0])
 	// by that name on the concrete value, so a facade's own method —
@@ -51,18 +54,30 @@ func (v *RValue) host() bool { return v != nil && v.rv.IsValid() }
 // identity — the wrapped reflect.Value is (gc compares Value by its
 // typ/ptr/flag fields). A script-domain view carries no host Value and
 // keys by its own pointer.
+// LinkCopiedKey implements runtime.CopyKeyLinker: an assignment copy
+// keys like its root box — gc's copied Value keeps the same data
+// pointer, so copies of one Value compare equal while two distinct
+// reflect.ValueOf calls on the same operand key differently.
+func (v *RValue) LinkCopiedKey(orig any) {
+	if o, ok := orig.(*RValue); ok && o.keyID != nil {
+		v.keyID = o.keyID
+		return
+	}
+	v.keyID = orig
+}
+
 func (v *RValue) ContentKey() any {
 	if v.host() {
 		return v.rv
 	}
 	// a script-domain view keys like the Value it models: a settable
-	// view by the location it reads through, a plain view by the viewed
-	// value's own identity.
+	// view by the location it reads through (gc's data ptr), and any
+	// other view by the root box copies link back to.
 	if v.ref != nil {
 		return v.ref
 	}
-	if v.val != nil {
-		return v.val
+	if v.keyID != nil {
+		return v.keyID
 	}
 	return v
 }

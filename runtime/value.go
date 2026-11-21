@@ -859,11 +859,13 @@ func Copy(v Value) Value {
 		// host-returned pointer that must share.
 		if HostStructTagged(x) {
 			if cp, ok := HostStructCopy(x.V); ok {
+				linkCopiedKey(cp, x.V)
 				return Tag(x.Typ, cp)
 			}
 			// a `*p` read of a named non-struct host type boxes *T the
 			// same way — `x := *p` must detach from p's storage.
 			if cp, ok := HostPointeeCopy(x.V); ok {
+				linkCopiedKey(cp, x.V)
 				return Tag(x.Typ, cp)
 			}
 		}
@@ -880,6 +882,16 @@ func Copy(v Value) Value {
 		return &Named{Typ: x.Typ, V: Copy(x.V)}
 	}
 	return v
+}
+
+// linkCopiedKey hands a copied host box its original so a
+// [CopyKeyLinker] payload can share the original's key identity.
+func linkCopiedKey(cp, orig Value) {
+	if g, ok := cp.(*GoValue); ok {
+		if lk, ok := g.V.(CopyKeyLinker); ok {
+			lk.LinkCopiedKey(orig)
+		}
+	}
 }
 
 // SetRef stores val through a pointer value ([Cell], [FieldRef],
@@ -925,6 +937,12 @@ type mapKey struct {
 // Go-comparable value identity rather than its own pointer —
 // [CanonicalKey] consults it in the GoValue arm.
 type ContentKeyer interface{ ContentKey() any }
+
+// CopyKeyLinker is implemented by a host box that survives an
+// assignment copy ([HostStructCopy]) with a key identity tied to its
+// original — reflect.Value keys like a copied gc Value, not like a
+// fresh box.
+type CopyKeyLinker interface{ LinkCopiedKey(orig any) }
 
 // CanonicalKey converts a script map key to the Go-comparable form that
 // keys [Map.Pairs], so composite keys compare by content. Scalars pass
