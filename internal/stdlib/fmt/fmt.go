@@ -65,7 +65,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, out func() 
 		"Println": ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return stdlib.RetErr(fmt.Fprintln(out(), a...)) }, fmt.Println),
 		"Printf": ffn("fmt.Printf", 0, 1, func(a []any) (any, error) {
 			return stdlib.RetErr(fmt.Fprintf(out(), stdlib.Str(a[0]), a[1:]...))
-		}),
+		}, fmt.Printf),
 		// Fprint* take an explicit writer — os.Stdout/os.Stderr arrive as
 		// GoValue (unwrapped by fmtArg to the native *os.File).
 		"Fprint": pffn("fmt.Fprint", 1, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {

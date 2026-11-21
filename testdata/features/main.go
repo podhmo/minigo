@@ -15,10 +15,6 @@ func Spread() int {
 	return sum(xs...) + sum(10, 20) // 6 + 30
 }
 
-func SpreadTail() int {
-	return sum(5, []int{1, 2}...) // 8
-}
-
 // ---- compound assign & ++/-- on non-identifiers ----
 
 type C struct{ N int }

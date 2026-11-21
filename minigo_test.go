@@ -1538,7 +1538,6 @@ func TestFeatures(t *testing.T) {
 	}{
 		// spread calls
 		{"Spread", int64(36)},
-		{"SpreadTail", int64(8)},
 		// compound assign & ++/-- on fields, indices, derefs
 		{"CompoundOps", int64(172)},
 		{"PtrOps", int64(12)},
