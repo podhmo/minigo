@@ -302,8 +302,19 @@ func NilDerefUnsafe() int {
 }
 
 func UintptrToPtr() int {
-	var n int
+	var n = 7
 	a := uintptr(unsafe.Pointer(&n))
-	_ = unsafe.Pointer(a) // minigo boundary: no ref can be minted from an integer
-	return 0
+	return *(*int)(unsafe.Pointer(a))
+}
+
+// a pointer minted on one goroutine revives on another — the mint
+// table is process-wide like gc's address space.
+func UintptrAcrossGoroutines() int {
+	var n = 11
+	a := uintptr(unsafe.Pointer(&n))
+	ch := make(chan int, 1)
+	go func() {
+		ch <- *(*int)(unsafe.Pointer(a))
+	}()
+	return <-ch
 }

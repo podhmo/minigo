@@ -11,8 +11,9 @@ import (
 // pointer value converts to it from any *T and back to any *T, and the
 // Named-tagged payload keeps write-through, identity and nil-ness. gc's
 // compile-time rejections (direct assignment, dereference, non-pointer
-// sources) surface as traps; uintptr -> unsafe.Pointer is the one
-// documented boundary since no ref can be minted from an integer.
+// sources) surface as traps; uintptr -> unsafe.Pointer mints an
+// address-valued pointer whose referent the process's mint table
+// records, so *T conversion revives it — across goroutines too.
 func TestUnsafePointer(t *testing.T) {
 	e := newEngine(t)
 
@@ -62,6 +63,8 @@ func TestUnsafePointer(t *testing.T) {
 			{"FieldAddrStable", int64(1)},
 			{"DerefAddrSame", int64(1)},
 			{"NilUintptr", int64(1)},
+			{"UintptrToPtr", int64(7)},
+			{"UintptrAcrossGoroutines", int64(11)},
 		}
 		for _, c := range cases {
 			got := run(t, e, "./testdata/unsafeptr", c.fn)
@@ -73,7 +76,7 @@ func TestUnsafePointer(t *testing.T) {
 
 	t.Run("trap", func(t *testing.T) {
 		// every one of these is a compile-time rejection in gc except
-		// NilDerefBack (runtime panic) and UintptrToPtr (boundary note)
+		// NilDerefBack (runtime panic)
 		cases := []struct {
 			fn  string
 			msg string
@@ -85,7 +88,6 @@ func TestUnsafePointer(t *testing.T) {
 			{"SliceConv", "cannot convert []int to unsafe.Pointer"},
 			{"FuncConv", "cannot convert"},
 			{"NilDerefBack", "nil pointer dereference"},
-			{"UintptrToPtr", "cannot convert"},
 		}
 		for _, c := range cases {
 			_, err := e.Run(context.Background(), "./testdata/unsafeptr", c.fn)

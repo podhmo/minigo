@@ -47,6 +47,9 @@ type Proc struct {
 	// register a channel.
 	chans    map[uintptr]*chanLive
 	managedN atomic.Int32
+	// mints is the process-wide uintptr-mint table shared by the
+	// process's goroutine VMs (see UpsertUintptr).
+	mints *uintMint
 }
 
 // chanLive is one managed host channel's liveness record. rv pins the
@@ -96,6 +99,112 @@ func (deadlockError) Error() string {
 // completed send whose receiver has not yet resumed) disarms the watch
 // during the delay instead of racing a false fatal.
 const deadlockQuiescence = 200 * time.Millisecond
+
+// uintMint is the process-wide uintptr-mint table: `unsafe.Pointer(x)`
+// on an integer payload mints an address-valued pointer, and converting
+// it back to *T revives the recorded referent — a goroutine arg minted
+// on the parent lands in the same table as the child's lookup. An entry
+// may implement `Dead() bool` (the vm's box-gated mints): a dead entry
+// has no live unsafe.Pointer box carrying the address, so inserting
+// past the cap sweeps dead entries before any live one is evicted.
+type uintMint struct {
+	q []uint64
+	m map[uint64]any
+}
+
+const uintMintCap = 4096
+
+// mintDead is the contract a vm mint entry satisfies for reaping.
+type mintDead interface {
+	Dead() bool
+}
+
+// UpsertUintptr merges into addr's live entry via merge, or records
+// make() when none exists — the atomic attach-or-mint a second mint of
+// the same address needs so it keeps the earlier boxes' liveness
+// records instead of replacing them.
+func (p *Proc) UpsertUintptr(addr uint64, make_ func() any, merge func(entry any)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mints == nil {
+		p.mints = &uintMint{m: map[uint64]any{}}
+	}
+	if old, dup := p.mints.m[addr]; dup {
+		if d, dead := old.(mintDead); dead && d.Dead() {
+			delete(p.mints.m, addr)
+		} else {
+			merge(old)
+			return
+		}
+	}
+	p.mints.q = append(p.mints.q, addr)
+	p.mints.m[addr] = make_()
+	if len(p.mints.q) > uintMintCap {
+		// reap dead entries first: they can never revive, and a
+		// long-running mint loop (a temp buffer per iteration) mostly
+		// accumulates those. The compaction only keeps keys still in
+		// the map — the new address must already be recorded above or
+		// it would drop out of the queue and stay in the map forever.
+		for a, r := range p.mints.m {
+			if d, ok := r.(mintDead); ok && d.Dead() {
+				delete(p.mints.m, a)
+			}
+		}
+		q := p.mints.q[:0]
+		for _, a := range p.mints.q {
+			if _, ok := p.mints.m[a]; ok {
+				q = append(q, a)
+			}
+		}
+		p.mints.q = q
+		for len(p.mints.q) > uintMintCap {
+			delete(p.mints.m, p.mints.q[0])
+			p.mints.q = p.mints.q[1:]
+		}
+	}
+}
+
+// AttachUintptr runs fn on the live entry for addr under the table
+// lock — the vm records each minted unsafe.Pointer box against its
+// entry this way. Reports whether a live entry was found.
+func (p *Proc) AttachUintptr(addr uint64, fn func(entry any)) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mints == nil {
+		return false
+	}
+	ref, ok := p.mints.m[addr]
+	if !ok {
+		return false
+	}
+	if d, isDead := ref.(mintDead); isDead && d.Dead() {
+		delete(p.mints.m, addr)
+		return false
+	}
+	fn(ref)
+	return true
+}
+
+// ReviveUintptr projects the entry a mint recorded for addr — the
+// *T-conversion side of the uintptr round trip. project runs under the
+// table lock so reads it makes of the entry cannot race a concurrent
+// merge rewriting it. A dead entry reports miss and frees its key.
+func (p *Proc) ReviveUintptr(addr uint64, project func(entry any) (any, bool)) (any, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.mints == nil {
+		return nil, false
+	}
+	ref, ok := p.mints.m[addr]
+	if !ok {
+		return nil, false
+	}
+	if d, isDead := ref.(mintDead); isDead && d.Dead() {
+		delete(p.mints.m, addr)
+		return nil, false
+	}
+	return project(ref)
+}
 
 func New() *Proc { return &Proc{done: make(chan struct{})} }
 

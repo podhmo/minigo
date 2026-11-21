@@ -205,6 +205,11 @@ type VM struct {
 	// in between (a package's first method call on this VM).
 	recvBuf []runtime.Value
 
+	// unsafePtrMint is the no-proc fallback for the uintptr-mint table
+	// (mintUnsafePtr) — live VMs record on the shared process table so
+	// a pointer minted on one goroutine revives on a sibling.
+	unsafePtrMint map[uint64]*mintEnt
+
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
 	// vals is the goroutine's contiguous operand stack: each frame's
