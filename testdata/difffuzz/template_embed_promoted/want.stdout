@@ -1,0 +1,14 @@
+direct: 1 hi
+promoted: true spam
+explicit: true spam
+nested: deep true b
+pmethod: LBL
+ppmethod: PLBL
+valp: valp: {{.B.PLabel}} {{.B.Label}} => ERROR: template: t:1:10: executing "t" at <.B.PLabel>: can't evaluate field PLabel in type interface {}
+ptremb: true PLBL t
+ambig: ambig: {{.D.Hidden}} {{.D.Moderation.Hidden}} => ERROR: template: t:1:11: executing "t" at <.D.Hidden>: can't evaluate field Hidden in type interface {}
+hostemb: 5
+defined: true 1
+hostmeth: 2020 7
+nilhost: 3
+alias: true 9
