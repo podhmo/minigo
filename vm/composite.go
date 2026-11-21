@@ -327,8 +327,11 @@ type hostSelSlot struct {
 	opaque string // rt's string when it is an OpaqueContainers store
 }
 
-// hostMember resolves a field or method on a host value: fields first,
-// then the method set — Go forbids a field and method sharing a name.
+// hostMember resolves a field or method on a host value by selector
+// depth like gc: a declared field wins, then the method set, and a
+// field promoted through embedding only when nothing shallower claims
+// the name (`v.Name` on *template.Template is the method, not the
+// embedded Tree.Name field).
 // (nil, false) reports that neither exists. f scopes unexported fields
 // to their declaring package, the same gate Go applies — a site fixes
 // that package lexically, so a cached method/miss stays correct. The
@@ -383,10 +386,11 @@ func hostNil(hv any) bool {
 // path, a miss slot on no-member, nil for the value-dependent paths
 // (a field hit or a ScriptMethoder answer) no cache can replay.
 func (v *VM) hostMemberRes(f *frame, hv any, name string) (runtime.Value, *selRes) {
-	if fv, ok := hostField(hv, name, framePkgPath(f)); ok {
+	fv, promoted, fieldOK := hostField(hv, name, framePkgPath(f))
+	m := hostbridge.RVOf(hv).MethodByName(name)
+	if fieldOK && !promoted {
 		return hostbridge.GoSlotValueOf(fv), nil
 	}
-	m := hostbridge.RVOf(hv).MethodByName(name)
 	if sm, ok := hv.(runtime.ScriptMethoder); ok {
 		if fn, ok := sm.ScriptMethod(name); ok {
 			bf := &runtime.BuiltinFunc{Name: name, Fn: fn}
@@ -396,6 +400,12 @@ func (v *VM) hostMemberRes(f *frame, hv any, name string) (runtime.Value, *selRe
 			return bf, nil
 		}
 	}
+	if fieldOK && !m.IsValid() {
+		return hostbridge.GoSlotValueOf(fv), nil
+	}
+	// a promoted field (Tree.Name through an embedded *parse.Tree) sits
+	// deeper than a declared method — gc's selector picks the shallower
+	// member, so a same-named method wins the name.
 	if !m.IsValid() {
 		return nil, &selRes{kind: selHostMiss}
 	}
