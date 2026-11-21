@@ -599,7 +599,7 @@ func Env(ee source.EmbedEnv) *runtime.Env {
 		case *runtime.Slice:
 			zero := v.ElemZero(m.Typ)
 			for i := range m.Elems {
-				m.Elems[i] = zero
+				m.SetElem(int64(i), zero)
 			}
 		case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
 			// clear of a nil map or slice is a no-op

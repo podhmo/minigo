@@ -6,6 +6,7 @@ package hostbridge
 
 import (
 	"go/ast"
+	"reflect"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -43,6 +44,31 @@ func Lift(x runtime.Value, td *runtime.TypeDef, h *ArgAsHooks, depth int) runtim
 	if utd == nil || depth > 8 {
 		return x
 	}
+	// a host-shaped container comes back boxed: an unnamed host slice
+	// GoValueOf unboxes into *runtime.Slice; a host map keeps its
+	// GoValue box, so unbox its pairs by hand — the switch below lifts
+	// each element to the declared type.
+	if gv, ok := x.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(gv.V); rv.IsValid() {
+			switch rv.Kind() {
+			case reflect.Slice, reflect.Array:
+				x = GoValueOf(rv)
+			case reflect.Map:
+				// unnamed host maps only: a named map type (url.Values)
+				// keeps its GoValue box or its methods vanish. MapRange,
+				// not MapKeys+MapIndex — a NaN key's value is
+				// unreachable by lookup.
+				if !rv.IsNil() && rv.Type().Name() == "" {
+					m := runtime.NewMap(nil, rv.Type().Key().Kind() == reflect.Interface)
+					it := rv.MapRange()
+					for it.Next() {
+						m.Insert(GoValueOf(it.Key()), GoValueOf(it.Value()))
+					}
+					x = m
+				}
+			}
+		}
+	}
 	switch utd.Kind {
 	case runtime.KindSlice:
 		switch s := x.(type) {
@@ -51,7 +77,10 @@ func Lift(x runtime.Value, td *runtime.TypeDef, h *ArgAsHooks, depth int) runtim
 				x = &runtime.TypedNil{Typ: td}
 			}
 		case *runtime.Slice:
-			if et := h.ElemOf(utd); et != nil && !s.Virtual() && HostGenericTyp(s.Typ) {
+			// a host-projected []T (Host set: `buf.Bytes()`, a FuncMap
+			// round-trip) carries untagged elements like []any does —
+			// lift them to the declared element type.
+			if et := h.ElemOf(utd); et != nil && !s.Virtual() && (HostGenericTyp(s.Typ) || s.Host.IsValid()) {
 				// an array parameter takes only a value of its length
 				if n, isArr := h.ArrayLen(utd); isArr && n != int64(len(s.Elems)) {
 					h.Trap("cannot use %s as %s", h.TypeNameOf(x), h.TdName(td))
@@ -60,7 +89,9 @@ func Lift(x runtime.Value, td *runtime.TypeDef, h *ArgAsHooks, depth int) runtim
 				for i, e := range s.Elems {
 					elems[i] = Lift(e, et, h, depth+1)
 				}
-				x = &runtime.Slice{Elems: elems}
+				// keep Host: element stores through SetElem still write
+				// the shared host backing (`buf.Bytes()` round-trip).
+				x = &runtime.Slice{Elems: elems, Host: s.Host}
 			}
 		}
 	case runtime.KindMap:

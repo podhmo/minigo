@@ -683,6 +683,7 @@ func SortInPlace(name string) *runtime.BuiltinFunc {
 		switch s := s.(type) {
 		case *runtime.Slice:
 			SortScript(s.Elems)
+			s.CommitHost()
 		case *runtime.TypedNil:
 			// sorting a nil slice is a no-op in Go; nil pointers and
 			// other typed nils still fail the reflect type check.
@@ -782,6 +783,7 @@ func SortByCmpFunc(name string) *runtime.BuiltinFunc {
 		} else {
 			slices.SortStableFunc(s.Elems, cf)
 		}
+		s.CommitHost()
 		return runtime.NIL, nil
 	}}
 }
@@ -811,17 +813,27 @@ func RetagSlice(orig runtime.Value, out *runtime.Slice) runtime.Value {
 // from the original observe the deletion.
 
 func PackSlice(vc runtime.VMCaller, s *runtime.Slice, kept []runtime.Value) *runtime.Slice {
-	copy(s.Elems, kept)
 	// ElemZero, not runtime.Zero: a struct element's zero needs its
 	// fields typed, and each vacated slot gets its own copy.
 	var zero runtime.Value = runtime.NIL
 	if s.Typ != nil {
 		zero = vc.ElemZero(s.Typ)
 	}
-	for i := len(kept); i < len(s.Elems); i++ {
-		s.Elems[i] = runtime.Copy(zero)
+	for i, e := range kept {
+		s.SetElem(int64(i), e)
 	}
-	return &runtime.Slice{Elems: s.Elems[:len(kept)], Typ: s.Typ}
+	for i := len(kept); i < len(s.Elems); i++ {
+		s.SetElem(int64(i), runtime.Copy(zero))
+	}
+	out := &runtime.Slice{Elems: s.Elems[:len(kept)], Typ: s.Typ}
+	// alias the shared backing only when every kept element actually
+	// landed there — a slot that refused the store (an interface slot
+	// holding a script composite, say) still shows its old value, so
+	// aliasing it would return stale elements instead of the packed ones.
+	if s.CommitHostRange(int64(len(kept))) {
+		out.Host = s.HostReslice(0, int64(len(kept)))
+	}
+	return out
 }
 
 // SeqElems collects a seq argument's elements: a *runtime.Slice reads

@@ -622,7 +622,7 @@ func overwriteArrayElems(dst, src *runtime.Slice) {
 			overwriteArrayElems(di, si)
 			continue
 		}
-		dst.Elems[i] = src.Elems[i]
+		dst.SetElem(int64(i), src.Elems[i])
 	}
 }
 
