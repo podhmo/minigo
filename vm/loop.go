@@ -659,9 +659,14 @@ func (v *VM) loop(f *frame) {
 			if v.H.CompileExpr == nil {
 				f.trap("OpEvalFragment: no CompileExpr hook")
 			}
-			ch, err := v.H.CompileExpr(f.fn.Pkg, frag.File, frag.Expr)
-			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+			ch, _ := frag.Cache.Load().(*bytecode.Chunk)
+			if ch == nil {
+				var err error
+				ch, err = v.H.CompileExpr(f.fn.Pkg, frag.File, frag.Expr)
+				if err != nil {
+					panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				}
+				frag.Cache.Store(ch)
 			}
 			r, err := v.call(&runtime.Function{Pkg: f.fn.Pkg, File: frag.File, Name: "<eval>", Chunk: ch}, nil, nil, nil)
 			if err != nil {
