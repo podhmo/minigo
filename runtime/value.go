@@ -2433,6 +2433,83 @@ func (td *TypeDef) HostType() reflect.Type {
 	return rt
 }
 
+// HostUnderlyingEq reports whether two host types share the same
+// underlying type for a `*A -> *B` conversion — named types whose
+// declarations point at the same structural type compare equal
+// (`net.IP` and `net.IPMask` are both `[]byte`), while two distinct
+// named leaves do not (reflect exposes no Underlying(), so composite
+// kinds recurse through their elements).
+func HostUnderlyingEq(a, b reflect.Type) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Kind() != b.Kind() {
+		return false
+	}
+	return hostFieldsEq(a, b)
+}
+
+// hostElemEq compares element types the way an underlying type does:
+// identical unnamed shapes compare equal, but a named leaf is only
+// equal to itself — `struct{ Next *A }` and `struct{ Next *B }` differ
+// because *A and *B wrap distinct named pointees. Stopping at named
+// leaves also bounds the walk: a reflect type graph can only cycle
+// through a named type, and one named type never expands inside the
+// compare of another.
+func hostElemEq(a, b reflect.Type) bool {
+	if a == b {
+		return true
+	}
+	if a == nil || b == nil || a.Kind() != b.Kind() {
+		return false
+	}
+	if a.Name() != "" || b.Name() != "" {
+		return false
+	}
+	return hostFieldsEq(a, b)
+}
+
+func hostFieldsEq(a, b reflect.Type) bool {
+	switch a.Kind() {
+	case reflect.Pointer, reflect.Slice:
+		return hostElemEq(a.Elem(), b.Elem())
+	case reflect.Array:
+		return a.Len() == b.Len() && hostElemEq(a.Elem(), b.Elem())
+	case reflect.Map:
+		return hostElemEq(a.Key(), b.Key()) && hostElemEq(a.Elem(), b.Elem())
+	case reflect.Chan:
+		return a.ChanDir() == b.ChanDir() && hostElemEq(a.Elem(), b.Elem())
+	case reflect.Func:
+		if a.NumIn() != b.NumIn() || a.NumOut() != b.NumOut() || a.IsVariadic() != b.IsVariadic() {
+			return false
+		}
+		for i := 0; i < a.NumIn(); i++ {
+			if !hostElemEq(a.In(i), b.In(i)) {
+				return false
+			}
+		}
+		for i := 0; i < a.NumOut(); i++ {
+			if !hostElemEq(a.Out(i), b.Out(i)) {
+				return false
+			}
+		}
+		return true
+	case reflect.Struct:
+		if a.NumField() != b.NumField() {
+			return false
+		}
+		for i := 0; i < a.NumField(); i++ {
+			fa, fb := a.Field(i), b.Field(i)
+			if fa.Name != fb.Name || fa.Tag != fb.Tag || fa.Anonymous != fb.Anonymous ||
+				!hostElemEq(fa.Type, fb.Type) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 // ResetCaches drops the cached field types, interface requirements and
 // host type. Call it on a shallow copy whose Binds, Pkg, File or
 // LocalTypes differ from the original's.

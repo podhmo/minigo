@@ -3010,6 +3010,8 @@ func TestFuzzFixes(t *testing.T) {
 		{"AssertPtrRecv", "interface conversion: main.asPtrT is not main.asSigI: missing method MSig"},
 		{"AssertBasicMissingMethod", "interface conversion: int is not io.Writer: missing method Write"},
 		{"AssertNilIface", "interface conversion: interface {} is nil, not io.Writer"},
+		{"PtrConvAnonLit", "{1}"},
+		{"PtrConvHostUnderlying", "false *net.IPMask"},
 		{"AssertPtrRecvOK", "ok"},
 		{"ErrAsCrossPkg", "true false"},
 		{"ByteRuneElemTyp", "uint8 int32 uint8"},
@@ -3038,6 +3040,8 @@ func TestFuzzFixes(t *testing.T) {
 		{"ComplexMixedWidth", "mismatched types complex64 and complex128"},
 		{"ComplexOrdered", "complex numbers are not ordered"},
 		{"BodilessCall", "no implementation for bodiless decl"},
+		{"PtrConvDeclBad", "cannot convert *int to *SS"},
+		{"PtrConvHostBad", "cannot convert *strings.Builder to *strings.Reader"},
 	}
 	for _, c := range traps {
 		_, err := e.Run(context.Background(), "./testdata/fuzzfix", c.fn)
