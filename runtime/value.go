@@ -923,7 +923,7 @@ func CanonicalKey(v Value) Value {
 			}
 		}
 		var sb strings.Builder
-		writeKeyRepr(&sb, x.Elems)
+		writeArrayElems(&sb, x.Elems)
 		return mapKey{typ: typeTagOf(x.Typ), repr: sb.String()}
 	case *Map:
 		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
@@ -1205,7 +1205,7 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		if !arrayTypedef(x.Typ) {
 			panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type " + msgTypeName(x.Typ)}})
 		}
-		writeKeyRepr(sb, x.Elems)
+		writeArrayElems(sb, x.Elems)
 	case float64:
 		if x != x { // NaN
 			sb.WriteString(fmt.Sprintf("NaN#%d", nextKeyNonce()))
@@ -1240,9 +1240,35 @@ func writeKeyElem(sb *strings.Builder, v Value) {
 		}
 	case *TypedNil, Nil:
 		sb.WriteString("nil")
+	case string:
+		// a string renders quoted so it can never collide with a
+		// type tag, the nil spelling or a nonce: [1]any{"uint32:2"}
+		// and [1]any{uint32(2)} are different keys.
+		fmt.Fprintf(sb, "%q", x)
 	default:
 		fmt.Fprintf(sb, "%v", x)
 	}
+}
+
+// writeArrayElems renders an array key's elements like [writeKeyRepr],
+// except that an element boxed by an interface-typed slot renders its
+// dynamic type with the value ([IfaceKeyOf]) — [1]any{M(2)} and
+// [1]any{uint32(2)} are distinct Go keys. Plain payloads key untagged.
+func writeArrayElems(sb *strings.Builder, elems []Value) {
+	sb.WriteByte('{')
+	for i, e := range elems {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		if tk, ok := typedScalarKeyOf(e); ok {
+			sb.WriteString(tk.typ)
+			sb.WriteByte(':')
+			writeKeyElem(sb, tk.v)
+			continue
+		}
+		writeKeyElem(sb, e)
+	}
+	sb.WriteByte('}')
 }
 
 // writeFieldsRepr renders a struct key's fields like [writeKeyRepr],
