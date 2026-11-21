@@ -17,7 +17,7 @@ func (e *Engine) ReplHooks() *replhooks.Hooks {
 		Fset:     e.fset,
 		Builtins: e.builtins,
 		Specials: e.specials,
-		Binds:    e.binds,
+		Binds:    e.names.Pkgs(),
 		Cfg:      e.cfg,
 		Resolver: e.resolver,
 		Cwd:      e.cwd,

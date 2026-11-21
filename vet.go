@@ -193,7 +193,7 @@ func (e *Engine) registeredVetSymbol(path, name string) bool {
 	if _, ok := e.specials[runtime.SymbolID{PackagePath: path, Name: name}]; ok {
 		return true
 	}
-	if b, ok := e.binds[path]; ok {
+	if b := e.names.Lookup(path); b != nil {
 		if _, ok := b.Globals.Get(name); ok {
 			return true
 		}
