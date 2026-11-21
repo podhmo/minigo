@@ -21,6 +21,7 @@ var Rules = map[string][]string{
 	"internal/archcheck":     {"pkg/gentest"}, // test-only dep
 	"internal/cmd/archcheck": {"internal/archcheck"}, "internal/cmd/genbind": {".", "index"}, "internal/hostbridge": {"runtime"}, "internal/process": {},
 	"internal/assetaudit": {"index", "syntax"}, "internal/bind": {"runtime"},
+	"internal/execution": {},
 	"internal/replhooks": {"bytecode", "index", "resolve", "runtime", "syntax", "vm"},
 	"internal/semantics": {"index", "syntax"},
 	"internal/source":    {"index", "internal/semantics", "runtime", "syntax"},
@@ -30,7 +31,7 @@ var Rules = map[string][]string{
 	"pkg/locator":        {},
 	"repl":               {".", "compile", "index", "internal/replhooks", "resolve", "runtime", "syntax"},
 	"resolve":            {"pkg/locator"},
-	"runtime":            {"bytecode", "index", "internal/spike", "special", "syntax"}, "special": {"syntax"},
+	"runtime":            {"bytecode", "index", "internal/execution", "internal/spike", "special", "syntax"}, "special": {"syntax"},
 	"storybook":       {".", "resolve"},
 	"syntax":          {},
 	"tools/difffuzz":  {},
