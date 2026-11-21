@@ -291,6 +291,35 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	if op == bytecode.BinEqlIface {
 		return v.ifaceEql(f, a, b)
 	}
+	// a named-int value (V already int64) against an integer constant
+	// or a same-tag operand takes the scalar op directly — the general
+	// path pays adaptConst's materialize + Tag round trip and the
+	// constant-domain checks on every op (`type K int` hot loops).
+	if na, isN := a.(*runtime.Named); isN {
+		if ai, isInt := na.V.(int64); isInt {
+			if bn := runtime.BasicNameOf(v.peelNamed(na.Typ)); bn == "int" || bn == "int64" {
+				var bi int64
+				var ok bool
+				switch bv := b.(type) {
+				case *runtime.UConst:
+					// a wrapped UConst still owes its deferred runtime
+					// ops (non-constant shift) — V is not the result.
+					if !bv.Wrap && len(bv.WrapOps) == 0 {
+						bi, ok = constant.Int64Val(constant.ToInt(bv.V))
+					}
+				case *runtime.Named:
+					if iv, isInt := bv.V.(int64); isInt && sameTypeDef(v.peelAlias(na.Typ), v.peelAlias(bv.Typ)) {
+						bi, ok = iv, true
+					}
+				}
+				if ok {
+					if r, done := namedIntOp(f, op, na.Typ, ai, bi); done {
+						return r
+					}
+				}
+			}
+		}
+	}
 	// constant payloads the operands arrived with: an op where every
 	// operand is still a constant is gc's constant EXPRESSION — it
 	// evaluates in the declared type's exact domain and an
@@ -1079,6 +1108,26 @@ func shiftUint(op bytecode.BinOp, a uint64, c uint64) uint64 {
 		return a << c
 	}
 	return a >> c
+}
+
+// namedIntOp is the binaryOpFlags fast path for a named `int` value: the
+// arithmetic ops re-tag the int64 result with the operand's typedef, the
+// comparisons answer a bare bool. done=false for ops this path does not
+// cover (shifts, LAnd/LOr), which fall through to the general path.
+func namedIntOp(f *frame, op bytecode.BinOp, tag *runtime.TypeDef, a, b int64) (res runtime.Value, done bool) {
+	switch op {
+	case bytecode.BinEql:
+		return a == b, true
+	case bytecode.BinNeq:
+		return a != b, true
+	case bytecode.BinShl, bytecode.BinShr, bytecode.BinLAnd, bytecode.BinLOr:
+		return nil, false
+	}
+	r := intBinOp(f, op, a, b)
+	if iv, isInt := r.(int64); isInt {
+		return runtime.Tag(tag, iv), true
+	}
+	return r, true
 }
 
 func intBinOp(f *frame, op bytecode.BinOp, a, b int64) runtime.Value {
