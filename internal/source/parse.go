@@ -1,4 +1,4 @@
-package minigo
+package source
 
 import (
 	"fmt"
@@ -10,15 +10,15 @@ import (
 	"github.com/podhmo/minigo/syntax"
 )
 
-// parsePackageFiles parses a package's files into fset concurrently,
+// ParsePackageFiles parses a package's files into fset concurrently,
 // with the same Pos bases a sequential parse would assign. Each file is
 // parsed into a private FileSet whose next base is its reserved slot,
 // and the resulting token.Files join fset in file order. Any read or
 // parse failure is reported for the first failing file, as the
 // sequential loop did. failed names that file.
-func parsePackageFiles(fset *token.FileSet, paths []string) (files []*syntax.File, failed string, err error) {
+func ParsePackageFiles(fset *token.FileSet, paths []string) (files []*syntax.File, failed string, err error) {
 	if len(paths) < 2 {
-		return parseFilesSeq(fset, paths)
+		return ParseFilesSeq(fset, paths)
 	}
 	srcs := make([][]byte, len(paths))
 	errs := make([]error, len(paths))
@@ -28,7 +28,7 @@ func parsePackageFiles(fset *token.FileSet, paths []string) (files []*syntax.Fil
 	for _, err := range errs {
 		if err != nil {
 			// let the sequential path report it exactly as before
-			return parseFilesSeq(fset, paths)
+			return ParseFilesSeq(fset, paths)
 		}
 	}
 	files, _, failed, err = parseSrcs(fset, paths, srcs)
@@ -90,7 +90,7 @@ func parseSrcs(fset *token.FileSet, paths []string, srcs [][]byte) (files []*syn
 	return files, tfs, "", nil
 }
 
-func parseFilesSeq(fset *token.FileSet, paths []string) ([]*syntax.File, string, error) {
+func ParseFilesSeq(fset *token.FileSet, paths []string) ([]*syntax.File, string, error) {
 	var files []*syntax.File
 	for _, f := range paths {
 		sf, err := syntax.ParseFile(fset, f, nil)

@@ -36,6 +36,10 @@ func (b bindEnv) MethodSetOfValue(v runtime.Value) (map[string]bool, bool, error
 	return b.e.methodSetOfValue(v)
 }
 
+// PeelAliasTd doubles as the source.EmbedEnv seam for the //go:embed
+// builtin, which needs the engine's alias-peeler.
+func (b bindEnv) PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef { return b.e.peelAliasTd(td) }
+
 // hostSpelling anchors a script path at the virtual cwd WITHOUT
 // cleaning it, so a host lstat names the result like gc's lstat of the
 // spelled path (basename "." for ".", ".." for "a/b/..").

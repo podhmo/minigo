@@ -1,4 +1,4 @@
-package minigo
+package source
 
 import (
 	"go/ast"
@@ -13,7 +13,7 @@ import (
 // TestParsePackageFilesBases checks that the concurrent parse assigns
 // the bases, line tables and node positions a sequential parse does.
 func TestParsePackageFilesBases(t *testing.T) {
-	paths, err := filepath.Glob("syntax/*.go")
+	paths, err := filepath.Glob("../../syntax/*.go")
 	if err != nil || len(paths) < 2 {
 		t.Fatalf("glob: %v (%d files)", err, len(paths))
 	}
@@ -47,7 +47,7 @@ func TestParsePackageFilesBases(t *testing.T) {
 		return got
 	}
 	seq := run(func(fset *token.FileSet, ps []string) ([]fileShape, error) {
-		files, _, err := parseFilesSeq(fset, ps)
+		files, _, err := ParseFilesSeq(fset, ps)
 		var out []fileShape
 		for _, f := range files {
 			out = append(out, shape(fset, f.AST))
@@ -55,7 +55,7 @@ func TestParsePackageFilesBases(t *testing.T) {
 		return out, err
 	})
 	par := run(func(fset *token.FileSet, ps []string) ([]fileShape, error) {
-		files, _, err := parsePackageFiles(fset, ps)
+		files, _, err := ParsePackageFiles(fset, ps)
 		var out []fileShape
 		for _, f := range files {
 			out = append(out, shape(fset, f.AST))
@@ -86,7 +86,7 @@ func TestParsePackageFilesError(t *testing.T) {
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"a.go": "package p\n", "b.go": "package p\nfunc (\n", "c.go": "package p\nvar = \n"})
 	good, bad1, bad2 := filepath.Join(dir, "a.go"), filepath.Join(dir, "b.go"), filepath.Join(dir, "c.go")
-	_, failed, err := parsePackageFiles(token.NewFileSet(), []string{good, bad1, bad2})
+	_, failed, err := ParsePackageFiles(token.NewFileSet(), []string{good, bad1, bad2})
 	if err == nil {
 		t.Fatal("no error")
 	}

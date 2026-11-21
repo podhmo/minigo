@@ -1,4 +1,4 @@
-package minigo
+package source
 
 import (
 	"fmt"
@@ -8,18 +8,29 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/runtime"
 )
 
-// embedBuiltin implements `//go:embed` (compile.EmbedBuiltin): args are
-// the var's declared type then the directive's patterns, resolved against
-// the calling package's directory like cmd/go's resolveEmbed. A string or
-// []byte var takes the single matched file; an embed.FS gets every file
-// plus the directories leading to them, in embed's (dir, elem) order.
-func embedBuiltin(e *Engine, v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+// EmbedEnv is the engine surface the //go:embed builtin needs — the
+// path policy and the typedef alias-peeler — so the implementation can
+// live here instead of the root package.
+type EmbedEnv interface {
+	// CheckPath enforces the roots policy on an absolute host path.
+	CheckPath(p string) error
+	// PeelAliasTd follows a typedef's alias links (`type A = B` is B).
+	PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef
+}
+
+// EmbedBuiltin implements `//go:embed` (compile.EmbedBuiltin — the name
+// arrives as a parameter because compile imports this package): args
+// are the var's declared type then the directive's patterns, resolved
+// against the calling package's directory like cmd/go's resolveEmbed. A
+// string or []byte var takes the single matched file; an embed.FS gets
+// every file plus the directories leading to them, in embed's (dir,
+// elem) order.
+func EmbedBuiltin(env EmbedEnv, name string, v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	if len(args) < 2 {
-		return nil, fmt.Errorf("%s: no patterns", compile.EmbedBuiltin)
+		return nil, fmt.Errorf("%s: no patterns", name)
 	}
 	td, ok := args[0].(*runtime.TypeDef)
 	if !ok {
@@ -41,8 +52,8 @@ func embedBuiltin(e *Engine, v runtime.VMCaller, args []runtime.Value) (runtime.
 	if err != nil {
 		return nil, err
 	}
-	if fsTd := embedFSType(e, td); fsTd != nil {
-		return embedFS(e, v, fsTd, pkg.Dir, files)
+	if fsTd := embedFSType(env, td); fsTd != nil {
+		return embedFS(env, v, fsTd, pkg.Dir, files)
 	}
 	// string / []byte (or a named type over them): one file, converted
 	// through the declared type.
@@ -50,7 +61,7 @@ func embedBuiltin(e *Engine, v runtime.VMCaller, args []runtime.Value) (runtime.
 		return nil, fmt.Errorf("go:embed: invalid pattern syntax: multiple files for type %s", td.Name)
 	}
 	abs := filepath.Join(pkg.Dir, filepath.FromSlash(files[0]))
-	if err := e.cfg.CheckPath(abs); err != nil {
+	if err := env.CheckPath(abs); err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(abs)
@@ -62,9 +73,9 @@ func embedBuiltin(e *Engine, v runtime.VMCaller, args []runtime.Value) (runtime.
 
 // embedFSType reports td when it is embed.FS (by its declaring package) —
 // `type FS = embed.FS` aliases resolve to the same typedef first.
-func embedFSType(e *Engine, td *runtime.TypeDef) *runtime.TypeDef {
-	if e != nil {
-		td = e.peelAliasTd(td)
+func embedFSType(env EmbedEnv, td *runtime.TypeDef) *runtime.TypeDef {
+	if env != nil {
+		td = env.PeelAliasTd(td)
 	}
 	if td != nil && td.Name == "FS" && td.Pkg != nil && td.Pkg.Path == "embed" {
 		return td
@@ -187,7 +198,7 @@ func embedSplit(name string) (dir, elem string) {
 // embedFS builds the embed.FS value the compiler would emit: the struct's
 // `files *[]file` holds every file and every directory leading to one
 // (named "dir/"), sorted by (dir, elem) so embed's binary search works.
-func embedFS(e *Engine, v runtime.VMCaller, td *runtime.TypeDef, dir string, files []string) (runtime.Value, error) {
+func embedFS(env EmbedEnv, v runtime.VMCaller, td *runtime.TypeDef, dir string, files []string) (runtime.Value, error) {
 	names := map[string]bool{}
 	for _, f := range files {
 		names[f] = true
@@ -236,7 +247,7 @@ func embedFS(e *Engine, v runtime.VMCaller, td *runtime.TypeDef, dir string, fil
 		data := ""
 		if !strings.HasSuffix(n, "/") {
 			abs := filepath.Join(dir, filepath.FromSlash(n))
-			if err := e.cfg.CheckPath(abs); err != nil {
+			if err := env.CheckPath(abs); err != nil {
 				return nil, err
 			}
 			b, err := os.ReadFile(abs)
