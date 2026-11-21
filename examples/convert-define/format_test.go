@@ -81,7 +81,7 @@ func convertSrcToDst(ctx context.Context, ec *model.ErrorCollector, src *Src) *D
 	if !errors.As(err, &me) {
 		t.Fatalf("want *missingImportsError, got %T: %v", err, err)
 	}
-	want := `generated code uses 1 package(s) the generator did not import. This is a convert-define generator bug (ImportManager missed a registration), not a problem in the define file; no output was written.
+	want := `generated code uses 1 package(s) the generator did not import. This is a convert-define generator bug (importmanager missed a registration), not a problem in the define file; no output was written.
 
 missing import "strings" (referenced as strings.)
   first used by: converter convertSrcToDst, field Name

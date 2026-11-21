@@ -27,7 +27,7 @@ const maxReportedErrors = 10
 // formatCode runs goimports over the generated source. Syntax errors
 // come back as a *syntaxError, which points each error at the
 // converter and field that emitted it. goimports having to add an
-// import is also a generator bug (ImportManager missed a registration):
+// import is also a generator bug (importmanager missed a registration):
 // absorbing it hides the bug, and the guessed package can be the wrong
 // one, so it fails the run too.
 func formatCode(ctx context.Context, filename string, src []byte) ([]byte, error) {
@@ -88,7 +88,7 @@ func (e *missingImportsError) Error() string {
 	lines := strings.Split(strings.TrimSuffix(string(e.src), "\n"), "\n")
 	names := importNames(e.formatted)
 	var b strings.Builder
-	fmt.Fprintf(&b, "generated code uses %d package(s) the generator did not import. This is a convert-define generator bug (ImportManager missed a registration), not a problem in the define file; no output was written.\n", len(e.added))
+	fmt.Fprintf(&b, "generated code uses %d package(s) the generator did not import. This is a convert-define generator bug (importmanager missed a registration), not a problem in the define file; no output was written.\n", len(e.added))
 	for _, path := range e.added {
 		name := names[path]
 		fmt.Fprintf(&b, "\nmissing import %q (referenced as %s.)\n", path, name)
