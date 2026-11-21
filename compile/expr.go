@@ -280,7 +280,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			if id := rootIdent(t.X); id != nil {
 				c.fs.boxName(id.Name, "fieldref")
 			}
-			c.refTargetBase(t.X, false)
+			c.refTargetBase(t.X, false, true)
 			c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
 		case *ast.IndexExpr:
 			c.aliasBase(t.X)

@@ -213,7 +213,14 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpSetLocal:
 			v.assignLocal(f, int(ins.A), f.pop())
 		case bytecode.OpLocalRef:
-			f.push(f.localCell(int(ins.A)))
+			if ins.B == 0 {
+				// a store-target ref is consumed transiently by the
+				// store — its promoted cell cannot be published, so a
+				// pooled block cell serves when the chunk cannot leak.
+				f.push(f.localCellTransient(int(ins.A)))
+			} else {
+				f.push(f.localCell(int(ins.A)))
+			}
 		case bytecode.OpUpval:
 			f.push(f.upvals[ins.A].Elem)
 		case bytecode.OpUpvalTyp:

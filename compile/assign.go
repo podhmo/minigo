@@ -346,7 +346,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 		// ref time: ref, rhs, then read+op+store. The ref resolves
 		// to the variable's live storage, so a RHS that replaces
 		// the variable lands the result there.
-		c.refTarget(target, false)
+		c.refTarget(target, false, false)
 		c.expr(st.Rhs[0])
 		c.emit(bytecode.OpSwap, 0, 0, target.Pos())
 		c.emit(bytecode.OpDup, 0, 0, target.Pos())
@@ -371,7 +371,7 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 		// redirects the write, matching OAS).
 		pin := len(st.Lhs) > 1
 		for _, l := range st.Lhs {
-			c.refTarget(l, pin)
+			c.refTarget(l, pin, false)
 		}
 	}
 	if len(st.Rhs) == 1 && n > 1 {
@@ -646,7 +646,7 @@ func (c *compiler) inferredTypExpr(e ast.Expr) ast.Expr {
 // copies operands a previous target could overwrite — `p, *p = fp()` still
 // writes the old pointee) instead of re-resolving the live storage at
 // store time.
-func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
+func (c *compiler) refTarget(lhs ast.Expr, pin, publish bool) {
 	target := ast.Unparen(lhs)
 	switch t := target.(type) {
 	case *ast.Ident:
@@ -659,7 +659,15 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 		case !ok:
 			c.emit(bytecode.OpGlobalRef, c.nameIdx(t.Name), 0, t.Pos())
 		case !isUp:
-			c.emit(bytecode.OpLocalRef, idx, 0, t.Pos())
+			// B: 1 when the ref can be published (a select base whose
+			// member may bind it, an address-of), 0 for a transient
+			// store target — only a transient ref may take a pooled
+			// promotion cell.
+			b := 0
+			if publish {
+				b = 1
+			}
+			c.emit(bytecode.OpLocalRef, idx, b, t.Pos())
 		default:
 			c.emit(bytecode.OpUpvalRef, idx, 0, t.Pos())
 		}
@@ -671,7 +679,7 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 		// RHS rewrites the whole variable. gc drills a value-field path
 		// to its named root the same way — only `(*p).f`'s pointer
 		// operand pins (handled by refTargetBase).
-		c.refTargetBase(t.X, pin)
+		c.refTargetBase(t.X, pin, publish)
 		// B=1 store target; +2 pins pointer bases (multi-assign): p.f
 		// is an implicit indirection whose operand gc saves before the
 		// stores, so `p, p.f = new(T), v` writes the old pointee.
@@ -691,7 +699,7 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 		if pin {
 			c.aliasBase(t.X)
 		} else {
-			c.refTargetBase(t.X, pin)
+			c.refTargetBase(t.X, pin, publish)
 		}
 		c.expr(t.Index)
 		c.emit(bytecode.OpIndexRef, 0, 1, t.Lbrack)
@@ -705,7 +713,7 @@ func (c *compiler) refTarget(lhs ast.Expr, pin bool) {
 			// `*p` is the location p points at — resolve p's storage at
 			// store time so `*p = f()` still writes the live pointee
 			// when f reseats p.
-			c.refTargetBase(t.X, pin)
+			c.refTargetBase(t.X, pin, publish)
 			c.emit(bytecode.OpDerefRef, 0, 0, t.Pos())
 		} else {
 			c.expr(t.X)
@@ -816,7 +824,7 @@ func (c *compiler) aliasBase(e ast.Expr) {
 // for addressable bases (idents, fields, elements, derefs), the
 // evaluated value for anything else (e.g. a call returning a pointer).
 // pin propagates multi-assign pinning into deref bases (`(*p).f`).
-func (c *compiler) refTargetBase(e ast.Expr, pin bool) {
+func (c *compiler) refTargetBase(e ast.Expr, pin, publish bool) {
 	// A package name evaluates to the package object — it has no
 	// storage ref, and OpFieldRef/OpSelect must see the value.
 	if id, isIdent := e.(*ast.Ident); isIdent {
@@ -835,7 +843,7 @@ func (c *compiler) refTargetBase(e ast.Expr, pin bool) {
 		}
 	}
 	if c.isStorageBase(e) {
-		c.refTarget(e, pin)
+		c.refTarget(e, pin, publish)
 		return
 	}
 	c.expr(e)

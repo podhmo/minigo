@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -95,4 +96,26 @@ func TestSlotClassification(t *testing.T) {
 			t.Errorf("Use: no boxed slot; the *int receiver cell must survive")
 		}
 	})
+}
+
+// TestPooledCellPublish pins the B=1 mark on publishable select refs:
+// a method value or a field slice bound on a compile-unprovable
+// member (generic receiver, cellUnknown) outlives its frame, so the
+// promoted cell must come from the heap — not the frame's pooled
+// block, which freeFrame clears.
+func TestPooledCellPublish(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(".")
+	for name, want := range map[string]any{
+		"Main":  int64(7),
+		"Slice": int64(3),
+	} {
+		v, err := e.Run(ctx, "./testdata/cellpool", name)
+		if err != nil {
+			t.Fatalf("Run(%s): %v", name, err)
+		}
+		if diff := cmp.Diff(want, v); diff != "" {
+			t.Errorf("Run(%s) mismatch (-want +got):\n%s", name, diff)
+		}
+	}
 }
