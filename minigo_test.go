@@ -30,6 +30,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
+	"github.com/podhmo/minigo/compile"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/resolve"
@@ -506,6 +507,19 @@ func TestStdlibIntrinsics(t *testing.T) {
 // `==` lowers to an interface comparison (selPkgMemberOpTyp).
 // docs/next/ja/references/acceptance-set.md.
 func TestNetHTTPRoundtrip(t *testing.T) {
+	checkNetHTTPRoundtrip(t)
+}
+
+// The same roundtrip under forced-deferred facts (M4-7d): `rc ==
+// NoBody` keeps lowering to an interface comparison because OpTypGate
+// resolves the operand typedefs at run time.
+func TestNetHTTPRoundtripDeferred(t *testing.T) {
+	defer func(d bool) { compile.DeferFacts = d }(compile.DeferFacts)
+	compile.DeferFacts = true
+	checkNetHTTPRoundtrip(t)
+}
+
+func checkNetHTTPRoundtrip(t *testing.T) {
 	e := newEngine(t)
 	got := run(t, e, "./testdata/httpio", "Roundtrip")
 	if diff := cmp.Diff("200 OK|hi /hello", got); diff != "" {

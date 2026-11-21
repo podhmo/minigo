@@ -7,6 +7,7 @@ import (
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // opCmpGate emits an OpTrap in place of a binary op or switch-case
@@ -55,9 +56,9 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			nilGate = true
 		} else {
 			if nilable, resolved := c.nilableTypExpr(other.te); !resolved {
-				// an absent member (io.NotAReader) resolves to
-				// nothing — only a package question still deferred
-				// hands the nil check to run time.
+				// a deferred member lookup defers the nil check too —
+				// but a genuinely absent member (`io.NotAReader`)
+				// stays maybe-nilable and silent like before.
 				if !c.typExprDeferred(other.te) {
 					return false
 				}
@@ -65,7 +66,11 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 			} else if nilable {
 				return false
 			} else if oi, ok := c.namedIdentOf(other.te); !ok {
-				nilGate = true // unnamed non-nilable — let run time decide
+				// a spelled type compile cannot name — `Box[int]` —
+				// defers too: run time resolves it and traps a named
+				// non-nilable compare, while an anonymous shape
+				// (struct{...}) still resolves unnamed and silent.
+				nilGate = true
 			} else {
 				// gc orders the operands as written: `nil == i` reports
 				// "untyped nil and int", `i == nil` the reverse.
@@ -148,7 +153,7 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 				if te == nil {
 					return false
 				}
-				sites[i] = c.exprSite(te, o.x.Pos())
+				sites[i] = c.exprSiteAt(te, o.ot.teFile, o.x.Pos())
 			}
 		}
 		c.emit3(bytecode.OpTypGate, sites[0], sites[1], mask, pos)
@@ -243,11 +248,21 @@ func (c *compiler) emitShift(op bytecode.BinOp, x *ast.BinaryExpr) {
 // constness question OpConstExpr asks and the operand-typedef question
 // OpTypGate asks — pinning the same compile scope callSite pins.
 func (c *compiler) exprSite(x ast.Expr, pos token.Pos) int {
+	return c.exprSiteAt(x, nil, pos)
+}
+
+// exprSiteAt is exprSite for a type expression spelled in another file
+// — a package decl's `otherpkg.Box[int]` keeps its own file's imports,
+// never the file the compare happens to be compiled in.
+func (c *compiler) exprSiteAt(x ast.Expr, teFile *syntax.File, pos token.Pos) int {
 	file := c.file
 	var localTypes map[string]*runtime.TypeDef
-	if c.pkgScopeTyp != nil {
+	switch {
+	case teFile != nil:
+		file = teFile
+	case c.pkgScopeTyp != nil:
 		file = c.pkgScopeTyp
-	} else {
+	default:
 		localTypes = c.fs.localTypeDefs()
 	}
 	var localConsts map[string]bool
@@ -260,6 +275,21 @@ func (c *compiler) exprSite(x ast.Expr, pos token.Pos) int {
 		Consts: localConsts,
 	})
 	return len(c.ch.CallSites) - 1
+}
+
+// typExprDeferred reports whether te is a qualified type name whose
+// package question is still open — the index deferred it, or the
+// package never loaded at all (Missing/Failed): an answer the
+// run-time gate can still give, or surface the load error, once the
+// package materializes. A FOUND package whose member is absent
+// (io.NotAReader) is not deferred.
+func (c *compiler) typExprDeferred(te ast.Expr) bool {
+	if sel, ok := c.unfoldTypExpr(te, 4).(*ast.SelectorExpr); ok {
+		if ref, _, ok := c.selTypRef(sel); ok {
+			return askIndexed(ref).Kind != semantics.Found
+		}
+	}
+	return false
 }
 
 // selPkgMemberOpTyp resolves a package-qualified operand `pkg.Name`:
@@ -357,20 +387,4 @@ func (c *compiler) srcMemberOpTyp(p *runtime.Package, name string) opTyp {
 		}
 	}
 	return opTyp{}
-}
-
-// typExprDeferred reports whether a type expression's package member
-// is itself a deferred fact — the qualified name's package answers
-// semantics.Deferred. An unresolvable member of a FOUND package (a
-// name that simply isn't there, io.NotAReader) is not deferred.
-func (c *compiler) typExprDeferred(te ast.Expr) bool {
-	t, ok := c.unfoldTypExpr(te, 4).(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	ref, _, ok := c.selTypRef(t)
-	if !ok {
-		return false
-	}
-	return askIndexed(ref).Kind == semantics.Deferred
 }
