@@ -1,1 +1,0 @@
-json-unmarshaljson-namedslice: dispatching UnmarshalJSON through the bound decoder stores the method's  assignment as a bare []string — the receiver-cell store drops the implicit []string -> Types conversion, so s.Type loses its typedef and .Slice() traps 'select Slice on slice' (surfaced by realworld oapi-codegen-examples)
