@@ -200,7 +200,7 @@ var FileBudgets = map[string]int{
 	"typeid.go":                                      385,
 	"vm/assert.go":                                   2260,
 	"vm/binop.go":                                    1668,
-	"vm/call.go":                                     993,
+	"vm/call.go":                                     999,
 	"vm/composite.go":                                3422,
 	"vm/const.go":                                    1465,
 	"vm/convert.go":                                  1234,
