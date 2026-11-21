@@ -204,8 +204,8 @@ func TestTypeIDAnonCompositeKeepsLenAndKey(t *testing.T) {
 	if diff := cmp.Diff(false, e.typeIDOf(mk("string")) == e.typeIDOf(mk("int"))); diff != "" {
 		t.Errorf("map[string]T and map[int]T key alike (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(true, e.typeIDOf(mk("string")) == e.typeIDOf(mk("string"))); diff != "" {
-		t.Errorf("same map typedef keys differently (-want +got):\n%s", diff)
+	if got := e.typeIDOf(mk("string")); got != e.typeIDOf(mk("string")) {
+		t.Errorf("same map typedef keys differently: %v vs %v", got, e.typeIDOf(mk("string")))
 	}
 }
 
