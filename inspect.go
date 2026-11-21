@@ -47,7 +47,7 @@ func (e *Engine) installInspect() {
 		// the pseudo-path predicate the two constants above feed —
 		// bound so script walks can stop on either without listing
 		// the spellings themselves.
-		"NoDeclPath": bf("NoDeclPath", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"NoDeclPath": bf("NoDeclPath", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("NoDeclPath", "one path string")
 			}
@@ -73,7 +73,7 @@ func (e *Engine) installInspect() {
 		// a parsed package: loaders (DirOf/FileOf) do the loading.
 		"RepoPackage": hostType("inspect.RepoPackage", func() any { return &xinspect.RepoPackage{} }),
 		// ---- locators ----
-		"PackageOf": bf("PackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"PackageOf": bf("PackageOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("PackageOf", "one path string")
 			}
@@ -81,13 +81,13 @@ func (e *Engine) installInspect() {
 			// whose source would not compile, so misses build leniently.
 			return e.loadPathLenient(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
-		"SourceOf": bf("SourceOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SourceOf": bf("SourceOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("SourceOf", "one path string")
 			}
 			return e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
-		"LookupSourceOf": bf("LookupSourceOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LookupSourceOf": bf("LookupSourceOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupSourceOf", "one path string")
 			}
@@ -100,7 +100,7 @@ func (e *Engine) installInspect() {
 			}
 			return p, nil
 		}),
-		"BoundOf": bf("BoundOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"BoundOf": bf("BoundOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("BoundOf", "one path string")
 			}
@@ -110,13 +110,13 @@ func (e *Engine) installInspect() {
 			}
 			return p, nil
 		}),
-		"DirOf": bf("DirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"DirOf": bf("DirOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("DirOf", "one dir string")
 			}
 			return e.loadDirLenient(context.Background(), str(runtime.Unwrap(args[0])))
 		}),
-		"LookupDirOf": bf("LookupDirOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LookupDirOf": bf("LookupDirOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupDirOf", "one dir string")
 			}
@@ -129,7 +129,7 @@ func (e *Engine) installInspect() {
 			}
 			return p, nil
 		}),
-		"LookupPackageOf": bf("LookupPackageOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LookupPackageOf": bf("LookupPackageOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupPackageOf", "one path string")
 			}
@@ -142,13 +142,13 @@ func (e *Engine) installInspect() {
 			}
 			return p, nil
 		}),
-		"FileOf": bf("FileOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"FileOf": bf("FileOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("FileOf", "one file string")
 			}
 			return e.fileView(str(runtime.Unwrap(args[0])))
 		}),
-		"LookupFileOf": bf("LookupFileOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LookupFileOf": bf("LookupFileOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupFileOf", "one file string")
 			}
@@ -164,7 +164,7 @@ func (e *Engine) installInspect() {
 		// Packages is the repo-wide counterpart of the one-dir loaders:
 		// it finds the files; DirOf/FileOf on the reported inventory
 		// does the parsing on the shared caches.
-		"Packages": bf("Packages", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Packages": bf("Packages", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Packages", "one root dir string")
 			}
@@ -186,13 +186,13 @@ func (e *Engine) installInspect() {
 			return p, nil
 		}),
 		// ---- symbol -> package / value -> decl ----
-		"OwnerOf": bf("OwnerOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"OwnerOf": bf("OwnerOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("OwnerOf", "one value")
 			}
 			return e.ownerOf(runtime.Unwrap(args[0]))
 		}),
-		"PathOf": bf("PathOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"PathOf": bf("PathOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("PathOf", "one value")
 			}
@@ -205,7 +205,7 @@ func (e *Engine) installInspect() {
 			}
 			return p.Path, nil
 		}),
-		"SymbolIDOf": bf("SymbolIDOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SymbolIDOf": bf("SymbolIDOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("SymbolIDOf", "one value")
 			}
@@ -222,7 +222,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: runtime.SymbolID{PackagePath: path, Name: d.Name}}, nil
 		}),
-		"SymbolOf": bf("SymbolOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SymbolOf": bf("SymbolOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("SymbolOf", "one value")
 			}
@@ -236,13 +236,13 @@ func (e *Engine) installInspect() {
 			return &runtime.GoValue{V: d}, nil
 		}),
 		// ---- index layer ----
-		"Decls": bf("Decls", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Decls": bf("Decls", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Decls", "a package or file view")
 			}
 			return e.declsOf(runtime.Unwrap(args[0]))
 		}),
-		"Symbol": bf("Symbol", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Symbol": bf("Symbol", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("Symbol", "a package and a name")
 			}
@@ -252,7 +252,7 @@ func (e *Engine) installInspect() {
 			}
 			return e.lookupSymbol(p, str(runtime.Unwrap(args[1])))
 		}),
-		"LookupSymbol": bf("LookupSymbol", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LookupSymbol": bf("LookupSymbol", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("LookupSymbol", "a package and a name")
 			}
@@ -269,7 +269,7 @@ func (e *Engine) installInspect() {
 			}
 			return s, nil
 		}),
-		"Files": bf("Files", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Files": bf("Files", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Files", "a package")
 			}
@@ -283,7 +283,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.Slice{Elems: xs}, nil
 		}),
-		"Imports": bf("Imports", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Imports": bf("Imports", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Imports", "a file view")
 			}
@@ -298,7 +298,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.Slice{Elems: xs}, nil
 		}),
-		"Comments": bf("Comments", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Comments": bf("Comments", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Comments", "a file view")
 			}
@@ -309,21 +309,21 @@ func (e *Engine) installInspect() {
 			return boxedSlice(xinspect.CommentsOf(f)), nil
 		}),
 		// ---- metadata ----
-		"Kind": bf("Kind", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Kind": bf("Kind", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return s.Kind, nil
 		}),
-		"Doc": bf("Doc", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Doc": bf("Doc", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return s.Doc, nil
 		}),
-		"Pos": bf("Pos", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Pos": bf("Pos", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -333,7 +333,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: s.Pos}, nil
 		}),
-		"Name": bf("Name", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Name": bf("Name", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Name", "one value")
 			}
@@ -354,35 +354,35 @@ func (e *Engine) installInspect() {
 				return s.Name, nil
 			}
 		}),
-		"Path": bf("Path", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Path": bf("Path", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p, err := e.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return p.Path, nil
 		}),
-		"Dir": bf("Dir", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Dir": bf("Dir", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p, err := e.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return filepath.ToSlash(p.Dir), nil
 		}),
-		"State": bf("State", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"State": bf("State", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p, err := e.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return stateName(p.State()), nil
 		}),
-		"Standard": bf("Standard", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Standard": bf("Standard", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			p, err := e.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return p.Standard, nil
 		}),
-		"SymbolID": bf("SymbolID", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SymbolID": bf("SymbolID", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("SymbolID", "a decl or type expression")
 			}
@@ -404,7 +404,7 @@ func (e *Engine) installInspect() {
 			return &runtime.GoValue{V: &runtime.SymbolID{PackagePath: path, Name: s.Name}}, nil
 		}),
 		// ---- syntax layer ----
-		"Fields": bf("Fields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Fields": bf("Fields", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -415,7 +415,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(fs), nil
 		}),
-		"Methods": bf("Methods", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Methods": bf("Methods", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("Methods", "a type decl, a package, or a file view")
 			}
@@ -448,7 +448,7 @@ func (e *Engine) installInspect() {
 				return nil, argerr("Methods", "a type decl, a package, or a file view")
 			}
 		}),
-		"MethodSet": bf("MethodSet", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"MethodSet": bf("MethodSet", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -459,7 +459,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(ms), nil
 		}),
-		"Implementers": bf("Implementers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Implementers": bf("Implementers", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("Implementers", "a package and an interface decl")
 			}
@@ -477,7 +477,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(ds), nil
 		}),
-		"EnumMembers": bf("EnumMembers", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"EnumMembers": bf("EnumMembers", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -488,7 +488,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(ms), nil
 		}),
-		"MReqs": bf("MReqs", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"MReqs": bf("MReqs", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -499,7 +499,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(fs), nil
 		}),
-		"IEmbeds": bf("IEmbeds", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"IEmbeds": bf("IEmbeds", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -510,7 +510,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(es), nil
 		}),
-		"AST": bf("AST", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"AST": bf("AST", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if n, err := nodeViewOf(args[0]); err == nil {
 				return &runtime.GoValue{V: n.ASTNode()}, nil
 			}
@@ -525,7 +525,7 @@ func (e *Engine) installInspect() {
 			return &runtime.GoValue{V: node}, nil
 		}),
 		// ---- body layer ----
-		"Body": bf("Body", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Body": bf("Body", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -539,14 +539,14 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: n}, nil
 		}),
-		"Nodes": bf("Nodes", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Nodes": bf("Nodes", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			n, err := nodeViewOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return boxedSlice(xinspect.NodesOf(n)), nil
 		}),
-		"Expr": bf("Expr", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Expr": bf("Expr", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			n, err := nodeViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -557,7 +557,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
-		"Signature": bf("Signature", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Signature": bf("Signature", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -568,7 +568,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: sig}, nil
 		}),
-		"TypeParams": bf("TypeParams", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"TypeParams": bf("TypeParams", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -579,7 +579,7 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(fs), nil
 		}),
-		"Def": bf("Def", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Def": bf("Def", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -590,7 +590,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
-		"DeclType": bf("DeclType", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"DeclType": bf("DeclType", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -604,7 +604,7 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
-		"Initializer": bf("Initializer", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Initializer": bf("Initializer", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -618,21 +618,21 @@ func (e *Engine) installInspect() {
 			}
 			return &runtime.GoValue{V: te}, nil
 		}),
-		"IsAlias": bf("IsAlias", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"IsAlias": bf("IsAlias", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return xinspect.IsAliasOf(s)
 		}),
-		"Children": bf("Children", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Children": bf("Children", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return boxedSlice(te.Children()), nil
 		}),
-		"TypeFields": bf("TypeFields", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"TypeFields": bf("TypeFields", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
 				return nil, err
@@ -643,34 +643,34 @@ func (e *Engine) installInspect() {
 			}
 			return boxedSlice(fs), nil
 		}),
-		"UnWrap": bf("UnWrap", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"UnWrap": bf("UnWrap", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: te.Unwrap(e.resolverForInspect())}, nil
 		}),
-		"UnRef": bf("UnRef", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"UnRef": bf("UnRef", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: te.Unref()}, nil
 		}),
-		"Origin": bf("Origin", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Origin": bf("Origin", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
 			if err != nil {
 				return nil, err
 			}
 			return &runtime.GoValue{V: te.Origin(e.resolverForInspect())}, nil
 		}),
-		"Resolve": bf("Resolve", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Resolve": bf("Resolve", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return e.resolveDecl(args, false)
 		}),
-		"LookupResolve": bf("LookupResolve", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"LookupResolve": bf("LookupResolve", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return e.resolveDecl(args, true)
 		}),
-		"SameType": bf("SameType", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"SameType": bf("SameType", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("SameType", "two type expressions")
 			}
@@ -684,7 +684,7 @@ func (e *Engine) installInspect() {
 			}
 			return a.SameType(b, e.resolverForInspect()), nil
 		}),
-		"UsedSymbols": bf("UsedSymbols", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"UsedSymbols": bf("UsedSymbols", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			f, err := fileViewOf(args[0])
 			if err != nil {
 				return nil, err
@@ -698,7 +698,7 @@ func (e *Engine) installInspect() {
 			return &runtime.Slice{Elems: xs}, nil
 		}),
 		// ---- value layer ----
-		"Value": bf("Value", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"Value": bf("Value", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("Value", "a package and a name")
 			}
@@ -721,7 +721,7 @@ func (e *Engine) installInspect() {
 			}
 			return m, nil
 		}),
-		"TypeOf": bf("TypeOf", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"TypeOf": bf("TypeOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			s, err := declViewOf(args[0])
 			if err != nil {
 				return nil, err

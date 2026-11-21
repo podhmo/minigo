@@ -54,7 +54,7 @@ func (e *Engine) installFmt(h *hostHelpers) {
 		// spacing reads the reflect Kind, so a named type over string
 		// (json.Number) suppresses the space — the host-shaped args hide
 		// that inside fmtValue.
-		"Print": h.pffn("fmt.Print", 0, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Print": h.pffn("fmt.Print", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			return retErr(fprintOperands(h.out(), a, flat))
 		}, fmt.Print),
 		"Println": h.ffn("fmt.Println", -1, 0, func(a []any) (any, error) { return retErr(fmt.Fprintln(h.out(), a...)) }, fmt.Println),
@@ -84,7 +84,7 @@ func (e *Engine) installFmt(h *hostHelpers) {
 			}
 			return retErr(fmt.Fprintln(w, a[1:]...))
 		}),
-		"Sprint": h.pffn("fmt.Sprint", 0, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Sprint": h.pffn("fmt.Sprint", 0, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			var buf bytes.Buffer
 			if _, err := fprintOperands(&buf, a, flat); err != nil {
 				return nil, err
@@ -101,17 +101,17 @@ func (e *Engine) installFmt(h *hostHelpers) {
 		// which byteSlice cannot see through. Source-interpreted packages
 		// reach these through e.g. log's output(), which formats via
 		// fmt.Appendln.
-		"Append": h.pffn("fmt.Append", 1, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Append": h.pffn("fmt.Append", 1, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			var buf bytes.Buffer
 			if _, err := fprintOperands(&buf, a[1:], flat[1:]); err != nil {
 				return nil, err
 			}
 			return append(byteSlice(flat[0]), buf.Bytes()...), nil
 		}, fmt.Append),
-		"Appendf": h.wffn("fmt.Appendf", 1, 2, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Appendf": h.wffn("fmt.Appendf", 1, 2, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			return fmt.Appendf(byteSlice(flat[0]), str(a[1]), a[2:]...), nil
 		}, fmt.Appendf),
-		"Appendln": h.pffn("fmt.Appendln", 1, func(v runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
+		"Appendln": h.pffn("fmt.Appendln", 1, func(_ runtime.VMCaller, a []any, flat []runtime.Value) (any, error) {
 			return fmt.Appendln(byteSlice(flat[0]), a[1:]...), nil
 		}, fmt.Appendln),
 		// The Scan family's out-params arrive as script refs; scanFn

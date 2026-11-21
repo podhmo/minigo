@@ -100,7 +100,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 		// way, so equal script keys hit by content and an unhashable key
 		// panics like gc's "key is not comparable" — pointer keys keep
 		// identity (e.g. http.LocalAddrContextKey).
-		"WithValue": &runtime.BuiltinFunc{Name: "context.WithValue", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		"WithValue": &runtime.BuiltinFunc{Name: "context.WithValue", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 3 {
 				return nil, fmt.Errorf("context.WithValue needs 3 args, got %d", len(args))
 			}

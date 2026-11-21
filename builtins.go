@@ -470,7 +470,7 @@ func builtins(e *Engine) *runtime.Env {
 		}
 		return &runtime.Cell{Elem: v.Copy(args[0]), Typ: v.TypeOf(args[0])}, nil
 	})
-	bf("close", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	bf("close", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		var ch *runtime.Chan
 		switch x := args[0].(type) {
 		case *runtime.Chan:
@@ -518,7 +518,7 @@ func builtins(e *Engine) *runtime.Env {
 	bf("recover", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return v.Recover(), nil
 	})
-	bf("complex", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	bf("complex", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("complex expects two arguments")
 		}
@@ -537,7 +537,7 @@ func builtins(e *Engine) *runtime.Env {
 		}
 		return &runtime.GoValue{V: complex(re, im)}, nil
 	})
-	bf("real", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	bf("real", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		// a constant stays a constant: real(1+2i) is the untyped
 		// float 1, still materializable to any numeric target.
 		if r, ok := constPart(args[0], false); ok {
@@ -552,7 +552,7 @@ func builtins(e *Engine) *runtime.Env {
 		}
 		return real(cv), nil
 	})
-	bf("imag", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	bf("imag", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if r, ok := constPart(args[0], true); ok {
 			return r, nil
 		}
