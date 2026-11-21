@@ -9,10 +9,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/resolve"
+	"github.com/podhmo/minigo/runtime"
 )
 
 func writeModule(t *testing.T, dir string, files map[string]string) {
@@ -109,5 +111,100 @@ func Report() int64 { return int64(dep.V()) }
 	}
 	if diff := cmp.Diff(int64(2), v2); diff != "" {
 		t.Fatalf("feat-tagged build config must select the tagged file set (-want +got):\n%s", diff)
+	}
+}
+
+// M5-4a: an array length spelled by a const in another file folds per
+// version — the file declaring it refolds per load, so a session's
+// fold rides on ITS parse of the declaration and a session that loaded
+// the package before the const edit keeps the old length.
+func TestSourceVersionArrayLenFold(t *testing.T) {
+	dir := t.TempDir()
+	writeModule(t, dir, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.24\n",
+		"main.go": `package main
+
+import "example.com/m/dep"
+
+func Report() int64 { return int64(dep.Len()) }
+`,
+		"dep/const.go": "package dep\n\nconst N = 3\n",
+		"dep/dep.go": `package dep
+
+type A [N]int
+
+func Len() int { var a A; return len(a) }
+`,
+	})
+
+	e := NewEngine(dir)
+	ctx := context.Background()
+
+	sa := e.NewSession()
+	v1, err := sa.Run(ctx, dir, "Report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(int64(3), v1); diff != "" {
+		t.Fatalf("v1 (-want +got):\n%s", diff)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "dep", "const.go"),
+		[]byte("package dep\n\nconst N = 5\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sb := e.NewSession()
+	v2, err := sb.Run(ctx, dir, "Report")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(int64(5), v2); diff != "" {
+		t.Fatalf("v2 (-want +got):\n%s", diff)
+	}
+
+	// concurrent references: each session keeps reporting its own
+	// version — the folds live on per-version AST nodes, so neither
+	// session's answer leaks into the other's.
+	var wg sync.WaitGroup
+	vals := make([][2]runtime.Value, 4)
+	errs := make(chan error, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int, s *Engine) {
+			defer wg.Done()
+			for j := 0; j < 2; j++ {
+				v, err := s.Run(ctx, dir, "Report")
+				if err != nil {
+					errs <- err
+					return
+				}
+				vals[i][j] = v
+			}
+		}(i, []*Engine{sa, sb}[i%2])
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	// even-indexed goroutines ran sa (version 3), odd ones sb (5) —
+	// answers keyed per session so a value crossing versions fails.
+	var oldAns, newAns []runtime.Value
+	for i, pair := range vals {
+		for _, v := range pair {
+			if i%2 == 0 {
+				oldAns = append(oldAns, v)
+			} else {
+				newAns = append(newAns, v)
+			}
+		}
+	}
+	wantOld := []runtime.Value{int64(3), int64(3), int64(3), int64(3)}
+	wantNew := []runtime.Value{int64(5), int64(5), int64(5), int64(5)}
+	if diff := cmp.Diff(wantOld, oldAns); diff != "" {
+		t.Errorf("old-version answers (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(wantNew, newAns); diff != "" {
+		t.Errorf("new-version answers (-want +got):\n%s", diff)
 	}
 }
