@@ -434,6 +434,12 @@ const (
 	// HintDeferredValueTyp: a deferred value-typedef site — A indexes
 	// Chunk.CallSites (the old OpDeferredValueTyp).
 	HintDeferredValueTyp
+	// HintLocalTypElem / HintUpvalTypElem / HintGlobalTypElem: the Elem
+	// of the cell's declared typedef — a `*p` call argument's static
+	// type is the pointee (`Tpl(*t)` needs T, not *T).
+	HintLocalTypElem
+	HintUpvalTypElem
+	HintGlobalTypElem
 )
 
 // ArgHint is one argument's static-typedef recipe at a call site. The VM
