@@ -1,0 +1,3159 @@
+// Package vm is the minigo stack-machine interpreter: it runs the
+// [bytecode.Chunk] code produced by [github.com/podhmo/minigo/compile].
+//
+// The host creates a [VM] with its [Hooks] filled in — the engine services
+// the VM needs, such as builtins and lazy materialization of package
+// members. [VM.Call] invokes a function-like value and is the error
+// boundary: script panics and traps come back as errors. A *VM implements
+// [runtime.VMCaller], through which host builtins call back into the script.
+//
+// Each Call runs inside a script process that the `go` statement's
+// goroutines share. By default the outermost Call opens the process and
+// ends it on return, stopping goroutines still running; to keep one
+// process across several Calls, hold it with [VM.EnsureProc] instead.
+//
+// The process reports a deadlock when all its goroutines are parked with
+// nothing left to wake them. Host intrinsics that will call into the
+// script later, such as timers, must report the pending callback, or the
+// waiting process may be reported as deadlocked.
+package vm
+
+import (
+	"fmt"
+	"go/ast"
+	"go/constant"
+	"go/token"
+	"reflect"
+	"time"
+	"unsafe"
+
+	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/runtime"
+)
+
+// selectMember implements base.name for import refs, packages, structs,
+// typedefs, and cells.
+func (v *VM) selectMember(f *frame, base runtime.Value, name string) runtime.Value {
+	switch b := base.(type) {
+	case *runtime.ImportRef:
+		if !token.IsExported(name) && !b.AllNames {
+			f.trap("cannot refer to unexported name %s.%s", b.Path, name)
+		}
+		p, err := b.Materialize()
+		if err != nil {
+			f.trap("import %s: %s", b.Path, err)
+		}
+		mv, err := v.memberOf(p, name)
+		if err != nil {
+			f.trap("%s", err)
+		}
+		if c, isCell := mv.(*runtime.Cell); isCell {
+			mv = c.Elem
+		} else if _, cached := p.Globals.Get(name); !cached {
+			// cache a fresh materialization only: rebinding the value
+			// MemberV just read from Globals would bump the env's
+			// generation and drop every cached OpGlobal site of p.
+			p.Globals.Set(name, mv)
+		}
+		return mv
+	case *runtime.Package:
+		if !token.IsExported(name) {
+			f.trap("cannot refer to unexported name %s.%s", b.Path, name)
+		}
+		mv, err := v.memberOf(b, name)
+		if err != nil {
+			// member access on a package is namespace-only — the
+			// value's meaning must not change with its type, so the
+			// exported *runtime.Package metadata (Path, Name, Dir,
+			// State, ...) lives behind the inspect.* accessors.
+			// When the miss is one of those names, the trap spells
+			// the escape hatch.
+			if _, ok := v.hostMember(f, b, name); ok {
+				hint := "use the inspect.* accessors"
+				switch name {
+				case "Path", "Name", "Dir", "State", "Standard":
+					hint = fmt.Sprintf("use inspect.%s(pkg)", name)
+				}
+				f.trap("%s (inspect-layer package metadata — %s)", err, hint)
+			}
+			f.trap("%s", err)
+		}
+		if c, isCell := mv.(*runtime.Cell); isCell {
+			mv = c.Elem
+		}
+		return mv
+	case *runtime.Struct:
+		return v.structMember(f, b, name, b)
+	case *runtime.Named:
+		return v.namedMember(f, b, name, b)
+	case *runtime.Cell:
+		// a cell can hold another ref (`p := &s` stores a ref value) —
+		// select on the stored ref so a pointer receiver writes through
+		// to the pointee, not into p's cell.
+		switch b.Elem.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if f.selSeen == nil {
+				f.selSeen = map[runtime.Value]bool{}
+			}
+			if f.selSeen[b.Elem] {
+				f.trap("select %s on cyclic reference %T", name, b.Elem)
+			}
+			f.selSeen[b.Elem] = true
+			r := v.selectMember(f, b.Elem, name)
+			delete(f.selSeen, b.Elem)
+			return r
+		}
+		switch e := b.Elem.(type) {
+		case *runtime.Struct:
+			return v.structMember(f, e, name, b)
+		case *runtime.Named:
+			return v.namedMember(f, e, name, b)
+		case *runtime.TypedNil:
+			return v.memberOfType(f, e.Typ, name, b, false)
+		case *runtime.IfaceNil:
+			return v.memberOfType(f, e.Typ, name, e, true)
+		case *runtime.Slice:
+			return v.typedMember(f, e.Typ, name, b, "slice")
+		case *runtime.Map:
+			return v.typedMember(f, e.Typ, name, b, "map")
+		case *runtime.Chan:
+			return v.typedMember(f, e.Typ, name, b, "chan")
+		case *runtime.GoValue:
+			// a host value stored in a cell (`var mu sync.Mutex`): select on
+			// the boxed value so host methods resolve
+			return v.selectMember(f, e, name)
+		case *runtime.Package:
+			// an inspect-layer package stored in a var
+			return v.selectMember(f, e, name)
+		case runtime.Nil:
+			// a nil interface slot (var t reflect.Type; t := TypeOf(nil))
+			// — Go's nil itab deref is a recoverable panic, not a trap.
+			panic(runtime.NilDerefPanic())
+		default:
+			// a raw scalar (a bare time.Duration var) or any other
+			// value with no cell-specific dispatch selects on the
+			// element itself.
+			return v.selectMember(f, b.Elem, name)
+		}
+	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		dv, ok := runtime.Deref(base)
+		recv := base
+		if !ok {
+			// a deref ref over a nil pointer is Go's nil dereference —
+			// (*p).X / (*p).M() on a nil *T panic, not trap.
+			if dr, isDR := base.(*runtime.DerefRef); isDR {
+				if px, pok := runtime.Deref(dr.Ptr); pok {
+					if tn, isTN := asTypedNil(px); isTN && tn.Typ.Kind == runtime.KindPointer {
+						panic(runtime.NilDerefPanic())
+					}
+				}
+			}
+			// A receiver-position ref may sit over an operand that does
+			// not share storage — a map element reads as a copy — or
+			// over a base the ref cannot walk (m[k].f[i]). Select on
+			// what the operand reads to: the re-based element ref when
+			// storage is shared, the element value otherwise.
+			if dv, recv, ok = v.receiverOf(f, base); !ok {
+				f.trap("select %s on unresolved reference %T", name, base)
+			}
+		}
+		switch t := dv.(type) {
+		case *runtime.Struct:
+			return v.structMember(f, t, name, recv)
+		case *runtime.Named:
+			return v.namedMember(f, t, name, recv)
+		case *runtime.Slice:
+			return v.typedMember(f, t.Typ, name, recv, "slice")
+		case *runtime.Map:
+			return v.typedMember(f, t.Typ, name, recv, "map")
+		case *runtime.Chan:
+			return v.typedMember(f, t.Typ, name, recv, "chan")
+		case *runtime.TypedNil:
+			// a nil value under a ref (p.errors when errors is a nil
+			// named slice) still carries the ref so a pointer receiver
+			// binds &base.f, not a detached copy. A ref the runtime
+			// cannot read back (a field of a host struct) selects on
+			// the nil itself.
+			if _, ok := runtime.Deref(recv); !ok {
+				recv = t
+			}
+			return v.memberOfType(f, t.Typ, name, recv, false)
+		}
+		// pointer boxes ([]*T), nils, host values, packages — dispatch
+		// on the element value itself, like an unindexed select.
+		switch dv.(type) {
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			if f.selSeen == nil {
+				f.selSeen = map[runtime.Value]bool{}
+			}
+			if f.selSeen[dv] {
+				f.trap("select %s on cyclic reference %T", name, dv)
+			}
+			f.selSeen[dv] = true
+			r := v.selectMember(f, dv, name)
+			delete(f.selSeen, dv)
+			return r
+		}
+		return v.selectMember(f, dv, name)
+	case *runtime.TypeDef:
+		if _, isPtr := b.Anon.(*ast.StarExpr); isPtr {
+			// `(*T).M` — a pointer method expression sees the full
+			// method set (value and pointer receivers alike).
+			if et := v.elemTypedef(f, b); et != nil {
+				if m, ok := et.Methods[name]; ok {
+					if m.PtrRecv {
+						return m // receiver param *T binds the Cell argument
+					}
+					return v.methodExprDeref(b, m)
+				}
+				// a bound host basic's methods live on the host type —
+				// the expression re-dispatches on the (pointer) receiver.
+				// (*T).M sees the pointer method set, so probe *base where
+				// base is the modeled type: bound struct reps mint pointers
+				// (bytes.Buffer's rep is *bytes.Buffer).
+				if rt := hostTypOf(et); rt != nil {
+					for rt.Kind() == reflect.Pointer {
+						rt = rt.Elem()
+					}
+					if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+						return v.methodExprThunk(b, name)
+					}
+				}
+				// promoted through an embedded field — re-select on the
+				// actual receiver argument (`(*U).Sum` reaches I's value).
+				if len(et.EmbedSpecs) > 0 || et.Kind == runtime.KindInterface {
+					return v.methodExprThunk(b, name)
+				}
+			}
+			f.trap("type %s has no method %s", tdName(b), name)
+		}
+		if m, ok := b.Methods[name]; ok {
+			if m.PtrRecv {
+				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
+			}
+			return m // method expression: T.M(recv, ...)
+		}
+		// a bound host basic's methods live on the host type
+		// (reflect.StructTag.Get, time.Duration.String): the method
+		// expression re-dispatches on its receiver argument like Go's
+		// selector lowering — value methods only, matching T's set.
+		if rt := hostTypOf(b); rt != nil {
+			// bound struct reps mint pointers (*bytes.Buffer): T's
+			// method-expression set is the named type's — value
+			// receivers only; a pointer-only name traps like the
+			// declared PtrRecv arm above.
+			for rt.Kind() == reflect.Pointer {
+				rt = rt.Elem()
+			}
+			if _, ok := rt.MethodByName(name); ok {
+				return v.methodExprThunk(b, name)
+			}
+			if _, ok := reflect.PointerTo(rt).MethodByName(name); ok {
+				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
+			}
+		}
+		// `U.Sum` — a promoted method through an embedded field — or
+		// `I.m` — an interface requirement — dispatches on the concrete
+		// receiver argument, like Go's selector lowering.
+		if len(b.EmbedSpecs) > 0 || b.Kind == runtime.KindInterface {
+			return v.methodExprThunk(b, name)
+		}
+		f.trap("type %s has no method %s", b.Name, name)
+	case runtime.Nil:
+		// selecting a member on a nil interface value is a nil-pointer
+		// dereference in Go — a script panic, not a trap.
+		panic(runtime.NilDerefPanic())
+	case *runtime.IfaceNil:
+		if runtime.IsNilIface(b) {
+			// a method call on a nil interface value dereferences the
+			// nil itable — same panic as a bare nil.
+			panic(runtime.NilDerefPanic())
+		}
+		return v.memberOfType(f, b.Typ, name, b, true)
+	case *runtime.TypedNil:
+		return v.memberOfType(f, b.Typ, name, b, false)
+	case time.Duration:
+		// a raw duration selects host methods (Hours, String, ...) the
+		// same way a GoValue box does.
+		return v.selectMember(f, &runtime.GoValue{V: b}, name)
+	case *runtime.Slice:
+		return v.typedMember(f, b.Typ, name, b, "slice")
+	case *runtime.Map:
+		return v.typedMember(f, b.Typ, name, b, "map")
+	case *runtime.Chan:
+		return v.typedMember(f, b.Typ, name, b, "chan")
+	case *runtime.GoValue:
+		// host value (stdlib intrinsic result): fields first, then the
+		// method set — Go forbids a field and method sharing a name, so
+		// probing fields first is safe and keeps `cmd.Dir`-style access
+		// working on host structs like *exec.Cmd.
+		if mv, ok := v.hostMember(f, b.V, name); ok {
+			return mv
+		}
+		f.trap("no member %s on host value %T", name, b.V)
+	default:
+		f.trap("select %s on %T", name, base)
+	}
+	return nil
+}
+
+// framePkgPath is the package path the running code belongs to — the
+// lexical package of f's function. Go scopes unexported fields to that
+// package, so hostField/setField use it to decide whether interpreted
+// code may touch a host field: net/http's ServeMux can stamp r.pat on
+// a host *http.Request; package main cannot.
+func framePkgPath(f *frame) string {
+	if f == nil || f.fn == nil || f.fn.Pkg == nil {
+		return ""
+	}
+	return f.fn.Pkg.Path
+}
+
+// hostMember resolves a field or method on a host value: fields first,
+// then the method set — Go forbids a field and method sharing a name.
+// (nil, false) reports that neither exists. f scopes unexported fields
+// to their declaring package, the same gate Go applies.
+func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
+	if fv, ok := hostField(hv, name, framePkgPath(f)); ok {
+		return goSlotValueOf(fv), true
+	}
+	m := reflect.ValueOf(hv).MethodByName(name)
+	if sm, ok := hv.(runtime.ScriptMethoder); ok {
+		if fn, ok := sm.ScriptMethod(name); ok {
+			bf := &runtime.BuiltinFunc{Name: name, Fn: fn}
+			if m.IsValid() {
+				bf.Target = m.Interface()
+			}
+			return bf, true
+		}
+	}
+	if !m.IsValid() {
+		return nil, false
+	}
+	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		return callReflectFunc(name, m, vc, args)
+	}
+	if rt := reflect.TypeOf(hv).String(); opaqueContainers[rt] {
+		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			return callOpaqueStore(rt, name, m, vc, args)
+		}
+	}
+	if try := uncontendedLock(hv, name); try != nil {
+		// Lock/RLock park on a helper goroutine watched against
+		// proc.done (see blockingHostMethods) — a goroutine spawn per
+		// call, which stdlib-internal mutexes (go/token's per-line
+		// lock) pay thousands of times. An uncontended lock cannot
+		// park, so take it inline and keep the helper for contention.
+		slow := call
+		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 0 && try() {
+				return runtime.NIL, nil
+			}
+			return slow(vc, args)
+		}
+	}
+	bf := &runtime.BuiltinFunc{Name: name, Fn: call}
+	// the bound method value spells the receiver-less signature
+	// (`func() int` for Len) under %T.
+	bf.Target = m.Interface()
+	// the method value's own PC is a thunk (reflect.methodValueCall)
+	// — the declared method's Func is the only handle that still
+	// points at the real code, so keep it for inspect.
+	if tm, ok := reflect.TypeOf(hv).MethodByName(name); ok {
+		tm := tm
+		bf.Method = &tm
+	}
+	return bf, true
+}
+
+// methodExprThunk builds a T.M/(*T).M method-expression value for a
+// method reached through an embedded field or an interface
+// requirement: `U.Sum`/`(*U).Sum`/`I.m` compile to a func(recv,
+// args...) that re-selects the member on its receiver argument, so
+// embedded and interface dispatch run on the concrete value like Go's
+// selector lowering.
+func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
+	return &runtime.BuiltinFunc{
+		Name:     tdName(td) + "." + name,
+		Forwards: true,
+		Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 0 {
+				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), name)
+			}
+			// `I.M(nil)` dispatches on the receiver's concrete value —
+			// a nil interface has none, so the call is a nil-pointer
+			// dereference panic in Go, not a lookup failure.
+			if _, isNil := args[0].(runtime.Nil); isNil {
+				panic(runtime.NilDerefPanic())
+			}
+			if runtime.IsNilIface(args[0]) {
+				panic(runtime.NilDerefPanic())
+			}
+			m, ok := vm.Member(args[0], name)
+			if !ok {
+				return nil, fmt.Errorf("type %s has no method %s", tdName(td), name)
+			}
+			return vm.Call(m, args[1:])
+		},
+	}
+}
+
+// methodExprDeref adapts a value-receiver method for the (*T).M method
+// expression: the receiver argument arrives as *T and binds its
+// pointee, `(*S).val(&s)` calling val with s.
+func (v *VM) methodExprDeref(td *runtime.TypeDef, m *runtime.Function) runtime.Value {
+	return &runtime.BuiltinFunc{
+		Name:     tdName(td) + "." + m.Name,
+		Forwards: true,
+		Fn: func(vm runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+			if len(args) == 0 {
+				return nil, fmt.Errorf("method expression %s.%s needs a receiver argument", tdName(td), m.Name)
+			}
+			recv, ok := runtime.Deref(args[0])
+			if !ok {
+				return nil, fmt.Errorf("cannot use %T as %s receiver in method expression", args[0], tdName(td))
+			}
+			return vm.Call(m, append([]runtime.Value{recv}, args[1:]...))
+		},
+	}
+}
+
+func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime.Value) runtime.Value {
+	def := s.Def
+	for i, fn := range def.Fields {
+		if fn == name {
+			return s.Fields[i]
+		}
+	}
+	if m, ok := def.Methods[name]; ok {
+		if err := m.EnsureCompiled(); err != nil {
+			f.trap("%s", err)
+		}
+		r := recv
+		if m.PtrRecv {
+			r = v.ptrReceiver(r)
+		} else {
+			// value receiver operates on a copy
+			if dv, ok := runtime.Deref(r); ok {
+				r = dv
+			}
+			r = valueCopy(r)
+		}
+		return &runtime.BoundMethod{Recv: r, Fn: m}
+	}
+	// promoted member: fields, methods, interface-stored values and
+	// host members all compete at promotion depth, breadth-first like
+	// Go (the same walk composite-literal keys use).
+	if pr, ok := v.promotedMember(f, s, name, true); ok {
+		switch {
+		case pr.host != nil:
+			return v.selectMember(f, pr.host, name)
+		case pr.st != nil:
+			return pr.st.Fields[pr.idx]
+		case pr.m == nil:
+			// interface-typed embedded field: dispatch on the
+			// stored concrete value.
+			return v.selectMember(f, pr.recv, name)
+		}
+		m := pr.m
+		if err := m.EnsureCompiled(); err != nil {
+			f.trap("%s", err)
+		}
+		r := pr.recv
+		if m.PtrRecv {
+			// bind the field's live slot: a FieldRef over the struct
+			// that holds it — `*p = x` inside the method writes the
+			// stored field, not a copy of the value.
+			if pr.mst != nil && pr.midx < len(pr.mst.Def.Fields) {
+				r = v.ptrReceiver(&runtime.FieldRef{Base: pr.mst, Name: pr.mst.Def.Fields[pr.midx]})
+			} else {
+				r = v.ptrReceiver(r)
+			}
+		} else {
+			if dv, ok := runtime.Deref(r); ok {
+				r = dv
+			} else if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+				// a value method promoted through a nil embedded
+				// pointer dereferences it at selection — `a.h()`
+				// on A{B{*D}} with D nil panics like Go.
+				panic(runtime.NilDerefPanic())
+			}
+			r = valueCopy(r)
+		}
+		return &runtime.BoundMethod{Recv: r, Fn: m}
+	}
+	f.trap("%s has no field or method %s", def.Name, name)
+	return nil
+}
+
+// ptrReceiver binds the receiver of a `func (p *T) M` call for `x.M()`:
+// when x's operand is a storage ref, x may already be a *T — a stored
+// ref, a Named pointer, or a nil pointer — in which case the receiver is
+// that pointer value, not &x (writing `*p =` reaches the pointee, not
+// the variable). A plain value keeps the ref as &x; a non-ref operand
+// boxes into a fresh cell (an unaddressable base like `getS().Set`,
+// which Go rejects at compile time).
+func (v *VM) ptrReceiver(r runtime.Value) runtime.Value {
+	dv, ok := runtime.Deref(r)
+	if !ok {
+		// a nil *T receiver passes through as itself — `p == nil` and
+		// `*p =` behave like Go, not like a **T pointing at the slot.
+		if tn, isNil := r.(*runtime.TypedNil); isNil && tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
+			return r
+		}
+		return &runtime.Cell{Elem: r}
+	}
+	switch dv := dv.(type) {
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		return dv
+	case *runtime.Named:
+		if dv.Typ != nil && dv.Typ.Kind == runtime.KindPointer {
+			return dv
+		}
+	case *runtime.TypedNil:
+		if dv.Typ != nil && dv.Typ.Kind == runtime.KindPointer {
+			return dv
+		}
+	}
+	return r
+}
+
+// namedMember resolves base.name on a Named value: methods come only from
+// the declared typedef (`type A B` does not inherit B's methods, like
+// Go); fields reach through to the underlying struct's layout.
+func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.Value) runtime.Value {
+	// an anonymous *Declared typedef exposes the pointee's method set —
+	// `(*T)(p)` keeps T's methods callable on the conversion result.
+	td := n.Typ
+	for td != nil && td.Kind == runtime.KindPointer && td.Spec == nil && td.Methods[name] == nil {
+		et, err := v.H.ElemOf(td)
+		if err != nil || et == nil {
+			break
+		}
+		td = et
+	}
+	if m, ok := td.Methods[name]; ok {
+		if err := m.EnsureCompiled(); err != nil {
+			f.trap("%s", err)
+		}
+		r := recv
+		if m.PtrRecv {
+			r = v.ptrReceiver(r)
+		} else if td != n.Typ {
+			// a value receiver reached through the peeled pointer binds
+			// the pointee, re-tagged to the declared type.
+			sv := n.V
+			if dv, ok := runtime.Deref(sv); ok {
+				sv = dv
+			}
+			r = valueCopy(runtime.Tag(td, sv))
+		} else {
+			// a value receiver binds a copy of the named value — for a
+			// pointer-underlying declaration (`type P *Sq`) the pointer
+			// itself is the receiver, so the pointee stays shared.
+			r = valueCopy(n)
+		}
+		return &runtime.BoundMethod{Recv: r, Fn: m}
+	}
+	// fields live on the underlying struct value — promoted fields of the
+	// underlying type are stored as fields on it, but promoted METHODS of
+	// the underlying type are not part of the named type's method set. A
+	// pointer-underlying declaration (`type P *Sq`) dereferences first.
+	sv := n.V
+	if dv, ok := runtime.Deref(n.V); ok {
+		sv = dv
+	}
+	// a pointer conversion across declared types — `(*inner.Tag)(t)` on
+	// a *Tag for `type Tag inner.Tag` — keeps the pointee's own Named
+	// tag; fields still live on the struct underneath.
+	for {
+		nn, isNamed := sv.(*runtime.Named)
+		if !isNamed {
+			break
+		}
+		sv = nn.V
+		if dv, ok := runtime.Deref(sv); ok {
+			sv = dv
+		}
+	}
+	if gv, isGo := sv.(*runtime.GoValue); isGo {
+		// a host-boxed payload (a tagged host composite literal — its
+		// Named tag only names the declared type) resolves fields and
+		// methods on the box itself, e.g. p.Get() on &sync.Pool{...}.
+		if mv, ok := v.hostMember(f, gv.V, name); ok {
+			return mv
+		}
+		f.trap("no member %s on host value %T", name, gv.V)
+	}
+	if td != nil && td.HostScalar != nil {
+		// a bound host scalar (time.Duration) stores the raw host
+		// value — its methods live on the host type, dispatched
+		// through reflection like the bare value's own case in
+		// selectMember. A payload still in script shape — the int64
+		// or const-domain UConst a Named{monthTD, ...} keeps —
+		// materializes to the host scalar first so its declared
+		// methods (time.Month.String) resolve.
+		hv := sv
+		if cv, ok := runtime.HostScalarOf(td, sv); ok {
+			hv = cv
+		}
+		if mv, ok := v.hostMember(f, hv, name); ok {
+			return mv
+		}
+	}
+	if td != nil && td.HostNew != nil && td.Kind == runtime.KindNamedBasic {
+		// a bound host named basic keeps a script payload (a
+		// reflect.StructTag's string): its declared method set is
+		// empty, but the host type's methods apply once the payload
+		// is materialized as the host type — tag.Get("json").
+		rt := reflect.TypeOf(td.HostNew())
+		if rv := reflect.ValueOf(sv); rv.IsValid() && rv.Type().ConvertibleTo(rt) {
+			if mv, ok := v.hostMember(f, rv.Convert(rt).Interface(), name); ok {
+				return mv
+			}
+		}
+	}
+	if s, isStruct := sv.(*runtime.Struct); isStruct {
+		for i, fn := range s.Def.Fields {
+			if fn == name {
+				return s.Fields[i]
+			}
+		}
+		if pr, ok := v.promotedMember(f, s, name, true); ok {
+			if pr.host != nil {
+				return v.selectMember(f, pr.host, name)
+			}
+			if pr.st != nil {
+				return pr.st.Fields[pr.idx]
+			}
+			// a defined type does not inherit promoted methods or
+			// interface specs — fall through to the no-member trap.
+		}
+	}
+	f.trap("%s has no field or method %s", tdName(n.Typ), name)
+	return nil
+}
+
+func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Value) {
+	// write through any pointer chain: *Cell (local var or *T), FieldRef,
+	// IndexRef — assignment targets the struct they resolve to. Named
+	// struct-underlying values write into the underlying fields.
+	for {
+		if n, ok := base.(*runtime.Named); ok {
+			base = n.V
+			continue
+		}
+		dv, ok := runtime.Deref(base)
+		if !ok {
+			break
+		}
+		base = dv
+	}
+	switch b := base.(type) {
+	case *runtime.Struct:
+		for i, fn := range b.Def.Fields {
+			if fn == name {
+				// the field's declared type constrains the write —
+				// `s.f = nil` on a *T field stores a typed nil.
+				var ft *runtime.TypeDef
+				if fts := v.fieldTypedefs(b.Def); i < len(fts) {
+					ft = fts[i]
+				}
+				nv := v.coerce(f, val, ft)
+				if !overwriteArrayIn(b.Fields[i], nv) {
+					b.Fields[i] = nv
+				}
+				return
+			}
+		}
+		if pr, ok := v.promotedMember(f, b, name, true); ok {
+			if pr.host != nil {
+				v.setField(f, pr.host, name, val)
+				return
+			}
+			if pr.st == nil {
+				// a promoted method/interface member is not
+				// assignable — `s.M = x` has no field in Go either.
+				f.trap("%s has no field %s", b.Def.Name, name)
+			}
+			var ft *runtime.TypeDef
+			if fts := v.fieldTypedefs(pr.st.Def); pr.idx < len(fts) {
+				ft = fts[pr.idx]
+			}
+			nv := v.coerce(f, val, ft)
+			if !overwriteArrayIn(pr.st.Fields[pr.idx], nv) {
+				pr.st.Fields[pr.idx] = nv
+			}
+			return
+		}
+		f.trap("%s has no field %s", b.Def.Name, name)
+	case *runtime.GoValue:
+		// host struct behind a pointer: `cmd.Dir = "sub"` writes through
+		// reflection so intrinsics like os/exec stay wired to scripts.
+		rv := reflect.ValueOf(b.V)
+		for rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface {
+			if rv.IsNil() {
+				f.trap("set field %s on nil host %T", name, b.V)
+			}
+			rv = rv.Elem()
+		}
+		if rv.Kind() != reflect.Struct {
+			f.trap("set field %s on host value %T", name, b.V)
+		}
+		fv := rv.FieldByName(name)
+		if !fv.IsValid() {
+			f.trap("host value %T has no field %s", b.V, name)
+		}
+		// Go lets a package write its own unexported fields; interpreted
+		// stdlib code runs in that package, so ServeMux stamping r.pat on
+		// a host *http.Request lands in the real memory. Anything else —
+		// another package's private field, or an unaddressable copy —
+		// still traps like gc's rejection, before the value converts.
+		sf, _ := rv.Type().FieldByName(name)
+		ownPkg := fv.CanAddr() && sf.PkgPath != "" && sf.PkgPath == framePkgPath(f)
+		if !fv.CanSet() && !ownPkg {
+			f.trap("host value %T has no settable field %s", b.V, name)
+		}
+		nv, err := hostFieldValue(val, rv.Type(), name, fv.Type(), v)
+		if err != nil {
+			f.trap("set field %s: %s", name, err)
+		}
+		if fv.CanSet() {
+			fv.Set(nv)
+			return
+		}
+		reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
+	case *runtime.TypedNil:
+		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
+			panic(runtime.NilDerefPanic())
+		}
+		f.trap("set field %s on nil %s", name, tdName(b.Typ))
+	case *runtime.IfaceNil:
+		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
+			panic(runtime.NilDerefPanic())
+		}
+		f.trap("set field %s on nil %s", name, tdName(b.Typ))
+	case *runtime.ImportRef:
+		// package-level assignment: `runtime.MemProfileRate = 1`
+		// writes into the bound cell (or the global slot) so later
+		// reads of the member see it.
+		p, err := b.Materialize()
+		if err != nil {
+			f.trap("import %s: %s", b.Path, err)
+		}
+		if p.Index != nil && !p.LazyInit && p.State() < runtime.Initializing {
+			// Go initializes an import before the importer's code runs:
+			// initialize p now, or its own initializer would later reset
+			// what this write stored — go/scanner's init sets
+			// scannerhooks.StringEnd, which go/parser (Go 1.26) reads.
+			if err := p.EnsureReadyRun(v.runInit); err != nil {
+				f.trap("%s", err)
+			}
+		}
+		if existing, ok := p.Globals.Get(name); ok {
+			if c, isCell := existing.(*runtime.Cell); isCell {
+				c.Elem = val
+				return
+			}
+		}
+		p.Globals.Set(name, val)
+	case *runtime.FieldRef:
+		// interior write through a field select crossing a map element
+		// (m[k].f.g = v): the field read lands on the element copy, so
+		// Go allows it only when the field itself is reference-shaped —
+		// m[k].g.x on a struct field stays a compile rejection here.
+		x, shared := v.refThrough(f, b)
+		if !shared {
+			f.trap("set field %s on %T", name, base)
+		}
+		v.setField(f, x, name, val)
+	case *runtime.IndexRef:
+		// interior write through an index select crossing a map
+		// element (m[k].f[0].x = v on a slice-of-struct field): the
+		// element's storage is shared through the slice, so the field
+		// write lands — through an array element it stays rejected.
+		x, shared := v.refThrough(f, b)
+		if !shared {
+			f.trap("set field %s on %T", name, base)
+		}
+		v.setField(f, x, name, val)
+	default:
+		f.trap("set field %s on %T", name, base)
+	}
+}
+
+func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
+	if dv, ok := runtime.Deref(base); ok {
+		return v.index(f, dv, idx)
+	}
+	switch base.(type) {
+	case *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+		// A ref the plain deref cannot resolve may still reach a
+		// readable value — a chain crossing a map element (m[k].a[i],
+		// where m[k] is a copy but the slice field shares backing)
+		// resolves the same hops refThrough walks for the store side.
+		if dv, ok := v.refThrough(f, base); ok {
+			return v.index(f, dv, idx)
+		}
+	}
+	rawIdx := idx                               // the declared key check needs the operand's named tag
+	idx = runtime.Unwrap(v.materialize(f, idx)) // named key/index types hash as their value
+	base = v.materialize(f, base)               // `const s = "x"; s[0]` indexes a UConst
+	switch b := base.(type) {
+	case *runtime.Named:
+		return v.index(f, b.V, rawIdx)
+	case *runtime.IfaceNil:
+		return v.index(f, &runtime.TypedNil{Typ: b.Typ}, rawIdx)
+	case *runtime.TypedNil:
+		switch b.Typ.Kind {
+		case runtime.KindMap:
+			// the key's declared-type check is static — a nil-map read
+			// still rejects `B{1}` against map[A]V like gc.
+			v.checkMapKey(f, b.Typ, rawIdx)
+			return v.mapZero(f, b.Typ) // reading a nil map yields the zero value
+		case runtime.KindSlice:
+			panic(runtime.BoundsPanic(runtime.Unwrap(idx), 0))
+		case runtime.KindPointer:
+			// p[i] on a nil *[N]T dereferences the pointer
+			panic(runtime.NilDerefPanic())
+		default:
+			f.trap("index on nil %s", tdName(b.Typ))
+		}
+	case *runtime.Slice:
+		i, ok := indexSmallInt(idx)
+		if !ok {
+			if u, isU := uintOperand(idx); isU {
+				panic(runtime.BoundsPanic(u, int(b.Len())))
+			}
+			f.trap("slice index is %T", idx)
+		}
+		if i < 0 && v.boundUnsigned(rawIdx) {
+			// a wide unsigned index wrapped below zero — report its
+			// uint64 magnitude like gc.
+			panic(runtime.BoundsPanic(uint64(i), int(b.Len())))
+		}
+		if b.Virtual() {
+			// a virtual zero-size slice vends its shared element value.
+			if l := b.Len(); i < 0 || i >= l {
+				panic(runtime.BoundsPanic(i, int(l)))
+			}
+			return v.elemRead(f, b.Typ, b.Zero)
+		}
+		return v.elemRead(f, b.Typ, b.Elems[i])
+	case *runtime.Map:
+		val, found := b.Get(v.mapKeyOperand(f, b.Typ, rawIdx))
+		if !found {
+			val = v.mapZero(f, b.Typ)
+		}
+		return v.elemRead(f, b.Typ, val)
+	case string:
+		i, ok := indexSmallInt(idx)
+		if !ok {
+			if u, isU := uintOperand(idx); isU {
+				panic(runtime.BoundsPanic(u, len(b)))
+			}
+			f.trap("string index is %T", idx)
+		}
+		if i < 0 && v.boundUnsigned(rawIdx) {
+			panic(runtime.BoundsPanic(uint64(i), len(b)))
+		}
+		return runtime.Tag(v.builtinTypedef("uint8"), int64(b[i]))
+	case *runtime.GoValue:
+		// a boxed host named map or slice (url.Values, http.Header,
+		// net.IP) keeps its box for method dispatch; index the host
+		// value itself.
+		if val, _, ok := v.hostIndex(f, b, rawIdx); ok {
+			return val
+		}
+		f.trap("index on %T", base)
+	default:
+		f.trap("index on %T", base)
+		return nil
+	}
+	return nil
+}
+
+// hostIndex reads b[idx] on a boxed host map, slice, array or string. ok
+// is false when b holds none of those; found is the map comma-ok.
+func (v *VM) hostIndex(f *frame, b *runtime.GoValue, idx runtime.Value) (val runtime.Value, found, ok bool) {
+	rv := reflect.ValueOf(b.V)
+	switch rv.Kind() {
+	case reflect.Map:
+		ev := rv.MapIndex(v.hostMapKey(f, rv, idx))
+		if !ev.IsValid() {
+			return goValueOf(reflect.Zero(rv.Type().Elem())), false, true
+		}
+		return goValueOf(ev), true, true
+	case reflect.Slice, reflect.Array, reflect.String:
+		return goValueOf(rv.Index(v.hostIndexInt(f, rv, idx))), true, true
+	}
+	return nil, false, false
+}
+
+// hostIndexInt reads idx as an in-range index into the host slice, array
+// or string rv, panicking like a script slice index when it is out of
+// range (wide unsigned indices included).
+func (v *VM) hostIndexInt(f *frame, rv reflect.Value, idx runtime.Value) int {
+	ix := runtime.Unwrap(v.materialize(f, idx))
+	i, isInt := indexSmallInt(ix)
+	if !isInt {
+		if u, isU := uintOperand(ix); isU {
+			panic(runtime.BoundsPanic(u, rv.Len()))
+		}
+		f.trap("%s index is %T", rv.Type(), idx)
+	}
+	if i < 0 && v.boundUnsigned(idx) {
+		panic(runtime.BoundsPanic(uint64(i), rv.Len()))
+	}
+	if i < 0 || i >= int64(rv.Len()) {
+		panic(runtime.BoundsPanic(i, rv.Len()))
+	}
+	return int(i)
+}
+
+// hostMapKey converts idx to the key type of the host map rv.
+func (v *VM) hostMapKey(f *frame, rv reflect.Value, idx runtime.Value) reflect.Value {
+	kv, err := toReflectValue(v.materialize(f, idx), rv.Type().Key(), v)
+	if err != nil {
+		f.trap("index %s with %T: %v", rv.Type(), idx, err)
+	}
+	return kv
+}
+
+// hostSetIndex writes b[idx] = val on a boxed host map or slice
+// (http.Header, url.Values, net.IP), converting val to the element type.
+// ok is false when b holds neither; a host array value is a copy, so
+// writing it is not offered.
+func (v *VM) hostSetIndex(f *frame, b *runtime.GoValue, idx, val runtime.Value) bool {
+	rv := reflect.ValueOf(b.V)
+	var dst reflect.Value
+	var key reflect.Value
+	switch rv.Kind() {
+	case reflect.Map:
+		key = v.hostMapKey(f, rv, idx)
+		if rv.IsNil() {
+			panic(runtime.NilMapAssignPanic())
+		}
+	case reflect.Slice:
+		dst = rv.Index(v.hostIndexInt(f, rv, idx))
+	default:
+		return false
+	}
+	ev, err := toReflectValue(v.materialize(f, val), rv.Type().Elem(), v)
+	if err != nil {
+		f.trap("cannot use %T as %s value in assignment: %v", val, rv.Type().Elem(), err)
+	}
+	if rv.Kind() == reflect.Map {
+		rv.SetMapIndex(key, ev)
+	} else {
+		dst.Set(ev)
+	}
+	return true
+}
+
+// hostElemRef returns b[idx] as a box over the host value itself when
+// the element is a slice or map, so a nested write (q["tag"][0] = v,
+// h[k][i] = v) reaches host storage the way Go's shared backing does. ok
+// is false for any other base or element shape.
+func (v *VM) hostElemRef(f *frame, b *runtime.GoValue, idx runtime.Value) (runtime.Value, bool) {
+	rv := reflect.ValueOf(b.V)
+	var ev reflect.Value
+	switch rv.Kind() {
+	case reflect.Map:
+		if k := rv.Type().Elem().Kind(); k != reflect.Slice && k != reflect.Map {
+			return nil, false
+		}
+		ev = rv.MapIndex(v.hostMapKey(f, rv, idx))
+		if !ev.IsValid() {
+			ev = reflect.Zero(rv.Type().Elem()) // missing key: the nil element
+		}
+	case reflect.Slice:
+		if k := rv.Type().Elem().Kind(); k != reflect.Slice && k != reflect.Map {
+			return nil, false
+		}
+		ev = rv.Index(v.hostIndexInt(f, rv, idx))
+	default:
+		return nil, false
+	}
+	return &runtime.GoValue{V: ev.Interface()}, true
+}
+
+// hostBoxOf peels the pointers, refs and names off v to the boxed host
+// value behind it (a *Cell holding an http.Header reads as the header).
+// The walk is bounded so a pointer cycle cannot spin.
+func hostBoxOf(v runtime.Value) (*runtime.GoValue, bool) {
+	for range 8 {
+		switch x := v.(type) {
+		case *runtime.GoValue:
+			return x, true
+		case *runtime.Named:
+			v = x.V
+			continue
+		}
+		dv, ok := runtime.Deref(v)
+		if !ok {
+			return nil, false
+		}
+		v = dv
+	}
+	return nil, false
+}
+
+// indexAlias is v.index for the container operand of a nested store or
+// address-of (`h[k][i] = v`, `&h[k][i]`, a tuple assignment's pinned
+// operand): when base is a boxed host map or slice whose element is a
+// slice or map, the element stays boxed over its host storage — the
+// plain read hands back a script copy a write would not survive. Any
+// other base reads as v.index does.
+func (v *VM) indexAlias(f *frame, base, idx runtime.Value) runtime.Value {
+	if gv, ok := hostBoxOf(base); ok {
+		if ev, ok := v.hostElemRef(f, gv, idx); ok {
+			return ev
+		}
+	}
+	return v.index(f, base, idx)
+}
+
+// readElemRef reads the element or field a pointer value names when only
+// the VM's own reads resolve it — IndexRef.Get and FieldRef.Get know
+// script storage alone, not a boxed host slice. ok is false for any
+// other pointer.
+func (v *VM) readElemRef(f *frame, ptr runtime.Value) (runtime.Value, bool) {
+	switch r := ptr.(type) {
+	case *runtime.IndexRef:
+		return v.index(f, r.Base, r.Key), true
+	case *runtime.FieldRef:
+		return v.selectMember(f, r.Base, r.Name), true
+	}
+	return nil, false
+}
+
+// HostMapDelete runs the delete builtin on a boxed host map; ok is false
+// when m does not hold a map.
+func (v *VM) HostMapDelete(m *runtime.GoValue, key runtime.Value) (ok bool) {
+	rv := reflect.ValueOf(m.V)
+	if rv.Kind() != reflect.Map {
+		return false
+	}
+	f := v.topFrame()
+	kv := v.hostMapKey(f, rv, key)
+	if !rv.IsNil() {
+		rv.SetMapIndex(kv, reflect.Value{})
+	}
+	return true
+}
+
+// HostClear runs the clear builtin on a boxed host map or slice; ok is
+// false when m holds neither.
+func (v *VM) HostClear(m *runtime.GoValue) (ok bool) {
+	rv := reflect.ValueOf(m.V)
+	switch rv.Kind() {
+	case reflect.Map, reflect.Slice:
+		rv.Clear()
+		return true
+	}
+	return false
+}
+
+// hostSlice evaluates b[lo:hi(:max)] on a boxed host slice or string. The
+// result keeps the host type (net.IP's ip[:2] is a net.IP), so a named
+// slice stays boxed for its methods.
+func (v *VM) hostSlice(f *frame, b *runtime.GoValue, lo, hi, max runtime.Value, three bool) (runtime.Value, bool) {
+	rv := reflect.ValueOf(b.V)
+	switch rv.Kind() {
+	case reflect.Slice:
+		l, h := v.bounds(f, lo, hi, int64(rv.Len()))
+		cp := int64(rv.Cap())
+		if three {
+			m := v.maxBound(f, max, cp)
+			if r := sliceBoundsReason(l, h, m, cp, true, "capacity"); r != "" {
+				panic(runtime.SliceBoundsPanic(r))
+			}
+			return goValueOf(rv.Slice3(int(l.i), int(h.i), int(m.i))), true
+		}
+		if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, "capacity"); r != "" {
+			panic(runtime.SliceBoundsPanic(r))
+		}
+		return goValueOf(rv.Slice(int(l.i), int(h.i))), true
+	case reflect.String:
+		if three {
+			f.trap("cannot slice a string with 3 indices")
+		}
+		n := int64(rv.Len())
+		l, h := v.bounds(f, lo, hi, n)
+		if r := sliceBoundsReason(l, h, boundOperand{}, n, false, "length"); r != "" {
+			panic(runtime.SliceBoundsPanic(r))
+		}
+		return goValueOf(rv.Slice(int(l.i), int(h.i))), true
+	}
+	return nil, false
+}
+
+// fieldTypedefs returns declared field types for a struct typedef (nil
+// when the hook is unset or resolution fails — coerce passes through).
+func (v *VM) fieldTypedefs(td *runtime.TypeDef) []*runtime.TypeDef {
+	if td == nil || v.H.FieldTypes == nil {
+		return nil
+	}
+	fts, err := v.H.FieldTypes(td)
+	if err != nil {
+		return nil
+	}
+	return fts
+}
+
+// promoted is the promoted (embedded) member that won the breadth-first
+// search in promotedMember — exactly one shape is set:
+//
+//   - st+idx: a field — st.Fields[idx] is the value
+//   - m+recv+mst+midx: a method — recv is the embedded field value it
+//     binds to for a value receiver; a pointer receiver binds a
+//     FieldRef over mst's midx field instead, so `*p = x` writes reach
+//     the stored field rather than a copy of it
+//   - recv only (m == nil): an interface-typed embedded field — the
+//     member dispatches dynamically on the stored value
+//   - host: a value reached through a host-embedded field — the member
+//     still has to be selected on it (host fields and methods share the
+//     namespace there)
+type promoted struct {
+	st   *runtime.Struct
+	idx  int
+	m    *runtime.Function
+	recv runtime.Value
+	mst  *runtime.Struct
+	midx int
+	host runtime.Value
+}
+
+// methCand is a promoted method found at one BFS level: the declared
+// function plus the embedded field slot it binds to.
+type methCand struct {
+	m   *runtime.Function
+	st  *runtime.Struct
+	idx int
+}
+
+// promotedMember locates `name` among s's promoted (embedded) members —
+// fields, methods, interface-stored values and host members — using the
+// same breadth-first layering as inspect.MethodSetOf: the shallowest
+// embed depth wins and multiple hits at the same level trap as
+// ambiguous (Go rejects them at compile time). Host-typed embeds
+// (sync.Mutex, sync.Pool, ...) join the search as leaves — their
+// promoted surface is the boxed value's exported fields and methods, so
+// a name promoted through a host embed and a script embed at the same
+// depth is ambiguous too. Members that exist only through a nil
+// embedded pointer are recorded as they cross the nil link: a nil path
+// strictly shallower than every real hit still wins — Go selects it,
+// then a field read or value-receiver call panics on the implicit
+// dereference while a pointer-receiver method binds the nil — and a
+// same-depth tie is ambiguous like Go's compile-time rejection.
+// allowPtr controls whether *T embeds are traversed — composite-literal
+// keys forbid pointer indirection (Go reports "invalid implicit pointer
+// indirection"), while selector access allows it.
+func (v *VM) promotedMember(f *frame, s *runtime.Struct, name string, allowPtr bool) (*promoted, bool) {
+	if v.H.ResolveType == nil || v.H.IfaceReqs == nil {
+		return nil, false
+	}
+	var hostHits []hostHit
+	level := []*runtime.Struct{s}
+	// nilDepth/nilPaths track resolutions that exist only through a nil
+	// embedded pointer: Go selects members statically, so such a member
+	// is not "undefined" — reaching it binds a nil receiver or panics
+	// on the implicit dereference (and a same-depth tie with a real
+	// path is ambiguous, like Go's compile-time rejection). Members
+	// behind the nil are never bindable — reaching them dereferences
+	// the nil pointer, so a winning nil path always panics.
+	nilDepth, nilPaths := 0, 0
+	for depth := 0; len(level) > 0 && depth < 32; depth++ {
+		var hits []slot
+		var methCands []methCand
+		var ifaceCands []runtime.Value
+		var next []*runtime.Struct
+		for _, st := range level {
+			if st == nil || st.Def == nil {
+				continue
+			}
+			for k, spec := range st.Def.EmbedSpecs {
+				var ptr bool
+				texpr := spec
+				if sx, ok := spec.(*ast.StarExpr); ok {
+					ptr = true
+					texpr = sx.X
+				}
+				if ptr && !allowPtr {
+					continue
+				}
+				if k >= len(st.Def.EmbedIdx) {
+					continue
+				}
+				idx := st.Def.EmbedIdx[k]
+				embTd, err := v.H.ResolveType(st.Def, texpr)
+				if err != nil || embTd == nil {
+					continue
+				}
+				raw := embTd
+				embTd = v.peelNamed(embTd)
+				if embTd == nil {
+					continue
+				}
+				if embTd.Kind == runtime.KindInterface {
+					// an interface embed promises its method set
+					// through the stored value — it competes at the
+					// same depth as fields and declared methods, and
+					// dispatches dynamically on the concrete value.
+					if idx < len(st.Fields) {
+						if reqs, err := v.H.IfaceReqs(embTd); err == nil && reqs[name] {
+							ifaceCands = append(ifaceCands, st.Fields[idx])
+						}
+					}
+					continue
+				}
+				if embTd.HostNew != nil {
+					// a host-typed embed is a leaf: name is promoted
+					// when the boxed type exposes it — checked at type
+					// level so a nil stored pointer still resolves (and
+					// then panics on the dereference, via nilPaths).
+					// inner adds the host type's own embedding depth:
+					// a member promoted inside it (parse.Tree.Root)
+					// lands below a shallower script member. A defined
+					// type (type MyMutex sync.Mutex) carries the fields
+					// but not the methods — its method set starts empty.
+					if idx >= len(st.Fields) {
+						continue
+					}
+					inner := hostMemberInner(embTd.HostNew(), name, embTd == raw)
+					if inner < 0 {
+						continue
+					}
+					abs := depth + 1 + inner
+					recv := st.Fields[idx]
+					if ptr && hostNilEmbed(recv) && !v.hostNilCallable(embTd.HostNew(), name) {
+						// reachable only through a nil embedded
+						// pointer — same accounting as a nil
+						// script-embed path.
+						if nilDepth == 0 || abs < nilDepth {
+							nilDepth, nilPaths = abs, 1
+						} else if abs == nilDepth {
+							nilPaths++
+						}
+						continue
+					}
+					hostHits = append(hostHits, hostHit{abs, runtime.Unwrap(recv)})
+					continue
+				}
+				// a promoted method competes at the same depth as a
+				// field — the receiver is the embedded field value
+				// itself. Only the embed's own methods count — a
+				// defined type does not inherit the underlying type's
+				// methods — except through an alias, which IS its
+				// target type (`type A = T` promotes T's methods).
+				mtd := raw
+				if raw.Kind == runtime.KindAlias {
+					mtd = embTd
+				}
+				if m, ok := mtd.Methods[name]; ok && idx < len(st.Fields) {
+					methCands = append(methCands, methCand{m, st, idx})
+				}
+				if len(embTd.Fields) == 0 {
+					// non-struct embeds (interfaces, basics) promote
+					// nothing else.
+					continue
+				}
+				j := -1
+				for fi, fn := range embTd.Fields {
+					if fn == name {
+						j = fi
+						break
+					}
+				}
+				if j < 0 {
+					inner, _ := v.embedValue(f, st, idx, embTd, ptr)
+					if inner != nil {
+						next = append(next, inner)
+						continue
+					}
+					if ptr {
+						// a nil embedded pointer cannot be searched
+						// by value — ask the type whether the member
+						// exists deeper, and at which depth.
+						if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+							abs := depth + 1 + d
+							if nilDepth == 0 || abs < nilDepth {
+								nilDepth, nilPaths = abs, c
+							} else if abs == nilDepth {
+								nilPaths += c
+							}
+						}
+						if d, c := v.embedTypeMethodDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+							abs := depth + 1 + d
+							if nilDepth == 0 || abs < nilDepth {
+								nilDepth, nilPaths = abs, c
+							} else if abs == nilDepth {
+								nilPaths += c
+							}
+						}
+					}
+					continue
+				}
+				inner, ok := v.embedValue(f, st, idx, embTd, ptr)
+				if !ok {
+					// found only through a nil embedded pointer — Go
+					// panics on the implicit dereference.
+					panic(runtime.NilDerefPanic())
+				}
+				hits = append(hits, slot{inner, j})
+			}
+		}
+		// host members due at this level compete now; deeper ones
+		// stay pending for a later level.
+		var thisHost []runtime.Value
+		keep := hostHits[:0]
+		for _, hh := range hostHits {
+			if hh.abs <= depth+1 {
+				thisHost = append(thisHost, hh.recv)
+			} else {
+				keep = append(keep, hh)
+			}
+		}
+		hostHits = keep
+		total := len(hits) + len(thisHost) + len(methCands) + len(ifaceCands)
+		if total > 0 {
+			if nilDepth > 0 && nilDepth <= depth+1 {
+				// a nil path at this level makes the selector
+				// ambiguous; a strictly shallower nil member wins
+				// outright — Go selects it, then the nil binds or
+				// panics.
+				if nilDepth == depth+1 || nilPaths > 1 {
+					f.trap("ambiguous selector %s", name)
+				}
+				panic(runtime.NilDerefPanic())
+			}
+			if total > 1 {
+				f.trap("ambiguous selector %s", name)
+			}
+			switch {
+			case len(thisHost) == 1:
+				return &promoted{host: thisHost[0]}, true
+			case len(methCands) == 1:
+				mc := methCands[0]
+				return &promoted{m: mc.m, recv: mc.st.Fields[mc.idx], mst: mc.st, midx: mc.idx}, true
+			case len(ifaceCands) == 1:
+				return &promoted{recv: ifaceCands[0]}, true
+			default:
+				return &promoted{st: hits[0].st, idx: hits[0].idx}, true
+			}
+		}
+		if nilDepth > 0 && nilDepth <= depth+1 {
+			if nilPaths > 1 {
+				f.trap("ambiguous selector %s", name)
+			}
+			panic(runtime.NilDerefPanic())
+		}
+		level = next
+	}
+	if len(hostHits) > 0 {
+		// pending host members deeper than any walkable level —
+		// the shallowest of them wins now.
+		minAbs := hostHits[0].abs
+		for _, hh := range hostHits[1:] {
+			if hh.abs < minAbs {
+				minAbs = hh.abs
+			}
+		}
+		if nilDepth > 0 && nilDepth <= minAbs {
+			if nilDepth == minAbs || nilPaths > 1 {
+				f.trap("ambiguous selector %s", name)
+			}
+			panic(runtime.NilDerefPanic())
+		}
+		var recv runtime.Value
+		n := 0
+		for _, hh := range hostHits {
+			if hh.abs == minAbs {
+				n++
+				recv = hh.recv
+			}
+		}
+		if n > 1 {
+			f.trap("ambiguous selector %s", name)
+		}
+		return &promoted{host: recv}, true
+	}
+	if nilDepth > 0 {
+		if nilPaths > 1 {
+			f.trap("ambiguous selector %s", name)
+		}
+		panic(runtime.NilDerefPanic())
+	}
+	return nil, false
+}
+
+type slot struct {
+	st  *runtime.Struct
+	idx int
+}
+
+// hostHit is a host member's pending resolution: the absolute depth at
+// which it would win — which includes the embedding inside the host
+// type itself (template.Template → *parse.Tree → Root), so a hit can
+// land below the level that discovered it — and the embedded value to
+// select on.
+type hostHit struct {
+	abs  int
+	recv runtime.Value
+}
+
+// hostMemberInner reports how deeply name is promoted inside the boxed
+// type — 0 for a direct exported field or a method of the slot type,
+// higher when it resolves through the host's own embeds
+// (*template.Template → *parse.Tree → Root is inner 1), -1 when absent.
+// Answered at type level so a zero whose anonymous pointer fields are
+// nil still resolves; only actual member access dereferences the stored
+// value. methods is false for a defined type over a host type: it
+// carries fields, not the method set.
+func hostMemberInner(zero any, name string, methods bool) int {
+	t := reflect.TypeOf(zero)
+	if t == nil {
+		return -1
+	}
+	st := t
+	for st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if st.Kind() == reflect.Struct {
+		if sf, ok := st.FieldByName(name); ok && sf.PkgPath == "" {
+			return len(sf.Index) - 1 // 0 = a direct field
+		}
+	}
+	if methods {
+		if _, ok := t.MethodByName(name); ok {
+			return hostMethodInner(t, name)
+		}
+	}
+	return -1
+}
+
+// hostMethodInner counts the embed levels inside the host type that
+// name's method is promoted through — 0 when it is declared on t's own
+// method set. t is the slot's declared type: a *T slot contributes the
+// methods of *T, including pointer receivers of embedded values.
+func hostMethodInner(t reflect.Type, name string) int {
+	return methodInner(t, name, map[reflect.Type]bool{})
+}
+
+// methodInner: name is in t's method set — how deeply inside t it is
+// promoted. Each anonymous field contributes its own type's method set
+// — *E when the chain went through a pointer, an interface as itself —
+// and the shallowest path wins. reflect cannot tell a method declared
+// on t from one promoted through an embed, so a name found in a
+// child's set counts via that child; contributed types are visited
+// once per path so a recursively-embedded host type (struct{ *T })
+// terminates instead of overflowing the stack.
+func methodInner(t reflect.Type, name string, seen map[reflect.Type]bool) int {
+	st := t
+	for st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if st.Kind() != reflect.Struct {
+		return 0 // non-struct types declare their methods
+	}
+	if seen[t] {
+		return -1
+	}
+	seen[t] = true
+	defer delete(seen, t)
+	underPtr := t.Kind() == reflect.Pointer
+	best := -1
+	for i := 0; i < st.NumField(); i++ {
+		sf := st.Field(i)
+		if !sf.Anonymous {
+			continue
+		}
+		ct := sf.Type
+		if ct.Kind() != reflect.Pointer && ct.Kind() != reflect.Interface && underPtr {
+			// a value embed contributes *E's method set when the
+			// embedding chain went through a pointer.
+			ct = reflect.PointerTo(ct)
+		}
+		if _, ok := ct.MethodByName(name); !ok {
+			continue
+		}
+		if d := methodInner(ct, name, seen); d >= 0 && (best < 0 || d+1 < best) {
+			best = d + 1
+		}
+	}
+	if best >= 0 {
+		return best
+	}
+	return 0
+}
+
+// hostNilCallable reports whether name is a pointer-receiver method on
+// the boxed type — the only member callable through a nil stored
+// pointer: Go passes the nil receiver straight to the method, while
+// fields and value-receiver methods must dereference it first.
+func (v *VM) hostNilCallable(zero any, name string) bool {
+	pt := reflect.TypeOf(zero)
+	if pt.Kind() != reflect.Pointer {
+		return false
+	}
+	if _, ok := pt.MethodByName(name); !ok {
+		return false // a field — reads and writes dereference
+	}
+	if _, ok := pt.Elem().MethodByName(name); ok {
+		return false // value receiver — evaluating it dereferences
+	}
+	return true
+}
+
+// hostNilEmbed reports whether an embedded host-typed field's stored
+// value is nil — a TypedNil/IfaceNil slot or a nil pointer box — so a
+// member resolved through it panics on the implicit dereference.
+func hostNilEmbed(v runtime.Value) bool {
+	v = runtime.Unwrap(v)
+	if dv, ok := runtime.Deref(v); ok {
+		v = dv
+	}
+	switch x := v.(type) {
+	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
+		return true
+	case *runtime.GoValue:
+		rv := reflect.ValueOf(x.V)
+		switch rv.Kind() {
+		case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+			return rv.IsNil()
+		}
+	}
+	return false
+}
+
+// embedTypeDepth answers for the type what a value search cannot when an
+// embedded pointer is nil: whether `name` is promoted through td's own
+// embedded fields, the shallowest relative depth at which it resolves
+// (1 = a direct field of a type embedded in td), and how many distinct
+// paths reach it at that depth. Depth 0 means unreachable.
+func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+	if td == nil || seen[td] || v.H.ResolveType == nil {
+		return 0, 0
+	}
+	seen[td] = true
+	defer delete(seen, td)
+	best, cnt := 0, 0
+	for k, spec := range td.EmbedSpecs {
+		texpr := spec
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			texpr = sx.X
+		}
+		if k >= len(td.EmbedIdx) {
+			continue
+		}
+		et, err := v.H.ResolveType(td, texpr)
+		if err != nil || et == nil {
+			continue
+		}
+		raw := et
+		et = v.peelNamed(et)
+		if et == nil {
+			continue
+		}
+		d, c := 0, 1
+		if et.HostNew != nil {
+			// a host-typed leaf resolves name on the boxed type's
+			// exported field/method surface — plus the host's own
+			// internal embed depth.
+			if inner := hostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
+				d = 1 + inner
+			}
+		} else {
+			for _, fn := range et.Fields {
+				if fn == name {
+					d = 1
+					break
+				}
+			}
+			if d == 0 {
+				if sd, sc := v.embedTypeDepth(et, name, seen); sd > 0 {
+					d, c = 1+sd, sc
+				}
+			}
+		}
+		if d == 0 {
+			continue
+		}
+		if best == 0 || d < best {
+			best, cnt = d, c
+		} else if d == best {
+			cnt += c
+		}
+	}
+	return best, cnt
+}
+
+// embedTypeMethodDepth is embedTypeDepth for methods: whether `name`
+// promotes through td's own embedded types, the shallowest relative
+// depth at which it resolves (1 = a method declared on a type embedded
+// in td), and how many distinct paths reach it at that depth. Any
+// member found this way lives inside the nil pointer that triggered the
+// type-level walk — reaching its receiver dereferences the nil, so the
+// hit is never bindable: it counts for depth and ambiguity and panics
+// on use. Depth 0 means unreachable.
+func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+	if td == nil || seen[td] || v.H.ResolveType == nil || v.H.IfaceReqs == nil {
+		return 0, 0
+	}
+	seen[td] = true
+	defer delete(seen, td)
+	best, cnt := 0, 0
+	for k, spec := range td.EmbedSpecs {
+		texpr := spec
+		if sx, ok := spec.(*ast.StarExpr); ok {
+			texpr = sx.X
+		}
+		if k >= len(td.EmbedIdx) {
+			continue
+		}
+		et, err := v.H.ResolveType(td, texpr)
+		if err != nil || et == nil {
+			continue
+		}
+		raw := et
+		et = v.peelNamed(et)
+		if et == nil {
+			continue
+		}
+		d, c := 0, 1
+		switch {
+		case et.Kind == runtime.KindInterface:
+			// an embedded interface promises name through the
+			// stored value — it exists at this depth.
+			if reqs, err := v.H.IfaceReqs(et); err == nil && reqs[name] {
+				d = 1
+			}
+		case et.HostNew != nil:
+			if inner := hostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
+				d = 1 + inner
+			}
+		default:
+			// only the embed's own methods — a defined type does not
+			// inherit the underlying type's methods — except through
+			// an alias, which IS its target type.
+			mtd := raw
+			if raw.Kind == runtime.KindAlias {
+				mtd = et
+			}
+			if _, ok := mtd.Methods[name]; ok {
+				d = 1
+			}
+		}
+		if d == 0 {
+			if sd, sc := v.embedTypeMethodDepth(et, name, seen); sd > 0 {
+				d, c = 1+sd, sc
+			}
+		}
+		if d == 0 {
+			continue
+		}
+		if best == 0 || d < best {
+			best, cnt = d, c
+		} else if d == best {
+			cnt += c
+		}
+	}
+	return best, cnt
+}
+
+// embedValue returns the struct value stored in an embedded field,
+// dereferencing pointer embeds (nil reports false so the caller decides
+// between skipping a deeper search and panicking on a hit) and
+// materializing a NIL-initialized non-pointer embed in place so field
+// writes through it land.
+func (v *VM) embedValue(f *frame, st *runtime.Struct, i int, td *runtime.TypeDef, ptr bool) (*runtime.Struct, bool) {
+	if i < 0 || i >= len(st.Fields) {
+		return nil, false
+	}
+	val := st.Fields[i]
+	if ptr {
+		dv, ok := runtime.Deref(val)
+		if !ok {
+			return nil, false
+		}
+		val = dv
+	}
+	if n, ok := val.(*runtime.Named); ok {
+		val = n.V
+	}
+	if s, ok := val.(*runtime.Struct); ok {
+		return s, true
+	}
+	if _, isNil := val.(runtime.Nil); isNil || val == nil {
+		z := v.zeroValue(f, td)
+		st.Fields[i] = z
+		if n, ok := z.(*runtime.Named); ok {
+			z = n.V
+		}
+		if s, ok := z.(*runtime.Struct); ok {
+			return s, true
+		}
+	}
+	return nil, false
+}
+
+// elemTypedef resolves the element type of a container typedef (nil when
+// unresolvable — callers then pass values through or reject).
+func (v *VM) elemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || v.H.ElemOf == nil {
+		return nil
+	}
+	et, err := v.H.ElemOf(v.peelNamed(td))
+	if err == nil && et != nil {
+		return et
+	}
+	// the element may be named by a function-local `type` decl — the
+	// package index cannot see those, but the typedef sits in this
+	// frame's locals like any other local constant.
+	if f != nil {
+		return v.localElemTypedef(f, td)
+	}
+	return nil
+}
+
+// localElemTypedef resolves a container's element typedef when its AST
+// names a function-local type: walk the underlying type expression to the
+// element name, then find that typedef among the frame's locals/upvals.
+func (v *VM) localElemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
+	u := v.peelNamed(td)
+	x := u.Anon
+	if x == nil && u.Spec != nil {
+		x = u.Spec.Type
+	}
+	for x != nil {
+		switch t := x.(type) {
+		case *ast.ParenExpr:
+			x = t.X
+		case *ast.Ellipsis:
+			x = t.Elt
+		case *ast.StarExpr:
+			x = t.X
+		case *ast.ArrayType:
+			x = t.Elt
+		case *ast.MapType:
+			x = t.Value
+		case *ast.ChanType:
+			x = t.Value
+		default:
+			if id, ok := x.(*ast.Ident); ok {
+				return v.localTypedefOf(f, id.Name)
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// localTypedefOf finds a typedef value bound as a local constant — how a
+// `type` decl inside a function body stores its typedef.
+func (v *VM) localTypedefOf(f *frame, name string) *runtime.TypeDef {
+	for _, cells := range [2][]*runtime.Cell{f.locals, f.upvals} {
+		for _, c := range cells {
+			if c == nil {
+				continue
+			}
+			if td, ok := c.Elem.(*runtime.TypeDef); ok && td.Name == name {
+				return td
+			}
+		}
+	}
+	return nil
+}
+
+// mapKeyTypedef returns the declared key typedef of a map typedef —
+// `map[K]V` yields K — nil when the key type cannot be resolved (the
+// operand then passes through unchecked, like a missing element type).
+func (v *VM) mapKeyTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
+	if td == nil || v.H.ResolveType == nil {
+		return nil
+	}
+	u := v.peelNamed(td)
+	if u == nil || u.Kind != runtime.KindMap {
+		return nil
+	}
+	x := u.Anon
+	if x == nil && u.Spec != nil {
+		x = u.Spec.Type
+	}
+	mt, ok := x.(*ast.MapType)
+	if !ok {
+		return nil
+	}
+	if kt, err := v.resolveOperandType(u, mt.Key); err == nil && kt != nil {
+		return kt
+	}
+	// a key named by a function-local `type` decl — the package index
+	// cannot see those, but the typedef sits in this frame's locals.
+	if f != nil {
+		if id, ok := mt.Key.(*ast.Ident); ok {
+			return v.localTypedefOf(f, id.Name)
+		}
+	}
+	return nil
+}
+
+// mapKeyOperand coerces a map index operand to the map's declared key
+// type. `m[k]` type-checks k against K statically — `B{1}` against
+// map[A]int is gc's compile reject even though the structs share a
+// shape — so the check runs before the map's value/nil paths see the
+// operand. The caller passes the un-materialized operand: a named key
+// type's tag is what the check needs.
+func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) runtime.Value {
+	if kt := v.mapKeyTypedef(f, td); kt != nil {
+		k := v.coerce(f, idx, kt)
+		if kt = v.peelAlias(kt); kt.Kind == runtime.KindInterface {
+			// an interface key keeps its dynamic type: the map keys
+			// it by (type, value) (runtime.IfaceKeyOf) and ranging
+			// yields it typed.
+			return k
+		}
+		u := runtime.Unwrap(k)
+		if n, ok := k.(*runtime.Named); ok && basicKeyPayload(u) {
+			// a named basic key (`map[K]V`, map[time.Month]V) keeps its
+			// tag: the map hashes the payload (runtime.CanonicalKey
+			// unwraps), while range, fmt and every reader of the
+			// stored key see a K, not the bare int.
+			return n
+		}
+		// a boxed host named basic under its twin's key type keys like
+		// the twin's values: m[as.Tok] finds m[token.DEFINE] — and is
+		// stored as one, tagged like the twin's constants
+		// (m[t.Month()] ranges as a time.Month).
+		if !isGoValue(u) {
+			return u
+		}
+		p, rt, ok := runtime.HostNamedScalar(u)
+		if !ok || !runtime.HostTwinOf(rt, kt) {
+			return u
+		}
+		if kt.HostNew != nil {
+			// a bound host enum (reflect.Kind) holds GoValue boxes,
+			// not tagged payloads: keep the bare payload key.
+			return p
+		}
+		return runtime.Tag(kt, p)
+	}
+	return runtime.Unwrap(v.materialize(f, idx))
+}
+
+// basicKeyPayload reports whether x, a [runtime.Named] key's payload, is a
+// basic scalar — a script int64/string/... or a bound host scalar such as
+// a raw time.Month — rather than a composite or a host box.
+func basicKeyPayload(x runtime.Value) bool {
+	switch x.(type) {
+	case int64, string, float64, bool:
+		return true
+	case nil, *runtime.GoValue, *runtime.UConst:
+		return false
+	}
+	k := reflect.TypeOf(x).Kind()
+	return k <= reflect.Complex128 || k == reflect.String
+}
+
+// ifaceKeyed reports whether the map typedef td declares an interface
+// key type — a map made of it keys by (dynamic type, value)
+// ([runtime.Map.IfaceKey]).
+func (v *VM) ifaceKeyed(f *frame, td *runtime.TypeDef) bool {
+	kt := v.mapKeyTypedef(f, td)
+	if kt == nil {
+		return false
+	}
+	kt = v.peelAlias(kt)
+	return kt != nil && kt.Kind == runtime.KindInterface
+}
+
+// NewMap implements [runtime.VMCaller].
+func (v *VM) NewMap(td *runtime.TypeDef) *runtime.Map {
+	return runtime.NewMap(td, v.ifaceKeyed(v.topFrame(), td))
+}
+
+// checkMapKey runs the declared-key-type check and drops the operand —
+// a nil-map read or write still rejects a mismatched key statically,
+// before the nil-map panic or zero value fires.
+func (v *VM) checkMapKey(f *frame, td *runtime.TypeDef, idx runtime.Value) {
+	v.mapKeyOperand(f, td, idx)
+}
+
+// MapKeyOperand implements [runtime.VMCaller].
+func (v *VM) MapKeyOperand(mapTd *runtime.TypeDef, key runtime.Value) runtime.Value {
+	// the caller's frame resolves function-local key typedefs, so the
+	// builtin sees the same key normalization an index expression produces.
+	return v.mapKeyOperand(v.topFrame(), mapTd, key)
+}
+
+// elemRead coerces a container element read to its declared element
+// typedef — b[i] on []byte is uint8-typed, not a bare int64, so %T and
+// cross-type assignment see the element's real type.
+func (v *VM) elemRead(f *frame, cont *runtime.TypeDef, x runtime.Value) runtime.Value {
+	if cont == nil {
+		return x
+	}
+	if _, ok := x.(*runtime.Named); ok {
+		return x // stored value already carries its tag
+	}
+	et := v.elemTypedef(f, cont)
+	if et == nil {
+		return x
+	}
+	return v.coerce(f, x, et)
+}
+
+// mapZero is the value a map read produces for a missing key or a nil
+// map: the zero of the map's element typedef when the type is known,
+// NIL otherwise.
+func (v *VM) mapZero(f *frame, td *runtime.TypeDef) runtime.Value {
+	if td == nil || v.H.ElemOf == nil {
+		return runtime.NIL
+	}
+	// `type M2 M` maps: ElemOf on the declared name resolves to the
+	// underlying typedef, so peel first to reach the element type.
+	et, err := v.H.ElemOf(v.peelNamed(td))
+	if err != nil || et == nil {
+		// a function-local element type falls back to frame locals.
+		et = v.localElemTypedef(f, td)
+	}
+	if et == nil {
+		return runtime.NIL
+	}
+	return v.zeroValue(f, et)
+}
+
+// indexOK implements the comma-ok form `v, ok := m[k]`: for maps ok is
+// whether the key is present; other indexables always report ok.
+func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
+	if dv, ok := runtime.Deref(base); ok {
+		return v.indexOK(f, dv, idx)
+	}
+	rawIdx := idx // the declared key check needs the operand's named tag
+	// an untyped-const key (`const k = "x"; v, ok := m[k]`) hashes as
+	// its materialized value, like index's plain read
+	idx = runtime.Unwrap(v.materialize(f, idx))
+	if n, ok := base.(*runtime.Named); ok {
+		return v.indexOK(f, n.V, rawIdx)
+	}
+	if in, ok := base.(*runtime.IfaceNil); ok {
+		return v.indexOK(f, &runtime.TypedNil{Typ: in.Typ}, rawIdx)
+	}
+	if tn, ok := base.(*runtime.TypedNil); ok {
+		if tn.Typ.Kind == runtime.KindMap {
+			v.checkMapKey(f, tn.Typ, rawIdx)
+			return &runtime.Tuple{Elems: []runtime.Value{v.mapZero(f, tn.Typ), false}}
+		}
+		return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, idx), true}}
+	}
+	if m, ok := base.(*runtime.Map); ok {
+		val, found := m.Get(v.mapKeyOperand(f, m.Typ, rawIdx))
+		if !found {
+			val = v.mapZero(f, m.Typ)
+		}
+		return &runtime.Tuple{Elems: []runtime.Value{val, found}}
+	}
+	if gv, ok := base.(*runtime.GoValue); ok {
+		if val, found, ok := v.hostIndex(f, gv, rawIdx); ok {
+			return &runtime.Tuple{Elems: []runtime.Value{val, found}}
+		}
+	}
+	return &runtime.Tuple{Elems: []runtime.Value{v.index(f, base, rawIdx), true}}
+}
+
+func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
+	if dv, ok := runtime.Deref(base); ok {
+		v.setIndex(f, dv, idx, val)
+		return
+	}
+	if n, ok := base.(*runtime.Named); ok {
+		v.setIndex(f, n.V, idx, val)
+		return
+	}
+	rawIdx := idx // the declared key check needs the operand's named tag
+	idx = runtime.Unwrap(v.materialize(f, idx))
+	switch b := base.(type) {
+	case *runtime.IfaceNil:
+		v.setIndex(f, &runtime.TypedNil{Typ: b.Typ}, rawIdx, val)
+	case *runtime.TypedNil:
+		switch b.Typ.Kind {
+		case runtime.KindMap:
+			// a mismatched key rejects statically — before the nil-map
+			// assign panic fires like gc's nil-map write would.
+			v.checkMapKey(f, b.Typ, rawIdx)
+			panic(runtime.NilMapAssignPanic())
+		case runtime.KindSlice:
+			panic(runtime.BoundsPanic(runtime.Unwrap(idx), 0))
+		case runtime.KindPointer:
+			panic(runtime.NilDerefPanic())
+		default:
+			f.trap("index assign on nil %s", tdName(b.Typ))
+		}
+	case *runtime.Slice:
+		i, ok := indexSmallInt(idx)
+		if !ok {
+			if u, isU := uintOperand(idx); isU {
+				panic(runtime.BoundsPanic(u, int(b.Len())))
+			}
+			f.trap("slice index is %T", idx)
+		}
+		if i < 0 && v.boundUnsigned(rawIdx) {
+			panic(runtime.BoundsPanic(uint64(i), int(b.Len())))
+		}
+		// the slice's declared element type constrains the write.
+		if et := v.elemTypedef(f, b.Typ); et != nil {
+			val = v.coerce(f, val, et)
+		}
+		if b.Virtual() {
+			// a virtual zero-size element can't be observed — the type
+			// has a single value — but the bounds check still applies.
+			if l := b.Len(); i < 0 || i >= l {
+				panic(runtime.BoundsPanic(i, int(l)))
+			}
+			return
+		}
+		b.Elems[i] = val
+	case *runtime.Map:
+		idx = v.mapKeyOperand(f, b.Typ, rawIdx)
+		if idx != nil && !reflect.TypeOf(idx).Comparable() {
+			f.trap("map key %T is not comparable", idx)
+		}
+		// the map's declared element type constrains the write.
+		if et := v.elemTypedef(f, b.Typ); et != nil {
+			val = v.coerce(f, val, et)
+		}
+		b.Insert(idx, val)
+	case *runtime.IndexRef:
+		// a nested index lvalue like m[k][i] = v over a map of slices
+		// evaluates the outer index against the stored slice — read the
+		// ref's element (v.index, not Get: it also yields the map zero
+		// for a missing key) and assign through it, sharing the stored
+		// backing like Go. refThrough also resolves a base that itself
+		// crosses a map element (m[k].f[i][j] over a slice field) — its
+		// value is usable for reads even where it reports unwritable.
+		bx, _ := v.refThrough(f, b.Base)
+		if bx == nil {
+			bx = b.Base
+		}
+		if gv, ok := hostBoxOf(bx); ok {
+			// q["tag"][0] = v on a boxed host map or slice: write the
+			// host element's own backing, not the script copy
+			// v.index would hand back. A base reached through a
+			// pointer ((*p)["tag"][0] = v) peels to its box first.
+			if ev, ok := v.hostElemRef(f, gv, b.Key); ok {
+				v.setIndex(f, ev, rawIdx, val)
+				return
+			}
+		}
+		x := v.index(f, bx, b.Key)
+		if m := b.Map(); m != nil && !runtime.SharedElem(x) {
+			// Go rejects interior writes on a non-reference map
+			// element at compile time (m[k] is a copy) — trap
+			// instead of mutating the stored value.
+			f.trap("index assign on %T", base)
+		}
+		v.setIndex(f, x, rawIdx, val)
+	case *runtime.FieldRef:
+		// interior write through a field select crossing a map element
+		// (m[k].f[i] = v on a struct element): the field read lands on
+		// the element copy, so Go allows it only when the field itself
+		// is reference-shaped or reachable through shared storage
+		// (m[k].p.a[i] writes the pointee's array) — an array or
+		// struct field stays a compile rejection here.
+		x, shared := v.refThrough(f, b)
+		if x == nil || !shared {
+			f.trap("index assign on %T", base)
+		}
+		v.setIndex(f, x, rawIdx, val)
+	case *runtime.GoValue:
+		// a boxed host named map or slice (w.Header(), url.Values,
+		// net.IP) keeps its box for method dispatch; write the host
+		// value itself so the host sees the change.
+		if !v.hostSetIndex(f, b, rawIdx, val) {
+			f.trap("index assign on %T", base)
+		}
+	default:
+		f.trap("index assign on %T", base)
+	}
+}
+
+// receiverOf resolves the receiver operand of an unresolvable
+// receiver-position ref — an IndexRef emitted for `s[i].M()` whose
+// element cannot be reached by storage. A nested base the ref cannot
+// walk resolves through refThrough (m[k].f[i] reads the stored copy's
+// slice field), then: a map element reads as the Go copy it is (a
+// missing key yields the element zero through v.index), while a
+// resolvable container re-bases the ref so the element stays
+// addressable and a pointer receiver writes shared storage. An element
+// that still cannot resolve falls back to the value read, so the
+// operand's own bounds or nil panic keeps its Go shape.
+func (v *VM) receiverOf(f *frame, base runtime.Value) (dv, recv runtime.Value, ok bool) {
+	if rb, isIR := base.(*runtime.IndexRef); isIR {
+		bx, _ := v.refThrough(f, rb.Base)
+		if bx == nil {
+			bx = rb.Base
+		}
+		if _, isMap := runtime.Unwrap(bx).(*runtime.Map); !isMap {
+			nr := &runtime.IndexRef{Base: bx, Key: rb.Key}
+			if e, ok := nr.Get(); ok {
+				return e, nr, true
+			}
+		}
+		dv = v.index(f, bx, rb.Key)
+		return dv, dv, true
+	}
+	// a FieldRef or DerefRef that cannot materialize (its chain crosses
+	// a map element or a host field) still resolves to a value — the
+	// member binds the re-based ref when the chain stays writable, the
+	// resolved value otherwise.
+	if _, isRef := base.(*runtime.FieldRef); isRef {
+		x, shared := v.refThrough(f, base)
+		if x == nil {
+			return nil, nil, false
+		}
+		if shared {
+			return x, base, true
+		}
+		return x, x, true
+	}
+	if _, isDR := base.(*runtime.DerefRef); isDR {
+		dv, ok := runtime.Deref(base)
+		return dv, base, ok
+	}
+	return nil, nil, false
+}
+
+// refThrough resolves an lvalue ref chain to its current value where
+// runtime.Deref fails because the chain crosses a map element —
+// IndexRef.Get and FieldRef.Get stay gated so `m[k][i] = v` and
+// `m[k].f = v` keep their traps. The bool reports whether an interior
+// write into the resolved value's storage is legal Go: a map element
+// reads as a copy (writable only when the element is reference-shaped
+// itself), while a hop into shared storage keeps or restores
+// writability — m[k].g.s[i] through a struct field g and a slice field
+// s is legal, m[k].g.x is not. A nil value means the chain cannot
+// resolve at all.
+func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
+	switch b := base.(type) {
+	case *runtime.IndexRef:
+		if x, ok := b.Get(); ok {
+			return x, true // a resolved element is storage
+		}
+		if m := b.Map(); m != nil {
+			// Get is gated for copies; the raw element read lands on
+			// the map element itself (writable only when it is
+			// reference-shaped) or the map zero for a missing key.
+			x, found := m.Get(runtime.Unwrap(b.Key))
+			if !found {
+				x = v.index(f, b.Base, b.Key)
+			}
+			return x, runtime.SharedElem(x)
+		}
+		bv, shared := v.refThrough(f, b.Base)
+		if bv == nil {
+			return nil, false
+		}
+		switch cb := runtime.Unwrap(bv).(type) {
+		case *runtime.Map:
+			x, found := cb.Get(runtime.Unwrap(b.Key))
+			if !found {
+				x = v.index(f, bv, b.Key)
+			}
+			return x, runtime.SharedElem(x)
+		case *runtime.Slice:
+			i, ok := runtime.Unwrap(b.Key).(int64)
+			if !ok {
+				return nil, false
+			}
+			// raw element read — v.index would copy a struct element
+			// and silently lose the write. The element's own shape
+			// counts too: m[k].a[i].x writes through when a is
+			// [N]*S (a pointer element) even though a itself is a copy.
+			x := cb.Elems[i]
+			return x, shared || runtime.SharedElem(x)
+		}
+		x := v.index(f, bv, b.Key)
+		return x, shared
+	case *runtime.FieldRef:
+		bv, shared := v.refThrough(f, b.Base)
+		if bv == nil {
+			return nil, false
+		}
+		x := v.selectMember(f, bv, b.Name)
+		return x, runtime.SharedElem(x) || shared
+	case *runtime.DerefRef:
+		return v.refThrough(f, b.Ptr)
+	default:
+		// A ref chain crossing a package member (pkg.F.G = v,
+		// pkg.A[i] = v): the package operand is the shared base —
+		// selectMember reads the global cell's live value, so the
+		// store lands like the one-level `pkg.V = x` store does.
+		switch base.(type) {
+		case *runtime.Package, *runtime.ImportRef:
+			return base, true
+		}
+		return runtime.Deref(base)
+	}
+}
+
+func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
+	if dv, ok := runtime.Deref(base); ok {
+		return v.slice(f, dv, lo, hi, max)
+	}
+	base = v.materialize(f, base) // `const s = "x"; s[i:j]` slices a UConst
+	if n, ok := base.(*runtime.Named); ok {
+		return v.slice(f, n.V, lo, hi, max)
+	}
+	three := max != runtime.NIL && max != nil
+	switch b := base.(type) {
+	case *runtime.IfaceNil:
+		return v.slice(f, &runtime.TypedNil{Typ: b.Typ}, lo, hi, max)
+	case *runtime.TypedNil:
+		if b.Typ.Kind != runtime.KindSlice {
+			f.trap("slice on nil %s", tdName(b.Typ))
+		}
+		// s[0:0] / s[:] on a nil slice is a valid empty result
+		l, h := v.bounds(f, lo, hi, 0)
+		m := v.maxBound(f, max, 0)
+		if r := sliceBoundsReason(l, h, m, 0, three, "capacity"); r != "" {
+			panic(runtime.SliceBoundsPanic(r))
+		}
+		return b
+	case *runtime.Slice:
+		if b.Virtual() {
+			// a virtual zero-size slice bounds-checks against its
+			// logical length and capacity like a real one — the
+			// two-index high may pass len up to cap — and the
+			// sub-slice stays virtual: s[:0] keeps the capacity.
+			word := "capacity"
+			if _, isArr := v.arrayLen(f, b.Typ); isArr {
+				word = "length" // array-typed values report "with length"
+			}
+			l, h := v.bounds(f, lo, hi, b.Len())
+			if three {
+				m := v.maxBound(f, max, b.Cap())
+				if r := sliceBoundsReason(l, h, m, b.Cap(), true, word); r != "" {
+					panic(runtime.SliceBoundsPanic(r))
+				}
+				return &runtime.Slice{N: h.i - l.i, CapN: m.i - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+			}
+			if r := sliceBoundsReason(l, h, boundOperand{}, b.Cap(), false, word); r != "" {
+				panic(runtime.SliceBoundsPanic(r))
+			}
+			return &runtime.Slice{N: h.i - l.i, CapN: b.Cap() - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+		}
+		n := int64(len(b.Elems))
+		l, h := v.bounds(f, lo, hi, n)
+		_, isArr := v.arrayLen(f, b.Typ)
+		word, cp := "capacity", int64(cap(b.Elems))
+		if isArr {
+			// an array-typed value reports "with length" like gc — the
+			// native b.Elems[...] panic says "capacity" regardless.
+			word, cp = "length", n
+		}
+		if three {
+			m := v.maxBound(f, max, cp)
+			// unsigned operands evaluate in the uint64 domain — the
+			// host Elems[...] panic would print their int64 wrap.
+			if isArr || l.unsigned || h.unsigned || m.unsigned {
+				if r := sliceBoundsReason(l, h, m, cp, true, word); r != "" {
+					panic(runtime.SliceBoundsPanic(r))
+				}
+			}
+			return &runtime.Slice{Elems: b.Elems[l.i:h.i:m.i], Typ: sliceTypOf(b.Typ)}
+		}
+		if isArr || l.unsigned || h.unsigned {
+			if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, word); r != "" {
+				panic(runtime.SliceBoundsPanic(r))
+			}
+		}
+		return &runtime.Slice{Elems: b.Elems[l.i:h.i], Typ: sliceTypOf(b.Typ)}
+	case string:
+		if three {
+			// a 3-index slice on a string is a compile reject in Go —
+			// loud-fail like the other compile-time checks.
+			f.trap("cannot slice a string with 3 indices")
+		}
+		l, h := v.bounds(f, lo, hi, int64(len(b)))
+		if l.unsigned || h.unsigned {
+			if r := sliceBoundsReason(l, h, boundOperand{}, int64(len(b)), false, "length"); r != "" {
+				panic(runtime.SliceBoundsPanic(r))
+			}
+		}
+		return b[l.i:h.i]
+	case *runtime.GoValue:
+		if r, ok := v.hostSlice(f, b, lo, hi, max, three); ok {
+			return r
+		}
+		f.trap("slice on %T", base)
+		return nil
+	default:
+		f.trap("slice on %T", base)
+		return nil
+	}
+}
+
+// boundOperand is one index/slice-bound operand: its int64 position,
+// its uint64 reading, and whether its domain is unsigned. Bounds
+// checks and error text evaluate in the operand's own domain so a
+// wide unsigned index reports 18446744073709551615, not the int64
+// wrap -1.
+type boundOperand struct {
+	i        int64
+	u        uint64
+	unsigned bool
+}
+
+func (b boundOperand) neg() bool { return !b.unsigned && b.i < 0 }
+
+func (b boundOperand) gt(x boundOperand) bool {
+	if b.unsigned || x.unsigned {
+		return b.u > x.u
+	}
+	return b.i > x.i
+}
+
+func (b boundOperand) gtc(cap int64) bool {
+	if b.unsigned {
+		return b.u > uint64(cap)
+	}
+	return b.i > cap
+}
+
+func (b boundOperand) disp() any {
+	if b.unsigned {
+		return b.u
+	}
+	return b.i
+}
+
+// indexSmallInt reads an index operand as int64, looking inside a
+// host GoValue's box — a host uint32(3) indexes like the constant 3,
+// while unsigned widths that cannot fit int64 keep the boxed-wide
+// out-of-bounds panic path.
+func indexSmallInt(v runtime.Value) (int64, bool) {
+	if g, ok := v.(*runtime.GoValue); ok {
+		return runtime.SmallIntOf(g.V)
+	}
+	return runtime.SmallIntOf(v)
+}
+
+// hostUint reads a host-boxed unsigned integer of any width as
+// uint64. Host values arrive carrying their concrete type — uint,
+// uint8..32, uintptr, uint64 — where script integers ride int64.
+func hostUint(v any) (uint64, bool) {
+	switch u := v.(type) {
+	case uint64:
+		return u, true
+	case uint:
+		return uint64(u), true
+	case uint8, uint16, uint32, uintptr:
+		return reflect.ValueOf(u).Uint(), true
+	}
+	return 0, false
+}
+
+// boundUnsigned reports whether the operand's declared domain is an
+// unsigned integer width — a Named tag's sized name or a boxed host
+// unsigned.
+func (v *VM) boundUnsigned(x runtime.Value) bool {
+	switch t := x.(type) {
+	case *runtime.Named:
+		return unsignedName(sizedNameOf(t.Typ))
+	case *runtime.GoValue:
+		_, isU := hostUint(t.V)
+		return isU
+	}
+	return false
+}
+
+// boundOperand extracts one index/slice-bound operand: its int64
+// position (wrapped bits for a boxed wide uint64 — such an index is
+// always out of bounds) and its domain flag for the error text.
+func (v *VM) boundOperand(f *frame, x runtime.Value, def int64) boundOperand {
+	b := boundOperand{i: def, u: uint64(def)}
+	ux := runtime.Unwrap(v.materialize(f, x))
+	if iv, ok := runtime.SmallIntOf(ux); ok {
+		b.i = iv
+		b.u = uint64(iv)
+		b.unsigned = v.boundUnsigned(x)
+	} else if g, isG := ux.(*runtime.GoValue); isG {
+		if u, isU := hostUint(g.V); isU {
+			b.i = int64(u)
+			b.u = u
+			b.unsigned = true
+		}
+	}
+	return b
+}
+
+// sliceBoundsReason renders Go's boundsError text for a failed slice
+// operation — mirroring the check order and message shapes of the
+// runtime's goPanicSlice* family. Every operand evaluates in its own
+// domain: a negative signed index reports its bare form without the
+// capacity/length suffix (Go's boundsNegErrorFmts), an unsigned one
+// its uint64 magnitude. Returns "" when every index is in bounds.
+func sliceBoundsReason(l, h, m boundOperand, cap int64, three bool, word string) string {
+	const p = "slice bounds out of range"
+	if three {
+		switch {
+		case m.neg():
+			return fmt.Sprintf("%s [::%v]", p, m.disp())
+		case m.gtc(cap):
+			return fmt.Sprintf("%s [::%v] with %s %d", p, m.disp(), word, cap)
+		case h.neg():
+			return fmt.Sprintf("%s [:%v:]", p, h.disp())
+		case h.gt(m):
+			return fmt.Sprintf("%s [:%v:%v]", p, h.disp(), m.disp())
+		case l.neg():
+			return fmt.Sprintf("%s [%v::]", p, l.disp())
+		case l.gt(h):
+			return fmt.Sprintf("%s [%v:%v:]", p, l.disp(), h.disp())
+		}
+		return ""
+	}
+	switch {
+	case h.neg():
+		return fmt.Sprintf("%s [:%v]", p, h.disp())
+	case h.gtc(cap):
+		return fmt.Sprintf("%s [:%v] with %s %d", p, h.disp(), word, cap)
+	case l.neg():
+		return fmt.Sprintf("%s [%v:]", p, l.disp())
+	case l.gt(h):
+		return fmt.Sprintf("%s [%v:%v]", p, l.disp(), h.disp())
+	}
+	return ""
+}
+
+func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (boundOperand, boundOperand) {
+	// a host integer scalar (time.Duration) reads as its int64 value —
+	// `a[d:]` on a Duration d bounds by its nanoseconds, like gc.
+	return v.boundOperand(f, lo, 0), v.boundOperand(f, hi, n)
+}
+
+// maxBound reads a 3-index slice's max operand; the full-expression form
+// `a[low:high:]` uses the container's capacity. The slice operator itself
+// (`elems[l:h:m]`) enforces low <= high <= max <= cap with Go's panic.
+func (v *VM) maxBound(f *frame, max runtime.Value, capN int64) boundOperand {
+	return v.boundOperand(f, max, capN)
+}
+
+// litKeyIndex resolves a composite-literal key to its int index: a
+// *runtime.ImplicitIndex positional continues the running index `last`;
+// named constants unwrap to int64. ok=false for anything else.
+func (v *VM) litKeyIndex(f *frame, k runtime.Value, last int64) (int64, bool) {
+	if _, isImp := k.(*runtime.ImplicitIndex); isImp {
+		return last + 1, true
+	}
+	k = v.materialize(f, k)
+	if nk, ok := k.(*runtime.Named); ok {
+		k = nk.V
+	}
+	iv, ok := runtime.SmallIntOf(k)
+	return iv, ok
+}
+
+func (v *VM) makeComposite(f *frame, ins bytecode.Instruction) runtime.Value {
+	n := int(ins.A)
+	kv := ins.B == 1
+	// pop typedef then elems? No: compiler emitted typedef first, then elems.
+	// stack: [typedef, e1, e2, ...] — typedef is BELOW elems.
+	total := n
+	if kv {
+		total = n * 2
+	}
+	raw := make([]runtime.Value, total)
+	for i := total - 1; i >= 0; i-- {
+		raw[i] = f.pop()
+	}
+	tdv := f.pop()
+	td, ok := tdv.(*runtime.TypeDef)
+	if !ok {
+		f.trap("composite literal on non-type %T", tdv)
+	}
+	return v.compositeOf(f, td, n, kv, raw)
+}
+
+// compositeOf builds a T{...} value for td — makeComposite's body once
+// the typedef and element values are known. A pointer element literal
+// (`[]*T{{...}}`, `map[K]*T{"k": {...}}`) recurses into it so the elided
+// `&T{...}` pointee constructs like a direct T{...} — structs included,
+// but also arrays, slices and maps.
+func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []runtime.Value) runtime.Value {
+	if td.HostNew != nil {
+		// host-backed type (sync.Mutex, sync.Pool, ...): the literal
+		// yields a fresh boxed host value; keyed fields initialize the
+		// exported fields of the host struct through reflection
+		// (`&sync.Pool{New: f}`).
+		hv := td.HostNew()
+		if rt := reflect.TypeOf(hv); rt != nil && rt.Kind() == reflect.Slice {
+			// a bound named slice (net.IP{1, 2, 3, 4})
+			return v.hostSliceLiteral(f, td, rt, n, kv, raw)
+		}
+		if n > 0 {
+			if !kv {
+				v.initHostPositional(f, td, hv, raw[:n])
+			} else {
+				v.initHostLiteral(f, td, hv, raw[:2*n])
+			}
+		}
+		// the literal is value semantics (T{}, not &T{} — the & applies
+		// outside and re-wraps as *T); tag the box with its declared
+		// typedef so %T/TypeOf read T while the pointer-shaped payload
+		// keeps pointer methods callable.
+		return runtime.Tag(td, &runtime.GoValue{V: hv})
+	}
+	// a type alias builds the underlying composite
+	if td.Kind == runtime.KindAlias && v.H.Underlying != nil {
+		if u, err := v.H.Underlying(td); err == nil && u != nil {
+			td = u
+		}
+	}
+	switch td.Kind {
+	case runtime.KindSlice:
+		s := &runtime.Slice{Typ: td}
+		if an, isArr := v.arrayLen(f, td); isArr {
+			// an array literal keeps its declared length: unlisted
+			// elements are the element zero; overruns and out-of-range
+			// indexes are a compile reject — surfaced as a trap here.
+			et := v.elemTypedef(f, td)
+			zv := v.zeroValue(f, et)
+			s.Elems = make([]runtime.Value, an)
+			for i := range s.Elems {
+				s.Elems[i] = valueCopy(zv)
+			}
+			if kv {
+				last := int64(-1)
+				for i := 0; i < n; i++ {
+					ival, ok := v.litKeyIndex(f, raw[i*2], last)
+					if !ok {
+						f.trap("array literal index %T", raw[i*2])
+					}
+					last = ival
+					if ival < 0 || ival >= an {
+						f.trap("array index %d out of bounds [0:%d]", ival, an)
+					}
+					s.Elems[ival] = v.coerce(f, raw[i*2+1], et)
+				}
+			} else {
+				if int64(n) > an {
+					f.trap("index %d out of bounds [0:%d] in array literal", an, an)
+				}
+				for i := range raw {
+					s.Elems[i] = v.coerce(f, raw[i], et)
+				}
+			}
+			return s
+		}
+		if kv {
+			// indexed literal: size is max index + 1, gaps are zero.
+			// A named const index (`[T]{MyKind: v}`) unwraps to int64.
+			idx := make([]int64, n)
+			max := int64(-1)
+			last := int64(-1)
+			for i := 0; i < n; i++ {
+				ival, ok := v.litKeyIndex(f, raw[i*2], last)
+				if !ok {
+					f.trap("slice literal index %T", raw[i*2])
+				}
+				last = ival
+				idx[i] = ival
+				if ival > max {
+					max = ival
+				}
+			}
+			s.Elems = make([]runtime.Value, max+1)
+			zv := v.zeroValue(f, v.elemTypedef(f, td))
+			for i := range s.Elems {
+				s.Elems[i] = valueCopy(zv)
+			}
+			// keyed values coerce like positional ones — otherwise an
+			// untyped constant element keeps its UConst box, which reads
+			// as a different dynamic type under DeepEqual/`%T` than the
+			// coerced element a positional literal produces.
+			et := v.elemTypedef(f, td)
+			for i := 0; i < n; i++ {
+				s.Elems[idx[i]] = v.coerce(f, raw[i*2+1], et)
+			}
+		} else {
+			// elements coerce to the declared element type — `[]any{x}`
+			// boxes a typed nil while `[]*int{x}` keeps it
+			et := v.elemTypedef(f, td)
+			for i := range raw {
+				raw[i] = v.coerce(f, raw[i], et)
+			}
+			s.Elems = raw
+		}
+		if at, ok := td.Anon.(*ast.ArrayType); ok {
+			if _, isEll := at.Len.(*ast.Ellipsis); isEll {
+				// `[...]T` takes its length from the element count —
+				// fold it so the typedef spells the concrete [N]T like
+				// Go's inferred length.
+				runtime.FoldArrayLen(at, int64(len(s.Elems)))
+			}
+		}
+		return s
+	case runtime.KindMap:
+		m := runtime.NewMap(td, v.ifaceKeyed(f, td))
+		et := v.elemTypedef(f, td)
+		for i := 0; i < n; i++ {
+			if _, isImp := raw[i*2].(*runtime.ImplicitIndex); isImp {
+				f.trap("positional element in keyed map literal")
+			}
+			// literal keys bind the declared key type like index
+			// operands — `map[float64]V{1: x}` stores float64(1), and
+			// `map[A]V{B{1}: x}` rejects the mismatched named key.
+			m.Insert(v.mapKeyOperand(f, td, raw[i*2]), v.coerce(f, raw[i*2+1], et))
+		}
+		return m
+	case runtime.KindPointer:
+		// elided `&T{...}` inside a []*T{...} literal: build the pointee
+		// composite exactly like a direct T{...} (a struct fills fields,
+		// an array/slice/map its elements) and box it in a fresh cell.
+		if v.H.ElemOf == nil {
+			f.trap("pointer element types require engine hooks")
+		}
+		et, err := v.H.ElemOf(td)
+		if err != nil || et == nil {
+			et = v.localElemTypedef(f, td)
+			if et == nil {
+				if err != nil {
+					f.trap("%s", err)
+				}
+				f.trap("cannot resolve element type of %s", tdName(td))
+			}
+		}
+		return &runtime.Cell{Elem: v.compositeOf(f, et, n, kv, raw)}
+	case runtime.KindStruct, runtime.KindNamedBasic:
+		// `type A B` literals build the underlying composite while keeping
+		// the declared tag: zeroValue returns Named{A, <underlying>}, and
+		// field names/types resolve through the underlying typedef.
+		etd := td
+		if td.Kind == runtime.KindNamedBasic {
+			if p := v.peelNamed(td); p != nil && p != td {
+				etd = p
+			}
+		}
+		switch etd.Kind {
+		case runtime.KindSlice, runtime.KindMap:
+			// a named type over a composite (`type B [2]int`,
+			// `type B A`, `type B []int`, `type B map[K]V`): the literal
+			// is the underlying composite built through the same kind
+			// switch, tagged with the declared type — the struct fill
+			// below would produce a bogus empty *Struct.
+			return &runtime.Named{Typ: td, V: v.compositeOf(f, etd, n, kv, raw)}
+		}
+		z := v.zeroValue(f, td)
+		wrap, _ := z.(*runtime.Named)
+		var s *runtime.Struct
+		if wrap != nil {
+			s, _ = wrap.V.(*runtime.Struct)
+		} else {
+			s, _ = z.(*runtime.Struct)
+		}
+		if s == nil {
+			s = &runtime.Struct{Def: etd, Fields: make([]runtime.Value, len(etd.Fields))}
+			for i := range s.Fields {
+				s.Fields[i] = runtime.NIL
+			}
+			if wrap != nil {
+				wrap.V = s
+			}
+		}
+		if kv {
+			fts := v.fieldTypedefs(etd)
+			for i := 0; i < n; i++ {
+				name, ok := raw[i*2].(string)
+				if !ok {
+					f.trap("struct literal key %T", raw[i*2])
+				}
+				found := v.setLitField(f, s, etd, fts, name, raw[i*2+1])
+				if !found {
+					f.trap("%s has no field %s", tdName(td), name)
+				}
+			}
+		} else {
+			fts := v.fieldTypedefs(etd)
+			for i := 0; i < n && i < len(s.Fields); i++ {
+				var ft *runtime.TypeDef
+				if i < len(fts) {
+					ft = fts[i]
+				}
+				if i < len(etd.Fields) && etd.Fields[i] == "_" {
+					// a blank field discards its literal element —
+					// `struct{a,_,c int}{1,2,3}` stores 1,0,3 — but
+					// the element still has to be assignable.
+					_ = v.coerce(f, raw[i], ft)
+					continue
+				}
+				s.Fields[i] = v.coerce(f, raw[i], ft)
+			}
+		}
+		if wrap != nil {
+			return wrap
+		}
+		return s
+	default:
+		f.trap("composite literal for kind %d", td.Kind)
+	}
+	return nil
+}
+
+// setLitField writes one `Name: value` entry of a struct literal. A
+// declared field wins by name; otherwise the key resolves through
+// promoted (embedded) fields — Go 1.27's promoted-field literal keys.
+// Pointer embeds cannot supply literal keys (Go rejects "invalid
+// implicit pointer indirection"), so promotedMember is called with
+// allowPtr=false.
+func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts []*runtime.TypeDef, name string, val runtime.Value) bool {
+	for fi, fn := range def.Fields {
+		if fn == "_" {
+			continue // Go reports `_: v` as "unknown field _"
+		}
+		if fn == name {
+			var ft *runtime.TypeDef
+			if fi < len(fts) {
+				ft = fts[fi]
+			}
+			s.Fields[fi] = v.coerce(f, val, ft)
+			return true
+		}
+	}
+	if pr, ok := v.promotedMember(f, s, name, false); ok {
+		if pr.host != nil {
+			v.setField(f, pr.host, name, val)
+			return true
+		}
+		if pr.st == nil {
+			return false // methods don't promote into literal keys
+		}
+		var ft *runtime.TypeDef
+		if ifts := v.fieldTypedefs(pr.st.Def); pr.idx < len(ifts) {
+			ft = ifts[pr.idx]
+		}
+		pr.st.Fields[pr.idx] = v.coerce(f, val, ft)
+		return true
+	}
+	return false
+}
+
+// valueCopy implements Go assignment semantics: structs copy by value —
+// recursively, since a struct field is itself a copied value — while
+// slices, maps and pointers share.
+func valueCopy(v runtime.Value) runtime.Value {
+	return runtime.Copy(v)
+}
+
+// hostStructCopy snapshots a HostNew-backed host value for assignment:
+// the box is a `*T` so `var b bytes.Buffer = a` would otherwise alias
+// a's storage where gc copies the struct. The Named tag, when present,
+// wraps the snapshot unchanged.
+func hostStructCopy(x runtime.Value) runtime.Value {
+	if n, ok := x.(*runtime.Named); ok {
+		if nv, ok := runtime.HostStructCopy(n.V); ok {
+			return &runtime.Named{Typ: n.Typ, V: nv}
+		}
+		return x
+	}
+	if nv, ok := runtime.HostStructCopy(x); ok {
+		return nv
+	}
+	return x
+}
+
+// hostNewStructTagged reports whether v carries a HostNew struct tag of
+// its own — the same mark runtime.Copy's Named branch checks before
+// snapshotting the box, so a value reporting true here already came
+// back copied (or came back unchanged for the same reason
+// HostStructCopy would report false).
+func hostNewStructTagged(v runtime.Value) bool {
+	n, ok := v.(*runtime.Named)
+	return ok && n.Typ != nil && n.Typ.Kind == runtime.KindStruct && n.Typ.HostNew != nil
+}
+
+// memberOf resolves a package member through MemberV so that a lazy
+// package initializer triggered from inside this VM runs on THIS VM — a
+// spawned goroutine's first touch of a package must not execute __init__
+// on the engine's root VM.
+func (v *VM) memberOf(p *runtime.Package, name string) (runtime.Value, error) {
+	return p.MemberV(name, v.H.Materialize, v.runInit)
+}
+
+// lenDerefFold reports the constant length of *p when p's type is
+// *[N]T — Go folds len/cap of a dereferenced array pointer without
+// evaluating the deref. probe is either the operand's declared typedef
+// (the static tier: folds without evaluating anything) or the
+// evaluated pointer value (the nil-pointer tier: only a nil *[N]T
+// matters — a live pointer derefs fine on the normal path).
+func (v *VM) lenDerefFold(f *frame, probe runtime.Value) (runtime.Value, bool) {
+	var td *runtime.TypeDef
+	switch t := probe.(type) {
+	case *runtime.TypeDef:
+		td = t
+	case *runtime.TypedNil:
+		td = t.Typ
+	case *runtime.Named:
+		if tn, ok := t.V.(*runtime.TypedNil); ok {
+			td = tn.Typ
+		} else if t.Typ != nil && t.Typ.Kind == runtime.KindPointer {
+			td = t.Typ
+		}
+	}
+	at := runtime.PtrArrayType(td)
+	if at == nil {
+		return nil, false
+	}
+	n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Pkg: td.Pkg, File: td.File})
+	if !ok {
+		return nil, false
+	}
+	return int64(n), true
+}
+
+// lenIdxFold reports the constant length of x[i] when x's element
+// typedef is an array — Go folds len/cap of an index into an
+// array-typed element without evaluating the index at all.
+func (v *VM) lenIdxFold(f *frame, base runtime.Value) (runtime.Value, bool) {
+	td := typedefOf(base)
+	if td == nil {
+		// typed nils and live containers carry their declared typedef —
+		// `var s [][30]int` is a TypedNil, not something Deref peels.
+		switch b := base.(type) {
+		case *runtime.TypedNil:
+			td = b.Typ
+		case *runtime.Slice:
+			td = b.Typ
+		case *runtime.Map:
+			td = b.Typ
+		case *runtime.Named:
+			td = b.Typ
+		}
+	}
+	if td == nil || td.Anon == nil {
+		return nil, false
+	}
+	var elt ast.Expr
+	switch t := td.Anon.(type) {
+	case *ast.ArrayType:
+		elt = t.Elt // x[i] on an array/slice has the element's type
+	case *ast.MapType:
+		elt = t.Value // x[k] on a map has the value's type
+	default:
+		return nil, false
+	}
+	at, ok := elt.(*ast.ArrayType)
+	if !ok || at.Len == nil {
+		return nil, false
+	}
+	n, ok := v.arrayLen(f, &runtime.TypeDef{Anon: at, Kind: runtime.KindSlice})
+	if !ok {
+		return nil, false
+	}
+	return int64(n), true
+}
+
+// lenCapBuiltin resolves the predeclared len/cap builtins once — the
+// values OpLenCallFold's identity probe compares the resolved callee
+// against. which selects: 0 len, 1 cap. A nil result (no Builtin hook,
+// or the name unbound) simply never folds — the plain call runs.
+func (v *VM) lenCapBuiltin(which int32) runtime.Value {
+	if !v.lenCapDone {
+		v.lenCapDone = true
+		if v.H.Builtin != nil {
+			v.lenB, _ = v.H.Builtin("len")
+			v.capB, _ = v.H.Builtin("cap")
+		}
+	}
+	if which == 0 {
+		return v.lenB
+	}
+	return v.capB
+}
+
+// lenConstInt reads an array-length value: a materialized int64, or a
+// UConst still carrying its constant — const decls keep the UConst
+// form so each use materializes for context (`const N = 5; [N]T`).
+func lenConstInt(x runtime.Value) (int64, bool) {
+	switch v := runtime.Unwrap(x).(type) {
+	case int64:
+		return v, true
+	case *runtime.UConst:
+		iv := v.V
+		if iv.Kind() != constant.Int {
+			var ok bool
+			if iv, ok = toIntConst(iv); !ok {
+				return 0, false
+			}
+		}
+		return constant.Int64Val(iv)
+	}
+	return 0, false
+}
+
+// arrayLen reports the element count of an array typedef — an
+// *ast.ArrayType that kept its length. The length may be a literal
+// (`[3]int`) or a package-level const name (`[N]int`); slice typedefs
+// and `[...]T` forms report ok=false.
+func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
+	if td == nil {
+		return 0, false
+	}
+	at, ok := td.Anon.(*ast.ArrayType)
+	if !ok || at.Len == nil {
+		return 0, false
+	}
+	// a canonical literal (`[3]T`) or an already-folded length answers
+	// without evaluating anything.
+	if n, ok := runtime.FoldedArrayLen(at); ok {
+		return n, true
+	}
+	switch l := at.Len.(type) {
+	case *ast.BasicLit:
+		// the length literal evaluates in the constant domain — `1e1`,
+		// `'a'` and `1_000` all spell integer lengths that
+		// strconv.ParseInt cannot read.
+		if iv, ok := toIntConst(constant.MakeFromLiteral(l.Value, l.Kind, 0)); ok {
+			if n, ok := constant.Int64Val(iv); ok {
+				return runtime.FoldArrayLen(at, n), true
+			}
+		}
+		return 0, false
+	case *ast.Ident:
+		// a named const: its value lives in the package env once init
+		// ran (Materialize returns NIL for const decls); fall back to the
+		// index for a const declared below the use or not yet bound.
+		if td.Pkg != nil {
+			if gv, ok := td.Pkg.Globals.Get(l.Name); ok {
+				if d, ok2 := runtime.Deref(gv); ok2 {
+					gv = d
+				}
+				if n, ok2 := lenConstInt(gv); ok2 {
+					return runtime.FoldArrayLen(at, n), true
+				}
+			}
+			if td.Pkg.Index != nil && v.H.Materialize != nil {
+				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
+					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
+						if n, ok := lenConstInt(mv); ok {
+							return runtime.FoldArrayLen(at, n), true
+						}
+					}
+				}
+			}
+		}
+	}
+	// any other constant form ([N*2]int, [N+1]int): compile the length
+	// expression and run it in the typedef's package scope — const
+	// names resolve through globals like a normal expression. A
+	// non-constant shape ([...]T's Ellipsis, a call) can't evaluate;
+	// its trap is swallowed so the typedef stays non-array (ok=false).
+	if td.Pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
+		var n int64
+		var ok bool
+		func() {
+			defer func() { _ = recover() }()
+			if ch, err := v.H.CompileExpr(td.Pkg, td.File, at.Len); err == nil && ch != nil {
+				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil, nil, nil); err2 == nil {
+					if iv, ok2 := lenConstInt(r); ok2 {
+						n, ok = iv, true
+					}
+				}
+			}
+		}()
+		if ok {
+			return runtime.FoldArrayLen(at, n), true
+		}
+	}
+	return 0, false
+}
+
+// lenConstShaped reports whether an array-length expression can only be
+// a constant expression — names, literals, parens and constant
+// arithmetic. Anything else (ellipsis, calls, indexing) is either the
+// `[...]T` form or a non-constant Go would reject, and is not worth
+// evaluating.
+func lenConstShaped(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.BasicLit, *ast.Ident:
+		return true
+	case *ast.ParenExpr:
+		return lenConstShaped(x.X)
+	case *ast.UnaryExpr:
+		return lenConstShaped(x.X)
+	case *ast.BinaryExpr:
+		return lenConstShaped(x.X) && lenConstShaped(x.Y)
+	case *ast.CallExpr:
+		// len/cap of an array is a constant expression — `len(a)`
+		// and `cap(a)` fold to the array's size; other calls are
+		// non-constant and Go rejects them.
+		id, ok := x.Fun.(*ast.Ident)
+		return ok && (id.Name == "len" || id.Name == "cap")
+	}
+	return false
+}
+
+// copyArray clones an array value for Go's assignment semantics —
+// `b := a` on arrays owns a distinct backing array, and nested arrays
+// copy recursively.
+func (v *VM) copyArray(f *frame, s *runtime.Slice, td *runtime.TypeDef) *runtime.Slice {
+	el := make([]runtime.Value, len(s.Elems))
+	et := v.elemTypedef(f, td)
+	_, nested := v.arrayLen(f, et)
+	for i, e := range s.Elems {
+		if inner, ok := e.(*runtime.Slice); ok && nested {
+			el[i] = v.copyArray(f, inner, et)
+			continue
+		}
+		el[i] = e
+	}
+	return &runtime.Slice{Elems: el, Typ: s.Typ}
+}
+
+// maskInt applies integer-width wraparound for a conversion into a
+// sized type: int8(200) is -56 like Go. Unsized names pass through.
+// sizedNameOf resolves the builtin width name behind a tag: for a
+// declared `type MyU8 uint8` the mask applies through the underlying
+// ident, not the declared name.
+func sizedNameOf(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if sizedIntName(td.Name) {
+		return td.Name
+	}
+	x := td.Anon
+	if x == nil && td.Spec != nil {
+		x = td.Spec.Type
+	}
+	if id, ok := x.(*ast.Ident); ok && sizedIntName(id.Name) {
+		return id.Name
+	}
+	return ""
+}
+
+// sizedIntName reports whether name is a builtin integer whose domain
+// differs from bare int64 — maskInt wraps those values, and the
+// unsigned names also switch binaryOp's division/shift/compare domain.
+// int64 itself stays untagged: it IS the bare model. uint tags so
+// `x := uint(v)` keeps unsigned semantics; int stays bare too.
+func sizedIntName(name string) bool {
+	switch name {
+	case "int8", "int16", "int32", "rune",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	}
+	return false
+}
+
+// basicNameOf resolves the underlying builtin basic-type name behind a
+// typedef the way sizedNameOf resolves ints: `type F32 float32` and the
+// bare float32 typedef both read "float32". Delegates to the shared
+// runtime helper (the basic-name sets differ only on "error", which
+// none of the numeric callers can name).
+func basicNameOf(td *runtime.TypeDef) string {
+	return runtime.BasicNameOf(td)
+}
+
+// bareScalarName names a bare scalar for the mismatched-types message —
+// bound-package constants and host-call results arrive as plain
+// int64/float64/... values.
+func bareScalarName(x runtime.Value) (string, bool) {
+	switch x.(type) {
+	case int64:
+		return "int", true
+	case float64:
+		return "float64", true
+	case complex128:
+		return "complex128", true
+	case string:
+		return "string", true
+	case bool:
+		return "bool", true
+	}
+	return "", false
+}
+
+// bareScalarDomain groups a bare scalar for the mismatch check. Numeric
+// scalars share one domain: an under-typed value (a generic T-argument,
+// a materialized const) can't be told from a declared int64, so only a
+// cross-domain mismatch is statically sure.
+func bareScalarDomain(x runtime.Value) (string, bool) {
+	switch x.(type) {
+	case int64, float64:
+		return "num", true
+	case complex128:
+		return "cplx", true
+	case string:
+		return "str", true
+	case bool:
+		return "bool", true
+	}
+	return "", false
+}
+
+// tdScalarDomain resolves the named operand's underlying basic to the
+// same domain — `type Small int8` and `Duration` are numeric, StructTag
+// is string. A non-basic underlying ("", false) is never scalar-shaped.
+func (v *VM) tdScalarDomain(td *runtime.TypeDef) (string, bool) {
+	utd := v.peelNamed(td)
+	if utd == nil {
+		return "", false
+	}
+	switch basicNameOf(utd) {
+	case "int", "int8", "int16", "int32", "int64", "rune",
+		"uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr",
+		"float32", "float64":
+		return "num", true
+	case "complex64", "complex128":
+		return "cplx", true
+	case "string":
+		return "str", true
+	case "bool":
+		return "bool", true
+	}
+	return "", false
+}
+
+// bareScalarShared reports whether bare scalar x and the named operand's
+// underlying basic share a domain — `x + len(s)` on `var x int` and
+// `tag + hostStr` are in-domain while `s + 1` crosses.
+func (v *VM) bareScalarShared(x runtime.Value, td *runtime.TypeDef) bool {
+	name, ok := bareScalarDomain(x)
+	if !ok {
+		return false
+	}
+	tdName, ok := v.tdScalarDomain(td)
+	return ok && tdName == name
+}
+
+// unsignedName reports whether a sized-int typedef name is an unsigned
+// width — the unsigned names evaluate division, remainder, shifts and
+// ordered comparisons in the uint64 domain.
+func unsignedName(name string) bool {
+	switch name {
+	case "uint", "uint8", "byte", "uint16", "uint32", "uint64", "uintptr":
+		return true
+	}
+	return false
+}
+
+func maskInt(n int64, name string) int64 {
+	switch name {
+	case "int8":
+		return int64(int8(n))
+	case "int16":
+		return int64(int16(n))
+	case "int32", "rune":
+		return int64(int32(n))
+	case "uint8", "byte":
+		return int64(uint8(n))
+	case "uint16":
+		return int64(uint16(n))
+	case "uint32":
+		return int64(uint32(n))
+	case "uint64", "uintptr", "uint":
+		return int64(uint64(n))
+	}
+	return n
+}
