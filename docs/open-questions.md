@@ -33,3 +33,18 @@ Options:
 
 Decision: needs podhmo. `--src net/netip` reproduces at
 `unique.Make(addrDetail{})` — bound `netip` stays the parity path.
+
+## readfile-mem: which slice model closes the os.ReadFile memory gap?
+
+A script `[]byte` stores one 16-byte `runtime.Value` per element, so a
+32 MB `os.ReadFile` peaks near 560 MB RSS (issue #950). Two candidate
+designs, each with real cost:
+
+- Compact `[]byte` backed by the host `[]byte`, materializing element
+  cells only on script writes — needs lazy element ops at ~280
+  `.Elems` sites (index, len, cap, append, copy, range, spread).
+- Boxing results as `*runtime.GoValue` and adding a `string(b)` fast
+  path — boxing breaks `b...`, `copy`, `[]byte(b)`, and `slices.*`
+  (each needs its own special case; the gap keeps widening).
+
+Decision: needs podhmo — it is a memory-model tradeoff, not a local fix.
