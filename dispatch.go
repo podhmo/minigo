@@ -289,7 +289,36 @@ func (e *Engine) aliasOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	if td == nil || td.Kind != runtime.KindAlias || td.Anon == nil {
 		return td, nil
 	}
-	return e.resolveTypeRef(td, td.Anon)
+	x := td.Anon
+	n := 0
+	for {
+		for {
+			p, ok := x.(*ast.ParenExpr)
+			if !ok {
+				break
+			}
+			x = p.X
+		}
+		st, ok := x.(*ast.StarExpr)
+		if !ok {
+			break
+		}
+		n++
+		x = st.X
+	}
+	// resolveTypeRef peels `*T` to T (it serves embed lookup), so an
+	// alias `type A = *T` would otherwise lose the pointer: rebuild it
+	// like the underlying hook does — A IS *T, not T.
+	expr := x
+	elem, err := e.resolveTypeRef(td, x)
+	if err != nil || elem == nil || n == 0 {
+		return elem, err
+	}
+	for ; n > 0; n-- {
+		expr = &ast.StarExpr{X: expr}
+		elem = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds, LocalTypes: td.LocalTypes}
+	}
+	return elem, nil
 }
 
 // underlying implements the Hooks.Underlying hook: a KindAlias typedef
@@ -341,7 +370,7 @@ func (e *Engine) underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 			pt := elem
 			for ; n > 0; n-- {
 				expr = &ast.StarExpr{X: expr}
-				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds}
+				pt = &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt, Anon: expr, Pkg: td.Pkg, File: td.File, TParams: td.TParams, Binds: td.Binds, LocalTypes: td.LocalTypes}
 			}
 			return pt, nil
 		}
@@ -1164,6 +1193,14 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 					return nil, err
 				}
 				if td, ok := vv.(*runtime.TypeDef); ok {
+					// `type A = T` — an alias IS its target, so a type
+					// reference resolves straight to the aliased decl
+					// rather than the KindAlias handle. A generic alias
+					// stays put: its target mentions the decl's own type
+					// parameters, which only instantiateRef can bind.
+					if td.Kind == runtime.KindAlias && len(td.TParams) == 0 {
+						return e.peelAliasTd(td), nil
+					}
 					return td, nil
 				}
 				return nil, fmt.Errorf("%s is not a type", t.Name)
@@ -1227,6 +1264,11 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		td, ok := m.(*runtime.TypeDef)
 		if !ok {
 			return nil, fmt.Errorf("%s.%s is not a type", id.Name, t.Sel.Name)
+		}
+		// same alias transparency as the ident case: pkg.A where A is
+		// `type A = T` resolves to T's own typedef.
+		if td.Kind == runtime.KindAlias && len(td.TParams) == 0 {
+			td = e.peelAliasTd(td)
 		}
 		return td, nil
 	}
