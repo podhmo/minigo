@@ -55,7 +55,7 @@ func (v *VM) hostArgAsChecked(x runtime.Value, td *runtime.TypeDef, spell string
 			}
 		}
 	}
-	return v.hostArgAs(&frame{fn: &runtime.Function{Name: "<template func>"}}, arg, td, 0), nil
+	return v.hostArgAs(&frame{fn: &runtime.Function{Name: "<template func>"}, v: v, base: len(v.vals)}, arg, td, 0), nil
 }
 
 // hostArgAs lifts x, an argument that crossed the host as `any`, to the

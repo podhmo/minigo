@@ -65,6 +65,10 @@ func (v *VM) loop(f *frame) {
 	code := f.ch.Code
 	consts := f.ch.Consts
 	for f.ip < len(code) && (f.boundHi == 0 || (f.ip > f.boundLo && f.ip < f.boundHi)) {
+		// a nested call may have grown the arena past this view's
+		// backing — re-slice so bare f.stack reads/writes this
+		// instruction see the live array.
+		f.refresh()
 		ins := code[f.ip]
 		f.ip++
 		switch ins.Op {
@@ -74,9 +78,9 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpNil:
 			f.push(runtime.NIL)
 		case bytecode.OpDup:
-			f.push(f.stack[len(f.stack)-1])
+			f.push(f.stack[f.sp-1])
 		case bytecode.OpDup2:
-			n := len(f.stack)
+			n := f.sp
 			a, b := f.stack[n-2], f.stack[n-1]
 			f.push(a)
 			f.push(b)
@@ -160,10 +164,10 @@ func (v *VM) loop(f *frame) {
 			v.checkAddrBase(base, nil)
 			f.push(base)
 		case bytecode.OpSwap:
-			n := len(f.stack)
+			n := f.sp
 			f.stack[n-1], f.stack[n-2] = f.stack[n-2], f.stack[n-1]
 		case bytecode.OpRot3:
-			n := len(f.stack)
+			n := f.sp
 			f.stack[n-3], f.stack[n-2], f.stack[n-1] = f.stack[n-2], f.stack[n-1], f.stack[n-3]
 		case bytecode.OpPop:
 			f.pop()
@@ -559,7 +563,7 @@ func (v *VM) loop(f *frame) {
 			if td == nil {
 				f.trap("declared type is not a type")
 			}
-			f.stack[len(f.stack)-1] = v.coerce(f, f.stack[len(f.stack)-1], td)
+			f.stkSet(f.sp-1, v.coerce(f, f.stack[f.sp-1], td))
 		case bytecode.OpCoerceN:
 			// pop A typedefs then one value: a *Tuple coerces element-wise
 			// (multi-value return), anything else against the first type
@@ -797,9 +801,9 @@ func (v *VM) loop(f *frame) {
 			// index, so skip the emitted index+index-op+call run.
 			// The stack is [callee, base]; the fold collapses both
 			// into the result so no call happens.
-			base := f.stack[len(f.stack)-1]
+			base := f.stack[f.sp-1]
 			if n, ok := v.lenIdxFold(f, base); ok {
-				f.stack = f.stack[:len(f.stack)-2]
+				f.setSp(f.sp - 2)
 				f.push(n)
 				f.ip = int(ins.A)
 			}
@@ -811,13 +815,13 @@ func (v *VM) loop(f *frame) {
 			// operand's declared typedef (a miss pops it — the emitted
 			// pointer expr still has to evaluate); B=1 probes the
 			// evaluated pointer itself (a miss keeps it for OpDeref).
-			top := f.stack[len(f.stack)-1]
+			top := f.stack[f.sp-1]
 			if n, ok := v.lenDerefFold(f, top); ok {
-				f.stack = f.stack[:len(f.stack)-2]
+				f.setSp(f.sp - 2)
 				f.push(n)
 				f.ip = int(ins.A)
 			} else if ins.B == 0 {
-				f.stack = f.stack[:len(f.stack)-1]
+				f.setSp(f.sp - 1)
 			}
 		case bytecode.OpLenCallFold:
 			// len(x)/cap(x): the stack is [callee, operand]; when the
@@ -827,7 +831,7 @@ func (v *VM) loop(f *frame) {
 			// through to the ordinary call, and so does a lone call's
 			// Tuple operand — the call may spread multi-results into
 			// the builtin's params instead.
-			n := len(f.stack)
+			n := f.sp
 			if bf, ok := f.stack[n-2].(*runtime.BuiltinFunc); ok && bf == v.lenCapBuiltin(ins.B) {
 				if _, tup := f.stack[n-1].(*runtime.Tuple); !tup {
 					// keep OpCall's procExit safepoint: without the
@@ -847,7 +851,7 @@ func (v *VM) loop(f *frame) {
 					if err != nil {
 						panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
 					}
-					f.stack = f.stack[:n-2]
+					f.setSp(n - 2)
 					f.push(r)
 					f.ip = int(ins.A)
 				}
@@ -932,7 +936,7 @@ func (v *VM) loop(f *frame) {
 			for i := n - 1; i >= 0; i-- {
 				a, ok := f.pop().(*runtime.SelArm)
 				if !ok {
-					f.trap("select arm is %T", f.stack[len(f.stack)-1])
+					f.trap("select arm is %T", f.stack[f.sp-1])
 				}
 				arms[i] = a
 			}
