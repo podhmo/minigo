@@ -365,7 +365,7 @@ func (h *hostHelpers) sortSlice(v runtime.VMCaller, args []runtime.Value) (runti
 	}
 	less := args[1]
 	sort.Slice(s.Elems, func(i, j int) bool {
-		r := callOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
+		r := hostbridge.CallOrPanic(v, less, []runtime.Value{int64(i), int64(j)})
 		b, _ := r.(bool)
 		return b
 	})
@@ -387,7 +387,7 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 		}
 		cmp := args[1]
 		cf := func(a, b runtime.Value) int {
-			r := callOrPanic(v, cmp, []runtime.Value{a, b})
+			r := hostbridge.CallOrPanic(v, cmp, []runtime.Value{a, b})
 			n, _ := runtime.Unwrap(r).(int64)
 			return int(n)
 		}
@@ -945,7 +945,7 @@ func bytesSliceOf(bb [][]byte) any {
 // TrimFunc/IndexFunc family and unicode's Is-print predicates call it.
 func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
 	return func(r rune) bool {
-		res := callOrPanic(v, fn, []runtime.Value{int64(r)})
+		res := hostbridge.CallOrPanic(v, fn, []runtime.Value{int64(r)})
 		b, _ := res.(bool)
 		return b
 	}
@@ -998,14 +998,6 @@ func strArgs(a []any) []string {
 // in Go a failure inside strings.Map's callback just propagates as a
 // panic, and a trap or process exit keeps its own kind through
 // asScriptPanic.
-func callOrPanic(v runtime.ScriptCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
-	r, err := v.Call(fn, args)
-	if err != nil {
-		panic(err)
-	}
-	return r
-}
-
 // walkCallback runs a filepath.Walk/WalkDir script callback for host
 // path p: the walk ran from ap, the engine's resolution of the script's
 // root, so p maps back onto root as written (gc hands the root over
@@ -1016,7 +1008,7 @@ func callOrPanic(v runtime.ScriptCaller, fn runtime.Value, args []runtime.Value)
 // on the way out (errVal).
 func walkCallback(v runtime.MemberCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
 	sp := scriptPathOf(root, ap, p)
-	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
+	r := hostbridge.CallOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
 	return hostbridge.HostErrOf(v, r)
 }
 
@@ -1204,15 +1196,9 @@ func sliceElems(s *runtime.Slice) []runtime.Value {
 	return s.Elems
 }
 
-// callBool runs a script predicate callback for its bool result.
-func callBool(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) bool {
-	b, _ := runtime.Unwrap(callOrPanic(vc, fn, args)).(bool)
-	return b
-}
-
 // callInt runs a script cmp-style callback for its int result.
 func callInt(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) int64 {
-	return int64Of(callOrPanic(vc, fn, args))
+	return int64Of(hostbridge.CallOrPanic(vc, fn, args))
 }
 
 // cellElemTyp reads the declared type held by a cell (the target of

@@ -178,7 +178,7 @@ func scriptYield(vc runtime.VMCaller, yield runtime.Value) func(args []runtime.V
 		}
 	}
 	return func(args []runtime.Value) bool {
-		return yieldOK(callOrPanic(vc, yield, slices.Clone(args)))
+		return yieldOK(hostbridge.CallOrPanic(vc, yield, slices.Clone(args)))
 	}
 }
 
@@ -205,7 +205,7 @@ func driveSeq(vc runtime.ScriptCaller, seq runtime.Value, take func(args []runti
 		take(args)
 		return true, nil
 	}}
-	callOrPanic(vc, seq, []runtime.Value{yield})
+	hostbridge.CallOrPanic(vc, seq, []runtime.Value{yield})
 	return nil
 }
 
@@ -733,7 +733,7 @@ func (e *Engine) slicesSeqHelpers(slicesPkg map[string]runtime.Value) map[string
 			}
 			cmp := args[1]
 			sorter(el, func(a, b runtime.Value) int {
-				n, _ := runtime.Unwrap(callOrPanic(vc, cmp, []runtime.Value{a, b})).(int64)
+				n, _ := runtime.Unwrap(hostbridge.CallOrPanic(vc, cmp, []runtime.Value{a, b})).(int64)
 				return int(n)
 			})
 			return packCollected(el, st), nil

@@ -8,7 +8,6 @@ import (
 	"os"
 	"reflect"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/podhmo/minigo/compile"
@@ -599,14 +598,14 @@ func builtins(e *Engine) *runtime.Env {
 	// writes "12"), while println always spaces them.
 	bf("print", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		for _, a := range args {
-			fmt.Fprint(os.Stderr, display(v, a))
+			fmt.Fprint(os.Stderr, hostbridge.Display(materializerOf(v), a))
 		}
 		return runtime.NIL, nil
 	})
 	bf("println", func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		parts := make([]any, len(args))
 		for i, a := range args {
-			parts[i] = display(v, a)
+			parts[i] = hostbridge.Display(materializerOf(v), a)
 		}
 		fmt.Fprintln(os.Stderr, parts...)
 		return runtime.NIL, nil
@@ -1099,110 +1098,18 @@ func namedFloat32(x runtime.Value) bool {
 	return ok && hostbridge.Float32Tag(n.Typ)
 }
 
-func display(vc runtime.CallerRef, v runtime.Value) any {
-	switch x := v.(type) {
-	case runtime.Nil, *runtime.IfaceNil:
-		// print/println spell a nil interface like the runtime's
-		// printeface: the (type,value) pair of nil pointers.
-		return "(0x0,0x0)"
-	case *runtime.TypedNil:
-		// print/println spell a nil pointer-ish value like the runtime:
-		// 0x0 for pointers/chans/maps/funcs, [0/0]0x0 for a nil slice.
-		if x.Typ != nil {
-			switch x.Typ.Kind {
-			case runtime.KindSlice:
-				return "[0/0]0x0"
-			case runtime.KindPointer, runtime.KindChan, runtime.KindMap, runtime.KindFunc:
-				return "0x0"
-			}
-		}
-		return nil
-	case *runtime.UConst:
-		nv, err := runtime.UConstNative(x)
-		if err != nil {
-			return err.Error()
-		}
-		return display(vc, nv)
-	case *runtime.Named:
-		// a typed constant materializes through its declared type, not
-		// the default one: `uint64(1<<64 - 1)` is max-uint where the
-		// untyped reading would overflow int.
-		if mv, ok := hostbridge.ConstAtWidth(vc, x); ok {
-			x = runtime.Tag(x.Typ, mv)
-		}
-		// a declared unsigned-int tag means the int64 payload holds
-		// two's-complement bits: `var u uint = 18446744073709551615` and
-		// `^uint64(0)` store -1 but print the unsigned reading.
-		if iv, ok := x.V.(int64); ok {
-			switch runtime.BasicNameOf(x.Typ) {
-			case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
-				return uint64(iv)
-			}
-		}
-		return display(vc, x.V)
-	case *runtime.Cell:
-		return display(vc, x.Elem)
-	case *runtime.Slice:
-		parts := make([]any, len(x.Elems))
-		for i, e := range x.Elems {
-			parts[i] = display(vc, e)
-		}
-		return parts
-	case *runtime.Tuple:
-		// a multi-return value prints like Go's comma-separated values
-		parts := make([]string, len(x.Elems))
-		for i, e := range x.Elems {
-			switch e.(type) {
-			case runtime.Nil, *runtime.IfaceNil:
-				parts[i] = "<nil>"
-			default:
-				parts[i] = fmt.Sprint(display(vc, e))
-			}
-		}
-		return "(" + strings.Join(parts, ", ") + ")"
-	case *runtime.Struct:
-		parts := make([]any, len(x.Fields))
-		for i, e := range x.Fields {
-			parts[i] = display(vc, e)
-		}
-		return fmt.Sprintf("{%v}", joinDisplay(parts))
-	case *runtime.Map:
-		var sb strings.Builder
-		sb.WriteString("map[")
-		for i := 0; i < x.Len(); i++ {
-			k, e := x.At(i)
-			if i > 0 {
-				sb.WriteByte(' ')
-			}
-			sb.WriteString(fmt.Sprintf("%v:%v", display(vc, k), display(vc, e)))
-		}
-		sb.WriteByte(']')
-		return sb.String()
-	case *runtime.GoValue:
-		// a host box prints its payload — complex128 as (9+10i),
-		// not the wrapper's &{...} pointer spelling.
-		return x.V
-	default:
-		return x
-	}
-}
-
 // Format returns a form of v to print with %v, such as an [Engine.Run]
 // result, without running script code. Unlike repl.REPL.Display it does
 // not call String or Error methods, and nil values take the print
 // builtin's spelling: (0x0,0x0) for a nil interface, [0/0]0x0 for a nil
 // slice.
-func Format(v runtime.Value) any {
-	return display(nil, v)
+// materializerOf views a builtin caller as the optional constant
+// materialization capability display needs.
+func materializerOf(v runtime.VMCaller) runtime.ConstMaterializer {
+	mc, _ := v.(runtime.ConstMaterializer)
+	return mc
 }
 
-func joinDisplay(parts []any) string {
-	var sb strings.Builder
-	for i, p := range parts {
-		if i > 0 {
-			sb.WriteByte(' ')
-		}
-		sb.WriteString(fmt.Sprint(p))
-	}
-	return sb.String()
+func Format(v runtime.Value) any {
+	return hostbridge.Display(nil, v)
 }
