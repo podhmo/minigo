@@ -510,7 +510,7 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		if c.pkgScopeTyp != nil {
 			// pkg.Type spelled in the decl's file — the use site
 			// may not import pkg at all.
-			c.emit(bytecode.OpEvalAST, c.constIdx(&bytecode.ASTFragment{Expr: t, File: file}), 0, e.Pos())
+			c.emit(bytecode.OpEvalFragment, c.constIdx(&bytecode.ASTFragment{Expr: t, File: file}), 0, e.Pos())
 		} else {
 			// pkg.Type: a selector cannot be shadowed by a local var
 			c.expr(t)

@@ -654,10 +654,10 @@ func (v *VM) loop(f *frame) {
 				statics = v.resolveArgHints(f, hints)
 			}
 			v.spawn(fn, args, statics, spreadTd, true)
-		case bytecode.OpEvalAST:
+		case bytecode.OpEvalFragment:
 			frag := consts[ins.A].(*bytecode.ASTFragment)
 			if v.H.CompileExpr == nil {
-				f.trap("OpEvalAST: no CompileExpr hook")
+				f.trap("OpEvalFragment: no CompileExpr hook")
 			}
 			ch, err := v.H.CompileExpr(f.fn.Pkg, frag.File, frag.Expr)
 			if err != nil {
