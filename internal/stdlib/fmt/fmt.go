@@ -1636,7 +1636,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		// Go's fmt prints maps in sorted-key order (fmtsort), not
 		// insertion order — sort a copy of Order the same way.
-		order, _ := v.SnapshotKeys()
+		order, canon := v.SnapshotKeys()
 		// keyCmp is a 3-way compare like fmtsort's — returning the
 		// whole ordering keeps equal prefixes from doubling the
 		// recursion a bool less(...) would need at every level.
@@ -1678,14 +1678,22 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', nested(f))
 			return strings.Compare(ka, kb)
 		}
-		sort.SliceStable(order, func(i, j int) bool {
-			return keyCmp(order[i], order[j]) < 0
+		// sort an index permutation: the canonical key stays paired
+		// with its display key, so a NaN key's value still resolves —
+		// Map.Get on a NaN script key never finds it.
+		sortedIdx := make([]int, len(order))
+		for i := range sortedIdx {
+			sortedIdx[i] = i
+		}
+		sort.SliceStable(sortedIdx, func(i, j int) bool {
+			return keyCmp(order[sortedIdx[i]], order[sortedIdx[j]]) < 0
 		})
 		kt, vt := stdlib.MapElemTyps(v.Typ)
 		ev := elemVerb(verb)
 		parts := make([]string, 0, len(order))
-		for _, k := range order {
-			e, _ := v.Get(k)
+		for _, i := range sortedIdx {
+			k := order[i]
+			e, _ := v.LookupCanonical(canon[i])
 			kr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: k, et: kt, depth: s.depth + 1}).render(ev, nested(f))
 			vr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: vt, depth: s.depth + 1}).render(ev, nested(f))
 			parts = append(parts, kr+":"+vr)
