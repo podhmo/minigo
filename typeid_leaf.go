@@ -116,12 +116,12 @@ func (e *Engine) anonLeafSpelling(td *runtime.TypeDef, s string) string {
 	})
 	ids := map[string]bool{}
 	if len(used) > 0 {
-		// Re-spell with the used leafs resolved: a local alias
-		// unfolds to its target (`[]A` is `[]int`) and a declared
-		// local qualifies by decl site; a declared leaf bound to
-		// instantiation arguments also suffixes its own key,
-		// which spells the binds.
-		ctx := *td
+		// Re-spell with the used leafs resolved: a local alias unfolds to
+		// its target (`[]A` is `[]int`) and a declared local qualifies by
+		// decl site; a declared leaf bound to instantiation arguments also
+		// suffixes its own key, which spells the binds.
+		// CloneUncached drops the lazily-published atomics a struct copy would race.
+		ctx := td.CloneUncached()
 		ctx.LocalTypes = make(map[string]*runtime.TypeDef, len(td.LocalTypes))
 		for n, lt := range td.LocalTypes {
 			ctx.LocalTypes[n] = lt
@@ -165,7 +165,7 @@ func (e *Engine) anonLeafSpelling(td *runtime.TypeDef, s string) string {
 			ctx.LocalTypes[n] = cl
 			ids[n+"="+string(e.typeIDOf(lt))] = true
 		}
-		if is := runtime.TypGoSpelling(td.Anon, &ctx); is != "" {
+		if is := runtime.TypGoSpelling(td.Anon, ctx); is != "" {
 			s = is
 		}
 	}
