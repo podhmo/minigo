@@ -570,11 +570,20 @@ func MethodsIn(p *runtime.Package, file *syntax.File) ([]*Decl, error) {
 type Method struct {
 	Name string
 	Sig  *Sig
-	Decl *Decl // the method declaration; nil for an interface method spec
+	Decl *Decl // the method declaration; nil for an interface method spec or a host-bound member
 	// Via is the type declaring the member: the embedded type a method
 	// was promoted from, or the interface declaring a method spec. It
 	// is nil for a method declared on the queried type itself.
 	Via *Decl
+	// hdepth is the promotion depth inside a host-bound embed's own
+	// embedding graph — reflect flattens it away, so hostMethodSpecs
+	// recovers it from the anonymous fields (0 for a method the host
+	// type declares itself).
+	hdepth int
+	// sdepth is the total promotion depth the member was recorded at —
+	// embed hops from the queried type plus hdepth. The final filter
+	// drops a member a shallower same-named arrival displaced.
+	sdepth int
 }
 
 // MethodSetOf is [MethodSet] for Go code, returning an error where
@@ -603,10 +612,19 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 	ambig := map[string]bool{}
 	record := func(name string, depth int, key string) bool {
 		if w, ok := winners[name]; ok {
-			if w.depth == depth && w.key != key {
-				ambig[name] = true // a distinct member at the same depth
+			if depth > w.depth {
+				return false
 			}
-			return false
+			if depth == w.depth {
+				if w.key != key {
+					ambig[name] = true // a distinct member at the same depth
+				}
+				return false
+			}
+			// a host embed's internal promotion can place its members
+			// deeper than a same-named sibling processed later — the
+			// shallower arrival takes the name back.
+			delete(ambig, name)
 		}
 		winners[name] = win{depth, key}
 		return true
@@ -638,10 +656,20 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 		cur := queue[0]
 		queue = queue[1:]
 		if cur.owner.decl == nil {
-			// a host-bound member: only an interface whose binding
-			// carries its requirement AST has members to read here.
+			// a host-bound member: an interface binding promotes the
+			// specs its requirement AST carries; other bindings'
+			// method sets come from reflect (exported members only).
 			if it, known, _ := hostIface(cur.owner); known {
 				promoteIfaceSpecs(it, cur.owner, cur.depth, res, record, visited, &out)
+			} else {
+				for _, m := range hostMethodSpecs(cur.owner, cur.ptr) {
+					m.sdepth = cur.depth + m.hdepth
+					if !record(m.Name, m.sdepth, declKey(cur.owner)) {
+						continue
+					}
+					m.Via = cur.via
+					out = append(out, m)
+				}
 			}
 			continue
 		}
@@ -666,7 +694,7 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 			if !record(md.Name, cur.depth, declKey(cur.owner)) {
 				continue
 			}
-			out = append(out, &Method{Name: md.Name, Sig: sig, Decl: m, Via: cur.via})
+			out = append(out, &Method{Name: md.Name, Sig: sig, Decl: m, Via: cur.via, sdepth: cur.depth})
 		}
 		fs, err := FieldsOf(cur.owner)
 		if err != nil {
@@ -700,16 +728,15 @@ func MethodSetOf(s *Decl, res Resolver) ([]*Method, error) {
 		}
 	}
 	// ambiguous selectors drop out entirely: the winner recorded
-	// earlier was only provisionally emitted.
-	if len(ambig) > 0 {
-		kept := out[:0]
-		for _, m := range out {
-			if !ambig[m.Name] {
-				kept = append(kept, m)
-			}
+	// earlier was only provisionally emitted. Members a shallower
+	// same-named arrival displaced drop with it.
+	kept := out[:0]
+	for _, m := range out {
+		if !ambig[m.Name] && winners[m.Name].depth == m.sdepth {
+			kept = append(kept, m)
 		}
-		out = kept
 	}
+	out = kept
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
@@ -795,7 +822,8 @@ func promoteIfaceSpecs(it *ast.InterfaceType, owner *Decl, depth int, res Resolv
 				Params:  boxFields(fieldList(ft.Params, src.file, src.Package, tps)),
 				Results: boxFields(fieldList(ft.Results, src.file, src.Package, tps)),
 			},
-			Via: src,
+			Via:    src,
+			sdepth: depth,
 		})
 	})
 }
@@ -1029,12 +1057,18 @@ func sigMatch(m *Method, spec ifaceSpec, res Resolver) bool {
 // decls at every node — `type Str = string` IS string in Go, so a
 // method spelled with the alias satisfies a spec spelled with the
 // target (and vice versa). A defined type still does not collapse.
+// A host-backed side (a reflected method signature) compares by
+// shape: `func([]byte)` in a spec satisfies a reflected
+// `func([]uint8)`, whose element is the same type gc sees.
 func specSame(a, b *TypeExpr, res Resolver) bool {
 	a, b = collapseAlias(a, res), collapseAlias(b, res)
+	if a.ht != nil || b.ht != nil {
+		return hostShapeSame(a, b, res)
+	}
 	sa, oka := a.SymbolID()
 	sb, okb := b.SymbolID()
 	if oka || okb {
-		return oka && okb && sa == sb
+		return oka && okb && normSpecSymbol(sa) == normSpecSymbol(sb)
 	}
 	if a.Kind != b.Kind {
 		return false
