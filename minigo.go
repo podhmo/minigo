@@ -103,7 +103,8 @@ type sessionState struct {
 	// info names it.
 	mainPkg *runtime.Package
 
-	builtins *runtime.Env
+	builtins   *runtime.Env
+	fieldPaths *source.FieldPaths // lazily built by fieldPath (M4-1b)
 
 	mu              sync.Mutex
 	pkgs            map[string]*runtime.Package // by import path
@@ -311,6 +312,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		res = nil
 	}
 	e.resolver = res
+	e.fieldPaths = fieldPathService(e)
 	e.registerStdlib()
 	return e
 }
@@ -343,10 +345,52 @@ func (e *Engine) newVM() *vm.VM {
 		AliasOf:     e.aliasOf,
 		FieldTypes:  e.fieldTypes,
 		ResolveType: e.resolveTypeRef,
+		FieldPath:   e.fieldPath,
 		HostTwin:    e.hostTwin,
 		Linkname:    e.linknameTarget,
 		HostErr:     hostErrOf,
 	}}
+}
+
+// fieldPathService builds the FieldPaths adapter over this engine's
+// lazy index — assigned in NewEngine/NewSession so the VM hook is
+// race-free across script goroutines.
+func fieldPathService(e *Engine) *source.FieldPaths {
+	return source.NewFieldPaths(&source.IndexSource{
+		IndexedFunc: func(path string) *index.Index {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			if p := e.pkgs[path]; p != nil && p.IndexReady() {
+				return p.Index
+			}
+			return nil
+		},
+		LoadFunc: func(path string) (*index.Index, error) {
+			p, err := e.loadPathFrom(context.Background(), "", path)
+			if err != nil || p == nil {
+				return nil, err
+			}
+			p.WaitIndexed()
+			return p.Index, nil
+		},
+	})
+}
+
+// fieldPath implements the VM's FieldPath hook (M4-1b): the declared
+// index path of a selector's field inside td's struct shape, answered
+// through internal/source's FieldPaths adapter over the engine's lazy
+// index. decided=false keeps the value-level member search.
+func (e *Engine) fieldPath(td *runtime.TypeDef, name string) ([]int, bool, bool) {
+	if e.fieldPaths == nil {
+		return nil, false, false
+	}
+	switch res := e.fieldPaths.Of(td, name); res.Kind {
+	case source.FieldPathFound:
+		return res.Index, true, true
+	case source.FieldPathMissing:
+		return nil, false, true
+	}
+	return nil, false, false
 }
 
 // hostTwin implements the VM's HostTwin hook: the typedef this engine
@@ -491,6 +535,7 @@ func (e *Engine) NewSession() *Engine {
 		},
 	}
 	s.builtins = builtins(s)
+	s.fieldPaths = fieldPathService(s)
 	s.registerStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
 	// custom bound package must resolve identically in the new session.

@@ -1886,6 +1886,7 @@ func TestGo1267(t *testing.T) {
 		{"AmbigLitBad", "ambiguous"},                // X lives on both embeds
 		{"PromotedPtrPanic", "nil pointer"},         // promoted field through nil *E1
 		{"PromotedDeepPtrPanic", "nil pointer"},     // deeper field, still a nil deref
+		{"PromotedNilMethodAmbig", "ambiguous"},     // field ties a nil-path method
 	}
 	for _, c := range bads {
 		if _, err := e.Run(context.Background(), "./testdata/go1267", c.fn); err == nil ||
