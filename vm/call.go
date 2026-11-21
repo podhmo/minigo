@@ -430,6 +430,12 @@ func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.
 		if args, err = v.matBuiltinArgs(args, c.Target, c.KeepConstArgs); err != nil {
 			return nil, fmt.Errorf("%s %w", c.Name, err)
 		}
+	} else if c.Target != nil {
+		// a bound host method carries no Pkg — its args marshal raw,
+		// but gc's assignability rules still apply.
+		if err := v.boundArgsCheck(args, c.Target); err != nil {
+			return nil, fmt.Errorf("%s %w", c.Name, err)
+		}
 	}
 	// args on an in-place call are a view into the arena — either the
 	// caller window's tail (inPlaceArgs) or the operand stack slice
