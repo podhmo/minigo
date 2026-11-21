@@ -156,6 +156,15 @@ const (
 	// the result on the site; Missing/Failed trap. An unexecuted
 	// instruction's site is never consulted.
 	OpDeferredTyp // A: CallSites index -> push resolved *TypeDef
+
+	// OpLitKey is the deferred form of a composite literal's ident key
+	// (M4-7b): the compile side could not decide whether `T{K: v}`'s K
+	// is a field name or a key expression because T's shape was a
+	// deferred fact. The site (B indexes [Chunk.CallSites]) resolves the
+	// literal's declared type — when it answers a map or array the key
+	// expression instructions that follow run; otherwise the field name
+	// (consts[C]) is pushed and control jumps to A.
+	OpLitKey // A: else ip; B: CallSites index; C: field-name const
 )
 
 // ShiftConstCount is an [OpBinary] B flag on << and >>: the count is
@@ -327,6 +336,14 @@ type CallSite struct {
 	// Ctx is opaque producer context for the resolver (package,
 	// type-parameter binds); nil when the frame's own context applies.
 	Ctx any
+	// Depth peels Expr's resolved typedef through its element typedefs
+	// (a `[]T` literal's elements sit one peel below). Key then takes
+	// the map key typedef, and After peels further element typedefs —
+	// together they spell which container a deferred literal-key
+	// question asks about.
+	Depth int
+	Key   bool
+	After int
 	// Cache stores the resolution result, written once and read by
 	// every goroutine running the chunk.
 	Cache atomic.Value

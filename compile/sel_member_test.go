@@ -17,6 +17,20 @@ import (
 // Compile-time fact (M0-7): exercises selMember's is-type
 // classification directly. docs/next/ja/references/acceptance-set.md.
 func TestSelMemberSyntheticTypeEntry(t *testing.T) {
+	checkSelMemberSyntheticTypeEntry(t)
+}
+
+// The same verdict under forced-deferred facts (M4-7b): selMember is
+// the is-type oracle — a Deferred answer still carries the materialized
+// package, so the out-of-band question keeps answering while emission
+// paths take their CallSite fallbacks.
+func TestSelMemberSyntheticTypeEntryDeferred(t *testing.T) {
+	defer func(d bool) { DeferFacts = d }(DeferFacts)
+	DeferFacts = true
+	checkSelMemberSyntheticTypeEntry(t)
+}
+
+func checkSelMemberSyntheticTypeEntry(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := syntax.ParseFile(fset, "m.go", []byte("package p\nfunc (T) M() {}"))
 	if err != nil {

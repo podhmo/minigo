@@ -805,9 +805,20 @@ func (c *compiler) aliasBase(e ast.Expr) {
 func (c *compiler) refTargetBase(e ast.Expr, pin bool) {
 	// A package name evaluates to the package object — it has no
 	// storage ref, and OpFieldRef/OpSelect must see the value.
-	if id, isIdent := e.(*ast.Ident); isIdent && c.isImportName(id.Name) {
-		c.expr(e)
-		return
+	if id, isIdent := e.(*ast.Ident); isIdent {
+		if c.isImportName(id.Name) {
+			c.expr(e)
+			return
+		}
+		if info, found := c.resolveName(id.Name); !found || info.isType {
+			// Unresolved at compile: under deferred facts the name may
+			// be an import the index never consulted — emit the value
+			// read so a package object still reaches OpFieldRef (a
+			// real global resolves as a name, and a missing one traps
+			// on the read the same way GlobalRef would).
+			c.expr(e)
+			return
+		}
 	}
 	if c.isStorageBase(e) {
 		c.refTarget(e, pin)

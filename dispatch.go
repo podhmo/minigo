@@ -1207,6 +1207,58 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 				return nil, fmt.Errorf("%s is not a type", t.Name)
 			}
 		}
+		// a materialized typedef may sit in package globals without an
+		// index decl yet — a REPL binds `type User` into the session
+		// package's globals the moment its decl step runs, while the
+		// index only learns the name at the next build.
+		if from.Pkg != nil && from.Pkg.Globals != nil {
+			if gv, ok := from.Pkg.Globals.Get(t.Name); ok {
+				if td, ok := gv.(*runtime.TypeDef); ok && td != nil {
+					return td, nil
+				}
+			}
+		}
+		// dot imports: the REPL's :cd enters a package as a pseudo
+		// dot-import, so a bare `User` resolves through the entered
+		// package's members like the VM's resolveGlobal does.
+		if from.Pkg != nil && from.File != nil {
+			var itd *runtime.TypeDef
+			for _, ref := range from.Pkg.Imports[from.File] {
+				if ref.Alias != "." {
+					continue
+				}
+				if !token.IsExported(t.Name) && !ref.AllNames {
+					continue
+				}
+				p, err := ref.Materialize()
+				if err != nil || p == nil {
+					continue
+				}
+				_, inGlobals := p.Globals.Get(t.Name)
+				inIndex := false
+				if p.Index != nil {
+					_, inIndex = p.Index.Lookup(t.Name)
+				}
+				if !inGlobals && !inIndex {
+					continue
+				}
+				m, err := p.Member(t.Name, e.materialize)
+				if err != nil {
+					return nil, fmt.Errorf("dot import %s: %s", ref.Path, err)
+				}
+				td, _ := m.(*runtime.TypeDef)
+				if td == nil {
+					continue
+				}
+				if itd != nil {
+					return nil, fmt.Errorf("ambiguous dot-imported name: %s", t.Name)
+				}
+				itd = td
+			}
+			if itd != nil {
+				return itd, nil
+			}
+		}
 		if bv, ok := e.builtins.Get(t.Name); ok {
 			if td, ok := bv.(*runtime.TypeDef); ok {
 				return td, nil

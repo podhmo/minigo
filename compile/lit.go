@@ -226,17 +226,56 @@ func (c *compiler) mapLitType(t ast.Expr, fuel int) bool {
 }
 
 func (c *compiler) compositeLit(x *ast.CompositeLit) {
-	c.compileLit(x, x.Type, 0)
+	c.compileLit(x, litTyp{expr: x.Type})
 }
 
-// compileLit emits a composite literal. baseType is the AST the literal's
-// typedef is derived from; depth counts OpElemType peels applied to it —
-// element literals may omit their type (`{{1,2}}` inside `[][]int`),
-// inheriting the enclosing literal's element type via run-time resolution.
-func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int) {
-	c.typeExpr(baseType)
-	for i := 0; i < depth; i++ {
-		c.emit(bytecode.OpElemType, 0, 0, x.Pos())
+// litTyp names a composite literal's declared type. expr is the type
+// AST and depth the element peels to apply; when the literal's type
+// only resolves through a deferred fact, key marks the map-key typedef
+// of the peeled type and after peels past it — the site fields then
+// spell the same question to the VM.
+type litTyp struct {
+	expr  ast.Expr
+	depth int
+	key   bool
+	after int
+}
+
+// callSite records a deferred literal-type fact on the chunk and
+// returns its CallSites index. The pinned context typedef carries the
+// compile scope (package, file, binds, function-local types) the
+// question was asked in.
+func (c *compiler) callSite(lt litTyp, pos token.Pos) int {
+	file := c.file
+	var localTypes map[string]*runtime.TypeDef
+	if c.pkgScopeTyp != nil {
+		file = c.pkgScopeTyp
+	} else {
+		localTypes = c.fs.localTypeDefs()
+	}
+	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
+		Expr: lt.expr, File: file, Pos: pos,
+		Depth: lt.depth, Key: lt.key, After: lt.after,
+		Ctx: &runtime.TypeDef{Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes},
+	})
+	return len(c.ch.CallSites) - 1
+}
+
+// compileLit emits a composite literal. lt is the declared type: an AST
+// the typedef is derived from, or a deferred-fact spelling when the
+// type only resolves at run time — element literals may omit their type
+// (`{{1,2}}` inside `[][]int`), inheriting the enclosing literal's
+// element type via run-time resolution either way.
+func (c *compiler) compileLit(x *ast.CompositeLit, lt litTyp) {
+	if lt.key || lt.after > 0 {
+		// the typedef is itself a deferred fact: an elided literal
+		// under a not-yet-resolved container.
+		c.emit(bytecode.OpDeferredTyp, c.callSite(lt, x.Pos()), 0, x.Pos())
+	} else {
+		c.typeExpr(lt.expr)
+		for i := 0; i < lt.depth; i++ {
+			c.emit(bytecode.OpElemType, 0, 0, x.Pos())
+		}
 	}
 	kv := false
 	for _, el := range x.Elts {
@@ -254,19 +293,31 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 	ownType := func() ast.Expr {
 		if !ownDone {
 			ownDone = true
-			own, ptr = c.litTypeAt(baseType, depth)
+			if lt.key || lt.after > 0 {
+				// the literal's type is a deferred fact — nothing the
+				// AST can peel.
+				own, ptr = nil, false
+			} else {
+				own, ptr = c.litTypeAt(lt.expr, lt.depth)
+			}
 		}
 		return own
 	}
 	emitVal := func(val ast.Expr) {
 		if lit, ok := val.(*ast.CompositeLit); ok && lit.Type == nil {
-			// an elided `&T` literal is typed *T at run time, so its
-			// own elements sit one OpElemType below the pointee.
-			ed := depth + 1
-			if ownType(); ptr {
-				ed++
+			child := lt
+			if lt.key || lt.after > 0 {
+				// one more element peel past the map key.
+				child.after++
+			} else {
+				// an elided `&T` literal is typed *T at run time, so its
+				// own elements sit one OpElemType below the pointee.
+				child.depth = lt.depth + 1
+				if ownType(); ptr {
+					child.depth++
+				}
 			}
-			c.compileLit(lit, baseType, ed)
+			c.compileLit(lit, child)
 			return
 		}
 		c.expr(val)
@@ -297,16 +348,30 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 		} else if kv {
 			if lit, ok := kvel.Key.(*ast.CompositeLit); ok && lit.Type == nil {
 				// an elided key literal (map[K]V{{...}: v}) inherits
-				// the map's declared key type when it resolves.
+				// the map's declared key type when it resolves; when the
+				// literal's own type is undecided, the question rides a
+				// CallSite to run time.
 				if mt, ok := ownType().(*ast.MapType); ok {
-					c.compileLit(lit, mt.Key, 0)
+					c.compileLit(lit, litTyp{expr: mt.Key})
+				} else if undecidedLitType(ownType()) {
+					c.compileLit(lit, litTyp{expr: lt.expr, depth: lt.depth, key: true, after: lt.after})
 				} else {
 					c.expr(kvel.Key)
 				}
-			} else if id, ok := kvel.Key.(*ast.Ident); ok && !keysAreExprs {
+			} else if id, ok := kvel.Key.(*ast.Ident); ok && !keysAreExprs && !undecidedLitType(ownType()) {
 				// In struct literals the key is a field name, not an
 				// expression; the typedef confirms the map/index case.
 				c.emit(bytecode.OpConst, c.constIdx(id.Name), 0, id.Pos())
+			} else if id != nil && !keysAreExprs {
+				// ownType()==nil: the literal's type is a deferred fact.
+				// OpLitKey resolves it at run time — a map or array
+				// evaluates the emitted key expression; anything else
+				// pushes the field-name const and jumps over it.
+				jm := c.emit3(bytecode.OpLitKey, 0, c.callSite(lt, id.Pos()), c.nameIdx(id.Name), id.Pos())
+				c.expr(kvel.Key)
+				je := c.emit(bytecode.OpJump, 0, 0, id.Pos())
+				c.patchA(jm, len(c.ch.Code))
+				c.patchA(je, len(c.ch.Code))
 			} else {
 				c.expr(kvel.Key)
 			}
@@ -320,6 +385,18 @@ func (c *compiler) compileLit(x *ast.CompositeLit, baseType ast.Expr, depth int)
 		b = 1
 	}
 	c.emit(bytecode.OpMakeComposite, len(x.Elts), b, x.Pos())
+}
+
+// undecidedLitType reports whether a litTypeAt result decides nothing
+// about key reading: nil, or a leftover name or selector that
+// resolveLitType could not unfold — a deferred fact (an unindexed or
+// type-parameter-bound name). Only decided composite forms answer.
+func undecidedLitType(t ast.Expr) bool {
+	switch ast.Unparen(t).(type) {
+	case *ast.MapType, *ast.ArrayType, *ast.StructType:
+		return false
+	}
+	return true
 }
 
 // litTypeAt resolves the type a composite literal `depth` element peels
