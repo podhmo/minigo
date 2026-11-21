@@ -242,53 +242,6 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return stdlib.ErrVal(os.NewSyscallError(stdlib.Str(hostbridge.GoNative(args[0])), hostbridge.HostErrArg(vc, args[1]))), nil
 			},
 		},
-		"Link": h.Fn2("os.Link", func(a []any) (any, error) {
-			so, sn := stdlib.Str(a[0]), stdlib.Str(a[1])
-			old, err := env.FsPath(so)
-			if err != nil {
-				return nil, err
-			}
-			newp, err := env.FsPath(sn)
-			if err != nil {
-				return nil, err
-			}
-			lerr := os.Link(old, newp)
-			if le, ok := lerr.(*os.LinkError); ok {
-				// the host error spells the resolved paths — rewrite
-				// both halves to the script's spelling like
-				// scriptPathErr does for *fs.PathError.
-				le.Old = stdlib.ScriptPathOf(so, old, le.Old)
-				le.New = stdlib.ScriptPathOf(sn, newp, le.New)
-			}
-			return stdlib.ErrVal(lerr), nil
-		}),
-		"Symlink": h.Fn2("os.Symlink", func(a []any) (any, error) {
-			so, sn := stdlib.Str(a[0]), stdlib.Str(a[1])
-			// the link's target text is stored verbatim — resolving it
-			// against the virtual cwd would write the absolute path into
-			// the link and Readlink would answer that spelling (gc keeps
-			// the literal oldname, which a reader resolves relative to the
-			// link's directory). Only the link's own path resolves.
-			newp, err := env.FsPath(sn)
-			if err != nil {
-				return nil, err
-			}
-			lerr := os.Symlink(so, newp)
-			if le, ok := lerr.(*os.LinkError); ok {
-				le.Old = stdlib.ScriptPathOf(so, so, le.Old)
-				le.New = stdlib.ScriptPathOf(sn, newp, le.New)
-			}
-			return stdlib.ErrVal(lerr), nil
-		}),
-		"Readlink": h.Fn1("os.Readlink", func(a []any) (any, error) {
-			sp := stdlib.Str(a[0])
-			p, err := env.FsPath(sp)
-			if err != nil {
-				return nil, err
-			}
-			t, rerr := os.Readlink(p)
-			return stdlib.RetErr2(t, stdlib.ScriptPathErr(rerr, sp, p))
-		}),
 		// error sentinels for errors.Is on the script side
 		"ErrNotExist": &runtime.GoValue{V: fs.ErrNotExist},
 		// *os.File asserts (x/tools' gocommand checks cmd.Stdout's type)
@@ -338,6 +291,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 		"DirEntry": &runtime.TypeDef{Name: "DirEntry", Kind: runtime.KindInterface},
 		"FileInfo": &runtime.TypeDef{Name: "FileInfo", Kind: runtime.KindInterface},
 	}
+	bindLinkOps(ospkg, h, env)
 
 	if len(env.AllowedRoots()) == 0 {
 		ospkg["Getenv"] = h.Fn("os.Getenv", func(a []any) (any, error) { return os.Getenv(stdlib.Str(a[0])), nil })
