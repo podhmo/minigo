@@ -12,7 +12,7 @@ import (
 func (e *Engine) installBufio(h *hostHelpers) {
 	// bufio: Scanner/Reader/Writer box the host types — Scan/Text/Err and
 	// friends dispatch through reflection.
-	e.Bind("bufio", map[string]runtime.Value{
+	e.bindBound("bufio", map[string]runtime.Value{
 		// the sentinel is the real host error: `err == bufio.ErrBufferFull`
 		// in csv's reader compares GoValues by identity.
 		"ErrBufferFull":        errVal(bufio.ErrBufferFull),

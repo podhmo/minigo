@@ -103,5 +103,5 @@ func (e *Engine) installUnicodeUtf8(h *hostHelpers) {
 		}
 		return &runtime.Slice{Elems: append(elems, add...), Typ: anonSliceTyp("byte")}, nil
 	}, Target: utf8.AppendRune}
-	e.Bind("unicode/utf8", tbl)
+	e.bindBound("unicode/utf8", tbl)
 }

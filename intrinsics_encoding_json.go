@@ -19,7 +19,7 @@ import (
 )
 
 func (e *Engine) installEncodingJson(h *hostHelpers) {
-	e.Bind("encoding/json", map[string]runtime.Value{
+	e.bindBound("encoding/json", map[string]runtime.Value{
 		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostNew: func() any { return json.Number("") }},
 		// the Marshaler/Unmarshaler interface types — gc dispatches
 		// through an interface-holding target (`var i json.Unmarshaler

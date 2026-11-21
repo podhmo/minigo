@@ -15,7 +15,7 @@ func (e *Engine) installNet(h *hostHelpers) {
 	// concrete values arrive as GoValue boxes whose methods dispatch
 	// through reflection, and script pointers (e.g. &net.TCPAddr{...})
 	// unbox via goNative at call boundaries.
-	e.Bind("net", map[string]runtime.Value{
+	e.bindBound("net", map[string]runtime.Value{
 		"Addr":             &runtime.TypeDef{Name: "net.Addr", Kind: runtime.KindInterface, MReqs: []string{"Network", "String"}},
 		"Conn":             &runtime.TypeDef{Name: "net.Conn", Kind: runtime.KindInterface, MReqs: []string{"Read", "Write", "Close", "LocalAddr", "RemoteAddr", "SetDeadline", "SetReadDeadline", "SetWriteDeadline"}},
 		"Listener":         &runtime.TypeDef{Name: "net.Listener", Kind: runtime.KindInterface, MReqs: []string{"Accept", "Close", "Addr"}},

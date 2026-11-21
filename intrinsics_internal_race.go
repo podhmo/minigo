@@ -5,7 +5,7 @@ import (
 )
 
 func (e *Engine) installInternalRace(h *hostHelpers) {
-	e.Bind("internal/race", map[string]runtime.Value{
+	e.bindBound("internal/race", map[string]runtime.Value{
 		// the interpreter runs no race detector: iter.Pull's
 		// race.Acquire/Release/Write calls are no-ops — the coroutine
 		// rendezvous itself carries the synchronization.

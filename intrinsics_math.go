@@ -20,7 +20,7 @@ func (e *Engine) installMath(h *hostHelpers) {
 
 	mathLn10 := constant.MakeFromLiteral("2.30258509299404568401799145468436420760110148862877297603332790", token.FLOAT, 0)
 
-	e.Bind("math", map[string]runtime.Value{
+	e.bindBound("math", map[string]runtime.Value{
 		// math's consts are all untyped — they keep constant-domain
 		// precision and adapt to an operand's declared type.
 		"Pi":      mathFloat("3.14159265358979323846264338327950288419716939937510582097494459"),

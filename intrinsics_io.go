@@ -54,7 +54,7 @@ func (e *Engine) installIo(h *hostHelpers) {
 		}}
 	}
 
-	e.Bind("io", map[string]runtime.Value{
+	e.bindBound("io", map[string]runtime.Value{
 		"Reader":       &runtime.TypeDef{Name: "io.Reader", Kind: runtime.KindInterface, MReqs: []string{"Read"}},
 		"Writer":       &runtime.TypeDef{Name: "io.Writer", Kind: runtime.KindInterface, MReqs: []string{"Write"}},
 		"Closer":       &runtime.TypeDef{Name: "io.Closer", Kind: runtime.KindInterface, MReqs: []string{"Close"}},

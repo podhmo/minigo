@@ -1,5 +1,5 @@
 package minigo
 
 func (e *Engine) installHtml(h *hostHelpers) {
-	e.Bind("html", htmlGenEntries())
+	e.bindBound("html", htmlGenEntries())
 }

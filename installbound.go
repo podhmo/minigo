@@ -52,7 +52,9 @@ func (e *Engine) installBound(path string) {
 
 // bindBound is [Engine.Bind] for the lazy installers: a path already
 // bound — an explicit Bind, or a sibling alias installed on first use
-// — is not clobbered by the default table.
+// — is not clobbered by the default table. The publish-time check and
+// the publish share one critical section, so an explicit Bind landing
+// while the table was still building also wins.
 func (e *Engine) bindBound(importPath string, symbols map[string]runtime.Value) {
 	e.mu.Lock()
 	bound := e.names.Bound(importPath)
@@ -60,7 +62,13 @@ func (e *Engine) bindBound(importPath string, symbols map[string]runtime.Value) 
 	if bound {
 		return
 	}
-	e.Bind(importPath, symbols)
+	p := e.bindTable(importPath, symbols)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.names.Bound(importPath) {
+		return
+	}
+	e.bindPublishLocked(importPath, p)
 }
 
 // registered reports whether path is bound — installed already or

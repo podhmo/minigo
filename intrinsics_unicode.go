@@ -18,5 +18,5 @@ func (e *Engine) installUnicode(h *hostHelpers) {
 	// types) — scripts pass them to unicode.SpecialCase().ToUpper etc.
 	tbl["TurkishCase"] = &runtime.GoValue{V: unicode.TurkishCase}
 	tbl["AzeriCase"] = &runtime.GoValue{V: unicode.AzeriCase}
-	e.Bind("unicode", tbl)
+	e.bindBound("unicode", tbl)
 }

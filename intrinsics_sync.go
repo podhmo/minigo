@@ -11,7 +11,7 @@ func (e *Engine) installSync(h *hostHelpers) {
 	// sync: the real host types back `var wg sync.WaitGroup` — TypeDef.HostNew
 	// boxes a fresh Go value per zero, and member access dispatches through
 	// the host method set (Lock/Unlock, Add/Wait/Done, Do).
-	e.Bind("sync", map[string]runtime.Value{
+	e.bindBound("sync", map[string]runtime.Value{
 		"WaitGroup": hostType("sync.WaitGroup", func() any { return &sync.WaitGroup{} }),
 		"Mutex":     hostType("sync.Mutex", func() any { return &sync.Mutex{} }),
 		"RWMutex":   hostType("sync.RWMutex", func() any { return &sync.RWMutex{} }),

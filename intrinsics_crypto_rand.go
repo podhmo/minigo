@@ -17,7 +17,7 @@ func (e *Engine) installCryptoRand(h *hostHelpers) {
 	// and drive the OS CSPRNG through linknamed trampolines. Packages
 	// importing crypto/internal/* directly (crypto/tls, crypto/rsa)
 	// still reach interpreted internals — out of scope here.
-	e.Bind("crypto/rand", map[string]runtime.Value{
+	e.bindBound("crypto/rand", map[string]runtime.Value{
 		// Reader is the real host io.Reader: `io.ReadFull(rand.Reader, b)`
 		// in interpreted code reads through it via asReaderVM. A script
 		// `rand.Reader = r` write is honored only by member reads of

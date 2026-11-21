@@ -12,7 +12,7 @@ import (
 )
 
 func (e *Engine) installSort(h *hostHelpers) {
-	e.Bind("sort", hostSliceBoundary(map[string]runtime.Value{
+	e.bindBound("sort", hostSliceBoundary(map[string]runtime.Value{
 		"Ints":     h.sortInPlace("sort.Ints"),
 		"Float64s": h.sortInPlace("sort.Float64s"),
 		"Strings":  h.sortInPlace("sort.Strings"),

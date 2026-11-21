@@ -24,7 +24,7 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 
 	uintptrTyp := &runtime.TypeDef{Name: "uintptr", Kind: runtime.KindNamedBasic}
 
-	e.Bind("unsafe", map[string]runtime.Value{
+	e.bindBound("unsafe", map[string]runtime.Value{
 		// unsafe.Pointer: a named pointer to the opaque ArbitraryType.
 		// Values carry it as a Named tag over the real ref, so *T <->
 		// unsafe.Pointer conversions keep write-through and identity.

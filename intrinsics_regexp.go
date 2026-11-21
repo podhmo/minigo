@@ -7,7 +7,7 @@ import (
 )
 
 func (e *Engine) installRegexp(h *hostHelpers) {
-	e.Bind("regexp", map[string]runtime.Value{
+	e.bindBound("regexp", map[string]runtime.Value{
 		// the Regexp type, so `x.(*regexp.Regexp)` and `*regexp.Regexp`
 		// slots resolve to the host type the constructors return.
 		"Regexp":      hostType("regexp.Regexp", func() any { return &regexp.Regexp{} }),

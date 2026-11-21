@@ -19,7 +19,7 @@ import (
 )
 
 func (e *Engine) installFmt(h *hostHelpers) {
-	e.Bind("fmt", map[string]runtime.Value{
+	e.bindBound("fmt", map[string]runtime.Value{
 		// fmt's interfaces are needed as types by interpreted sources that
 		// reflect on them or assert (e.g. template's fmt.Stringer probes,
 		// math/big's compile-time fmt.Scanner assertion).
