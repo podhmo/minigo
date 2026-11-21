@@ -40,6 +40,11 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 			args += ";" + string(e.typeIDOf(boundTypedefOf(td.Binds[tp])))
 		}
 	}
+	for _, ov := range td.OuterArgs {
+		// a function-local generic's captured arguments are part of the
+		// instantiation's identity, like gc's reflect spelling.
+		args += ";" + string(e.typeIDOf(boundTypedefOf(ov)))
+	}
 	if td.Spec != nil {
 		// source-declared: the file pointer is the source version — a
 		// re-parse of the same file makes a new version of the type.

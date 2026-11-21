@@ -620,7 +620,9 @@ func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value)
 			}
 		}
 	}
-	return td
+	// M4-3d: the instantiated descriptor is canonical — two mints of the
+	// same instantiation are the same pointer.
+	return v.internTypedef(td)
 }
 
 // recvTypeParamNames extracts the type parameter names a method receiver
