@@ -71,8 +71,11 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 	case !ok:
 		c.emit(bytecode.OpGlobalRef, c.nameIdx(name), 0, pos)
 	case !isUp:
-		c.emit(bytecode.OpLocalRef, idx, 0, pos)
-		// `&x` — the ref itself is the produced value.
+		// `&x` — the ref itself is the produced value: publishable, so
+		// B=1 like any ref a store or select may retain. A pooled cell
+		// it resolves to flags the frame leaked; a transient B=0 ref
+		// would return an unflagged pooled cell that freeFrame reuses.
+		c.emit(bytecode.OpLocalRef, idx, 1, pos)
 		c.fs.box(idx, "ref")
 	default:
 		c.emit(bytecode.OpUpvalRef, idx, 0, pos)
