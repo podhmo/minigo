@@ -104,6 +104,32 @@ func HostBasicType(td *TypeDef) reflect.Type {
 	return hostBasicKinds[td.Name]
 }
 
+// HostReflectType is the host element type of a typedef: a predeclared
+// basic's Go type, or a bound host type's own type ([TypeDef.HostNew],
+// [TypeDef.HostScalar]); nil for script-defined or unbound types.
+func HostReflectType(td *TypeDef) reflect.Type {
+	if rt := HostBasicType(td); rt != nil {
+		return rt
+	}
+	if td == nil {
+		return nil
+	}
+	if td.HostNew != nil {
+		// HostType is the allocator's type, *T when td spells T
+		// (HostNew is reflect.New(rt)); the typedef's own host
+		// type is the element.
+		rt := td.HostType()
+		if rt != nil && rt.Kind() == reflect.Pointer {
+			return rt.Elem()
+		}
+		return rt
+	}
+	if td.HostScalar != nil {
+		return reflect.TypeOf(td.HostScalar)
+	}
+	return td.HostIdent
+}
+
 // HostIterSeqType is the host iter.Seq[V] / iter.Seq2[K, V] type of a
 // script seq typedef when its elements are predeclared basics the host
 // binary has an instantiation for (Seq2 keyed by int or string); nil
