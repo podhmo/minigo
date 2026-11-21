@@ -2765,6 +2765,30 @@ func TestVet(t *testing.T) {
 	}
 }
 
+func TestVetReadFileHint(t *testing.T) {
+	e := newEngine(t)
+	got, err := e.Vet(context.Background(), "./testdata/vethint")
+	if err != nil {
+		t.Fatalf("Vet: %v", err)
+	}
+	var hints []string
+	for _, r := range got {
+		if r.IsHint() {
+			hints = append(hints, r.Resolved)
+		} else {
+			t.Errorf("unexpected non-hint finding: %v", r)
+		}
+	}
+	want := []string{
+		"b from os.ReadFile is only read as text — io.Copy(&strings.Builder{}, r) keeps the bytes on the host",
+		"b from os.ReadFile is only read as text — io.Copy(&strings.Builder{}, r) keeps the bytes on the host",
+		"b from os.ReadFile is only read as text — io.Copy(&strings.Builder{}, r) keeps the bytes on the host",
+	}
+	if diff := cmp.Diff(want, hints); diff != "" {
+		t.Errorf("hints mismatch (-want +got):\n%s", diff)
+	}
+}
+
 type natPoint struct{ X int }
 
 func TestNativeBindings(t *testing.T) {

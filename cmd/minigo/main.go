@@ -31,6 +31,7 @@ import (
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/index"
+
 	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
@@ -489,11 +490,15 @@ func vet(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	stubs := 0
 	for _, f := range findings {
 		fmt.Fprintln(os.Stderr, f)
+		if !f.IsHint() {
+			stubs++
+		}
 	}
-	if len(findings) > 0 {
-		return fmt.Errorf("%d unregistered stub call(s)", len(findings))
+	if stubs > 0 {
+		return fmt.Errorf("%d unregistered stub call(s)", stubs)
 	}
 	return nil
 }
