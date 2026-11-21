@@ -1,3 +1,5 @@
 quit interrupt terminated
 true no such file or directory
 true
+invalid argument no such file or directory user defined signal 1
+true
