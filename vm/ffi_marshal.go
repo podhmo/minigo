@@ -181,29 +181,33 @@ func hostZeroMethod(rt hostbridge.Type, name string) (runtime.Value, bool) {
 // (Go's visibility rule), read through the field's address so
 // interpreted stdlib code can see what it stamped — net/http's
 // ServeMux reading back the r.pat it wrote on a host *http.Request.
-func hostField(v any, name, pkg string) (hostbridge.Value, bool) {
+// promoted reports whether the hit came through embedding
+// (`template.Template.Name` is really `Tree.Name`, a depth-1 field a
+// declared method of the same name must beat).
+func hostField(v any, name, pkg string) (fv hostbridge.Value, promoted bool, ok bool) {
 	rv := hostbridge.RVOf(v)
 	for rv.Kind() == hostbridge.KindPointer || rv.Kind() == hostbridge.KindInterface {
 		if rv.IsNil() {
-			return hostbridge.Value{}, false
+			return hostbridge.Value{}, false, false
 		}
 		rv = rv.Elem()
 	}
 	if rv.Kind() != hostbridge.KindStruct {
-		return hostbridge.Value{}, false
+		return hostbridge.Value{}, false, false
 	}
-	fv := rv.FieldByName(name)
+	fv = rv.FieldByName(name)
 	if !fv.IsValid() {
-		return hostbridge.Value{}, false
-	}
-	if fv.CanInterface() {
-		return fv, true
+		return hostbridge.Value{}, false, false
 	}
 	sf, _ := rv.Type().FieldByName(name)
-	if pkg == "" || sf.PkgPath != pkg || !fv.CanAddr() {
-		return hostbridge.Value{}, false
+	promoted = len(sf.Index) > 1
+	if fv.CanInterface() {
+		return fv, promoted, true
 	}
-	return hostbridge.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem(), true
+	if pkg == "" || sf.PkgPath != pkg || !fv.CanAddr() {
+		return hostbridge.Value{}, false, false
+	}
+	return hostbridge.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem(), promoted, true
 }
 
 // initHostLiteral writes keyed composite-literal fields onto a
