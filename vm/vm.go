@@ -129,6 +129,11 @@ type Hooks struct {
 	// every path minting the same type hands back the same pointer.
 	// Nil means no interning — the synthesized descriptor passes through.
 	InternTypedef func(td *runtime.TypeDef) *runtime.TypeDef
+	// TypeIDOf computes td's canonical type identity (M4-6b): the key
+	// instance caches are built on — two typedefs with the same TypeID
+	// name the same type, "?" marks an unidentifiable one. Nil means
+	// identity-keyed caches stay cold (the uncached paths run).
+	TypeIDOf func(td *runtime.TypeDef) runtime.TypeID
 	// HostTwin returns the engine's own typedef for the named host type
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil

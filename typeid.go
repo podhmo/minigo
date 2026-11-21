@@ -3,6 +3,7 @@ package minigo
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/podhmo/minigo/runtime"
@@ -35,8 +36,24 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		return "?"
 	}
 	var args string
-	if len(td.TParams) > 0 && td.Binds != nil {
-		for _, tp := range td.TParams {
+	// Spell arguments only for a named instantiation (TParams, or a
+	// declared type whose TParams a copy dropped). An anonymous typedef
+	// merely inherits the enclosing generic's Binds as resolution
+	// context — spelling them would split `use[[]int]` inside wrap[int]
+	// and wrap[string] into different identities for one type.
+	if td.Binds != nil && (len(td.TParams) > 0 || td.Spec != nil) {
+		// TParams gives declaration order; copies that drop it (e.g.
+		// argTypedef's) still carry Binds — sort the names so an
+		// instantiation always spells its arguments.
+		params := td.TParams
+		if len(params) == 0 {
+			params = make([]string, 0, len(td.Binds))
+			for n := range td.Binds {
+				params = append(params, n)
+			}
+			slices.Sort(params)
+		}
+		for _, tp := range params {
 			args += ";" + string(e.typeIDOf(boundTypedefOf(td.Binds[tp])))
 		}
 	}
@@ -95,7 +112,9 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	// canonical twin the spelling already names), and spelled keys are
 	// context-stable in a way per-file elem keys are not.
 	if td.Anon != nil && td.Pkg != nil {
-		if s := runtime.TypGoSpelling(td.Anon, td); s != "" {
+		s := runtime.TypGoSpelling(td.Anon, td)
+		s = e.anonLeafSpelling(td, s)
+		if s != "" {
 			// identity spelling (keeps chan direction), not underlying.
 			// Selector qualifiers already resolve to import paths through
 			// the file's imports, so same-named packages do not collide.

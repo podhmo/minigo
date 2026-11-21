@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -141,6 +142,20 @@ func TestTypeIDAnonymousIsStructural(t *testing.T) {
 	if string(e.typeIDOf(hp)) == "" {
 		t.Errorf("anonymous ptr over host elem produced no key")
 	}
+	// an anonymous typedef inside a generic function inherits the
+	// enclosing Binds as resolution context — NOT its own arguments:
+	// `use[[]int]` inside wrap[int] and wrap[string] is one type and
+	// must share its instantiation-cache key.
+	withBinds := func(bv runtime.Value) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind:  runtime.KindSlice,
+			Elem:  runtime.BasicTypedef("int"),
+			Binds: map[string]runtime.Value{"T": bv},
+		}
+	}
+	if a, b := e.typeIDOf(withBinds(runtime.BasicTypedef("int"))), e.typeIDOf(withBinds(runtime.BasicTypedef("string"))); a != b {
+		t.Errorf("enclosing generic's binds split an anonymous typedef's key: %q vs %q", a, b)
+	}
 }
 
 // vtdForKey is the Value-typedef for the anonymous-composition case.
@@ -244,5 +259,282 @@ func TestInternTypedefStragglerRebindKeepsNewest(t *testing.T) {
 	e.bindInternTypedefs(p1, keys1, seq1)
 	if diff := cmp.Diff(true, e.internTypedef(first) == second); diff != "" {
 		t.Errorf("straggling older bind rolled the interned typedef back (-want +got):\n%s", diff)
+	}
+}
+
+// Two functions' same-named local types are different types: the anon
+// composite `[]L` must not collide on their shared spelling, or an
+// instance cache keyed on it binds the wrong local decl.
+func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
+	e := NewEngine(".")
+	pkg := &runtime.Package{Path: "example.com/mod"}
+	f := &syntax.File{}
+	localSlice := func(pos token.Pos) *runtime.TypeDef {
+		l := srcTd(pkg, f, pos, "L")
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: pkg, File: f,
+			Anon:       &ast.ArrayType{Elt: ast.NewIdent("L")},
+			LocalTypes: map[string]*runtime.TypeDef{"L": l},
+		}
+	}
+	if e.typeIDOf(localSlice(10)) == e.typeIDOf(localSlice(20)) {
+		t.Errorf("[]L keys alike across decl sites: %q", e.typeIDOf(localSlice(10)))
+	}
+	once := e.typeIDOf(localSlice(10))
+	if e.typeIDOf(localSlice(10)) != once {
+		t.Error("same local decl keys differently")
+	}
+	// locals in scope do not disturb leafs that don't use them.
+	leaf := func(lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: pkg, File: f,
+			Anon:       &ast.ArrayType{Elt: ast.NewIdent("int")},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(leaf(nil)), e.typeIDOf(leaf(map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
+		t.Errorf("[]int keys differ by unused locals: %q vs %q", a, b)
+	}
+	// a local bound differently across instantiations is a different
+	// leaf: `type L []T` inside f[int] and f[string].
+	boundSlice := func(t runtime.Value) *runtime.TypeDef {
+		l := srcTd(pkg, f, 10, "L")
+		l.Binds = map[string]runtime.Value{"T": t}
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: pkg, File: f,
+			Anon:       &ast.ArrayType{Elt: ast.NewIdent("L")},
+			LocalTypes: map[string]*runtime.TypeDef{"L": l},
+		}
+	}
+	if e.typeIDOf(boundSlice(runtime.BasicTypedef("int"))) == e.typeIDOf(boundSlice(runtime.BasicTypedef("string"))) {
+		t.Errorf("[]L keys alike across instantiation binds: %q", e.typeIDOf(boundSlice(runtime.BasicTypedef("int"))))
+	}
+	// a member name matching a local type is not a type reference:
+	// `map[string]x.L` keys by its element alone.
+	memberKey := func(lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindMap, Pkg: pkg, File: f,
+			Anon: &ast.MapType{
+				Key:   ast.NewIdent("string"),
+				Value: &ast.SelectorExpr{X: ast.NewIdent("x"), Sel: ast.NewIdent("L")},
+			},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(memberKey(nil)), e.typeIDOf(memberKey(map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
+		t.Errorf("map[string]x.L keys differ by member-name lookalike: %q vs %q", a, b)
+	}
+	// a local alias is transparent: `[]A` with `type A = int` keys as
+	// `[]int`.
+	aliasTd := srcTd(pkg, f, 10, "A")
+	aliasTd.Kind = runtime.KindAlias
+	aliasTd.Anon = ast.NewIdent("int")
+	if a, b := e.typeIDOf(leaf(nil)), e.typeIDOf(&runtime.TypeDef{
+		Kind: runtime.KindSlice, Pkg: pkg, File: f,
+		Anon:       &ast.ArrayType{Elt: ast.NewIdent("A")},
+		LocalTypes: map[string]*runtime.TypeDef{"A": aliasTd},
+	}); a != b {
+		t.Errorf("[]A with local alias A=int keys unlike []int: %q vs %q", a, b)
+	}
+	// a function parameter name matching a local type is not a type
+	// reference: `func(L int)` keys like `func(x int)`.
+	paramFn := func(param string, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindFunc, Pkg: pkg, File: f,
+			Anon: &ast.FuncType{Params: &ast.FieldList{List: []*ast.Field{
+				{Names: []*ast.Ident{ast.NewIdent(param)}, Type: ast.NewIdent("int")},
+			}}},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(paramFn("x", nil)), e.typeIDOf(paramFn("L", map[string]*runtime.TypeDef{"L": srcTd(pkg, f, 10, "L")})); a != b {
+		t.Errorf("func(L int) keys unlike func(x int): %q vs %q", a, b)
+	}
+	// an embedded field's name is the type name as written: `struct{A}`
+	// is not `struct{T}` even when A is an alias for T, and two aliases
+	// of one target differ too.
+	embed := func(name string, pos token.Pos) *runtime.TypeDef {
+		a := srcTd(pkg, f, pos, name)
+		a.Kind = runtime.KindAlias
+		a.Anon = ast.NewIdent("int")
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: pkg, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent(name)},
+			}}},
+			LocalTypes: map[string]*runtime.TypeDef{name: a},
+		}
+	}
+	if a, b := e.typeIDOf(embed("A", 10)), e.typeIDOf(embed("A2", 20)); a == b {
+		t.Errorf("struct{A} and struct{A2} key alike: %q", a)
+	}
+	// ...but two `type A = int` decls name one field type: alias decl
+	// sites are identity-irrelevant.
+	if a, b := e.typeIDOf(embed("A", 10)), e.typeIDOf(embed("A", 30)); a != b {
+		t.Errorf("struct{A} keys differ across alias decl sites: %q vs %q", a, b)
+	}
+	// ...but an unexported embedded name is locked to its declaring
+	// package: same-named packages at different import paths embed
+	// different `a`s.
+	embedUnexported := func(p *runtime.Package) *runtime.TypeDef {
+		a := srcTd(p, f, 10, "a")
+		a.Kind = runtime.KindAlias
+		a.Anon = ast.NewIdent("int")
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("a")},
+			}}},
+			LocalTypes: map[string]*runtime.TypeDef{"a": a},
+		}
+	}
+	p1 := &runtime.Package{Path: "one/p", Name: "p"}
+	p2 := &runtime.Package{Path: "two/p", Name: "p"}
+	if a, b := e.typeIDOf(embedUnexported(p1)), e.typeIDOf(embedUnexported(p2)); a == b {
+		t.Errorf("struct{a} collides across same-named packages: %q", a)
+	}
+	// a package-level unexported embed (no LocalTypes leaf) locks too.
+	pkgLevelEmbed := func(p *runtime.Package) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("a")},
+			}}},
+		}
+	}
+	if a, b := e.typeIDOf(pkgLevelEmbed(p1)), e.typeIDOf(pkgLevelEmbed(p2)); a == b {
+		t.Errorf("package-level struct{a} collides across same-named packages: %q", a)
+	}
+	if a, b := e.typeIDOf(pkgLevelEmbed(p1)), e.typeIDOf(pkgLevelEmbed(p1)); a != b {
+		t.Errorf("same-package struct{a} keys differ: %q vs %q", a, b)
+	}
+	// a universe-scope name is not package-locked: `struct{int}` is one
+	// type in every package.
+	embedInt := func(p *runtime.Package) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("int")},
+			}}},
+		}
+	}
+	if a, b := e.typeIDOf(embedInt(p1)), e.typeIDOf(embedInt(p2)); a != b {
+		t.Errorf("struct{int} keys differ across packages: %q vs %q", a, b)
+	}
+	// a bound type parameter is transparent: `[]T` under T=struct{int}
+	// is `[]struct{int}` — the bound typedef spells the leaf.
+	sliceOf := func(elt ast.Expr) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice, Pkg: p1, File: f,
+			Anon: &ast.ArrayType{Elt: elt},
+		}
+	}
+	bound := sliceOf(ast.NewIdent("T"))
+	bound.Binds = map[string]runtime.Value{"T": embedInt(p1)}
+	if a, b := e.typeIDOf(bound), e.typeIDOf(sliceOf(&ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+		{Type: ast.NewIdent("int")},
+	}}})); a != b {
+		t.Errorf("[]T bound to struct{int} keys unlike []struct{int}: %q vs %q", a, b)
+	}
+	// two function-local aliases of the same name in one package embed
+	// different fields: `a = int` and `a = string` are not one type.
+	embedAliasOf := func(target string) *runtime.TypeDef {
+		a := srcTd(p1, f, 10, "a")
+		a.Kind = runtime.KindAlias
+		a.Anon = ast.NewIdent(target)
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: p1, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Type: ast.NewIdent("a")},
+			}}},
+			LocalTypes: map[string]*runtime.TypeDef{"a": a},
+		}
+	}
+	if a, b := e.typeIDOf(embedAliasOf("int")), e.typeIDOf(embedAliasOf("string")); a == b {
+		t.Errorf("struct{a} collides across alias targets in one package: %q", a)
+	}
+	// a package that shadows a universe name embeds ITS decl, not the
+	// builtin: `type int string` + struct{int} is not builtin struct{int}.
+	pShadow := &runtime.Package{Path: "shadow/p", Name: "p", Index: &index.Index{
+		Types: map[string]*index.TypeDeclInfo{"int": {Decl: &index.Decl{
+			Spec: &ast.TypeSpec{Type: ast.NewIdent("string")},
+		}}},
+	}}
+	if a, b := e.typeIDOf(embedInt(pShadow)), e.typeIDOf(embedInt(p1)); a == b {
+		t.Errorf("struct{int} collides with package-shadowed int: %q", a)
+	}
+	// a package-level `type a = int` and a function-local `a = int` in
+	// the same package name one embedded field — the keys converge.
+	pAlias := &runtime.Package{Path: p1.Path, Name: "p", Index: &index.Index{
+		Types: map[string]*index.TypeDeclInfo{"a": {Decl: &index.Decl{
+			Spec: &ast.TypeSpec{Assign: 1, Type: ast.NewIdent("int")},
+		}}},
+	}}
+	embedPkgAlias := &runtime.TypeDef{
+		Kind: runtime.KindStruct, Pkg: pAlias, File: f,
+		Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+			{Type: ast.NewIdent("a")},
+		}}},
+	}
+	if a, b := e.typeIDOf(embedPkgAlias), e.typeIDOf(embedAliasOf("int")); a != b {
+		t.Errorf("package alias a=int and local alias a=int key differently: %q vs %q", a, b)
+	}
+	// a generic package alias instantiates like a local one — its
+	// parameter names must not resolve against the package (the `Y`
+	// decl here) nor be left unbound.
+	pairBody := &ast.IndexListExpr{X: ast.NewIdent("Pair"), Indices: []ast.Expr{ast.NewIdent("Y"), ast.NewIdent("X")}}
+	genSpec := &ast.TypeSpec{
+		Assign: 1, Type: pairBody,
+		TypeParams: &ast.FieldList{List: []*ast.Field{
+			{Names: []*ast.Ident{ast.NewIdent("X"), ast.NewIdent("Y")}, Type: ast.NewIdent("any")},
+		}},
+	}
+	pGen := &runtime.Package{Path: p1.Path, Name: "p", Index: &index.Index{
+		Types: map[string]*index.TypeDeclInfo{
+			"G": {Decl: &index.Decl{Spec: genSpec}},
+			"Y": {Decl: &index.Decl{Spec: &ast.TypeSpec{Type: ast.NewIdent("int")}}},
+		},
+	}}
+	sliceGen := &ast.ArrayType{Elt: &ast.IndexListExpr{X: ast.NewIdent("G"), Indices: []ast.Expr{ast.NewIdent("int"), ast.NewIdent("string")}}}
+	pkgSide := &runtime.TypeDef{Kind: runtime.KindSlice, Pkg: pGen, File: f, Anon: sliceGen}
+	localAlias := &runtime.TypeDef{
+		Kind: runtime.KindAlias, Pkg: pGen, File: f,
+		Anon: pairBody, TParams: []string{"X", "Y"}, TConstraints: []ast.Expr{ast.NewIdent("any"), ast.NewIdent("any")},
+	}
+	localSide := &runtime.TypeDef{
+		Kind: runtime.KindSlice, Pkg: pGen, File: f, Anon: sliceGen,
+		LocalTypes: map[string]*runtime.TypeDef{"G": localAlias},
+	}
+	if a, b := e.typeIDOf(pkgSide), e.typeIDOf(localSide); a != b {
+		t.Errorf("generic package alias and local alias key differently: %q vs %q", a, b)
+	}
+	// an unnamed func parameter's type is not an embedded field:
+	// `func(A)` with `type A = int` keys like `func(int)` and `func(x A)`.
+	anonFn := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindFunc, Pkg: pkg, File: f,
+			Anon: &ast.FuncType{Params: &ast.FieldList{List: []*ast.Field{
+				{Type: elt},
+			}}},
+			LocalTypes: lts,
+		}
+	}
+	aliases := map[string]*runtime.TypeDef{"A": aliasTd}
+	if a, b := e.typeIDOf(anonFn(ast.NewIdent("int"), nil)), e.typeIDOf(anonFn(ast.NewIdent("A"), aliases)); a != b {
+		t.Errorf("func(A) keys unlike func(int): %q vs %q", a, b)
+	}
+	// a declared (named) field of an alias type does unfold —
+	// `struct{x A}` is `struct{x int}`.
+	namedFld := func(elt ast.Expr, lts map[string]*runtime.TypeDef) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindStruct, Pkg: pkg, File: f,
+			Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
+				{Names: []*ast.Ident{ast.NewIdent("x")}, Type: elt},
+			}}},
+			LocalTypes: lts,
+		}
+	}
+	if a, b := e.typeIDOf(namedFld(ast.NewIdent("int"), nil)), e.typeIDOf(namedFld(ast.NewIdent("A"), map[string]*runtime.TypeDef{"A": aliasTd})); a != b {
+		t.Errorf("struct{x A} keys unlike struct{x int}: %q vs %q", a, b)
 	}
 }
