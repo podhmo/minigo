@@ -1,0 +1,7 @@
+{[104 105] 0 0}
+&{[104 105] 0 0}
+{buf:[104 105] off:0 lastRead:0}
+main.MyBuf{buf:[]uint8{0x68, 0x69}, off:0, lastRead:0}
+{hi %!s(int=0) %!s(bytes.readOp=0)}
+{"hi" '\x00' '\x00'}
+SHOUT

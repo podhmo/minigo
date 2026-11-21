@@ -160,7 +160,13 @@ func (v *VM) sigTypeFitsHost(from *runtime.TypeDef, e ast.Expr, rt hostbridge.Ty
 	td = v.peelAlias(td)
 	if td.HostNew != nil {
 		ht := td.HostType()
-		return rt == ht || rt.AssignableTo(ht)
+		if rt == ht || rt.AssignableTo(ht) {
+			return true
+		}
+		// a facade boxes its zero as *T, but a signature position can
+		// legitimately carry T itself — e.g. the element of a declared
+		// *T after the composite walk peeled the star.
+		return ht.Kind() == hostbridge.KindPointer && rt == ht.Elem()
 	}
 	if td.Kind == runtime.KindInterface {
 		if len(td.MReqs) == 0 {

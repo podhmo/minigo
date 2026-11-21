@@ -117,12 +117,29 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 		// on the tag rather than deref past it.
 		if n, ok := v.(*runtime.Named); ok {
 			if gv, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok {
+				// a declared-over-interface tag (`type A any`,
+				// `type E error`) declares no methods of its own —
+				// it is transparent to the payload's method set:
+				// `var a A = buf` still calls buf.String(), and a
+				// script-declared layer between the tag and the box
+				// (Named{W}.V = Named{T}.V = GoValue) keeps its own
+				// declared walk. Peel to the payload rather than
+				// reporting the interface's own walk.
+				if n.Typ != nil && (n.Typ.Kind == runtime.KindInterface || n.Typ.IfaceBase) {
+					v = n.V
+					continue
+				}
 				// a named type boxing a host value (type C128 complex128)
 				// still exposes its declared methods — the reflect set
 				// only fills in when the tag declares none (host box).
 				// Host reflect methods carry no decl signature, so the
 				// func view reports nil for the pure host box.
-				if n.Typ != nil && len(n.Typ.Methods) > 0 {
+				if n.Typ != nil && (len(n.Typ.Methods) > 0 || n.Typ.File != nil || declOverHost(n.Typ)) {
+					// a script-declared typedef (File set, or the
+					// pointee of an anonymous *T over one) reports its
+					// own walk — `type MyBuf bytes.Buffer` inherits
+					// none of the host methods, so its set is just
+					// what the declaration adds.
 					return r.TypeMethodInfoU(n.Typ, ptr)
 				}
 				return &runtime.MethodSet{Names: hostMethodSet(gv.V)}, nil
@@ -175,6 +192,14 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 		if !ok {
 			break
 		}
+		// `&x` is a *T where T is x's declared type: `&i` on an
+		// interface var is a *interface{} and `&p` on a *T slot is a
+		// **T — both carry an empty method set no matter what the
+		// pointee itself would report (gc: a pointer to interface has
+		// no methods, and an assert like `(&w).(io.Writer)` fails).
+		if r.refOpaque(v, dv) {
+			return &runtime.MethodSet{}, nil
+		}
 		// reached through a pointer: the pointee's method set includes
 		// pointer receivers — `var _ Stringer = &c` sees c's (*C).String.
 		v = dv
@@ -211,9 +236,57 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 	}
 }
 
+// refOpaque reports whether the ref `&x` is a pointer whose own method
+// set is empty: the pointee's declared type is an unnamed pointer (`&p`
+// on a *T slot is a **T) or an interface (`&i` is a *interface{}), or —
+// for an unstamped `p := host(...)` slot — the stored value is itself a
+// host pointer box with no named twin. A host struct bound behind a
+// pointer (reflect.Value lives as *RValue) names a td, so `&v` is a
+// *Named that keeps its methods. A Named payload likewise keeps its own
+// declared walk, and a field/index ref only counts when the stored
+// value carries an interface tag.
+func (r *Resolver) refOpaque(ref, dv runtime.Value) bool {
+	if c, ok := ref.(*runtime.Cell); ok {
+		if td := c.Typ; td != nil {
+			if td.Kind == runtime.KindAlias {
+				// `type W = io.Writer` declares an interface slot —
+				// `&w` is a *iface the same as a direct iface decl.
+				td = r.PeelAliasTd(td)
+			}
+			return td.Kind == runtime.KindInterface || td.IfaceBase ||
+				(td.Kind == runtime.KindPointer && td.Spec == nil)
+		}
+		if gv, ok := dv.(*runtime.GoValue); ok {
+			rt := hostbridge.TypeOf(gv.V)
+			if rt == nil || rt.Kind() != reflect.Pointer {
+				return false
+			}
+			if r.hostTwin != nil {
+				if td := r.hostTwin(rt); td != nil && td.Kind != runtime.KindPointer {
+					return false
+				}
+			}
+			return true
+		}
+		return false
+	}
+	if n, ok := dv.(*runtime.Named); ok && n.Typ != nil {
+		return n.Typ.Kind == runtime.KindInterface || n.Typ.IfaceBase
+	}
+	return false
+}
+
 // hostMethodSet reports a host value's reflect method names — the empty
 // set when the box holds nil (a nil interface boxes no methods, and
 // TypeOf would nil-deref).
+// declOverHost reports whether td is an anonymous pointer typedef
+// (*T) whose pointee is a script-declared type — `&b` for a
+// `type MyBuf bytes.Buffer` reaches here as Named{*MyBuf}.
+func declOverHost(td *runtime.TypeDef) bool {
+	return td.Kind == runtime.KindPointer && td.Spec == nil &&
+		td.Elem != nil && td.Elem.File != nil
+}
+
 func hostMethodSet(x any) map[string]bool {
 	set := map[string]bool{}
 	t := reflect.TypeOf(x)
