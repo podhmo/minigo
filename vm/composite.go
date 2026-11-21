@@ -1151,6 +1151,17 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		if rv.Kind() != hostbridge.KindStruct {
 			f.trap("set field %s on host value %T", name, b.V)
 		}
+		// A struct boxed by value (`var t T`, or a declared type whose
+		// HostNew spells T) is an unaddressable copy; move it into
+		// addressable storage so the field write can land, then put the
+		// updated struct back in the box — gc value semantics.
+		copied := false
+		if !rv.CanAddr() {
+			cp := hostbridge.NewElem(rv)
+			cp.Set(rv)
+			rv = cp
+			copied = true
+		}
 		fv := rv.FieldByName(name)
 		if !fv.IsValid() {
 			f.trap("host value %T has no field %s", b.V, name)
@@ -1158,8 +1169,8 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		// Go lets a package write its own unexported fields; interpreted
 		// stdlib code runs in that package, so ServeMux stamping r.pat on
 		// a host *http.Request lands in the real memory. Anything else —
-		// another package's private field, or an unaddressable copy —
-		// still traps like gc's rejection, before the value converts.
+		// another package's private field — still traps like gc's
+		// rejection, before the value converts.
 		sf, _ := rv.Type().FieldByName(name)
 		ownPkg := fv.CanAddr() && sf.PkgPath != "" && sf.PkgPath == framePkgPath(f)
 		if !fv.CanSet() && !ownPkg {
@@ -1171,9 +1182,13 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		}
 		if fv.CanSet() {
 			fv.Set(nv)
-			return
+		} else {
+			hostbridge.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
 		}
-		hostbridge.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(nv)
+		if copied {
+			b.V = rv.Interface()
+		}
+		return
 	case *runtime.TypedNil:
 		if b.Typ != nil && b.Typ.Kind == runtime.KindPointer {
 			panic(runtime.NilDerefPanic())
@@ -3020,8 +3035,7 @@ func hostStructCopy(x runtime.Value) runtime.Value {
 // back copied (or came back unchanged for the same reason
 // HostStructCopy would report false).
 func hostNewStructTagged(v runtime.Value) bool {
-	n, ok := v.(*runtime.Named)
-	return ok && n.Typ != nil && n.Typ.Kind == runtime.KindStruct && n.Typ.HostNew != nil
+	return runtime.HostStructTagged(v)
 }
 
 // memberOf resolves a package member through MemberV so that a lazy

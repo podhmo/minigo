@@ -342,7 +342,15 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 			if len(args) != 1 {
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
 			}
-			return v.convert(c, args[0])
+			var srcTd *runtime.TypeDef
+			if len(statics) == 1 {
+				srcTd = statics[0]
+			} else if len(hints) == 1 {
+				if st := v.resolveArgHints(f, hints); len(st) == 1 {
+					srcTd = st[0]
+				}
+			}
+			return v.convertFrom(c, args[0], srcTd)
 		case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 			// calling a nil function value panics like a nil deref in Go
 			panic(runtime.NilDerefPanic())

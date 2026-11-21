@@ -1047,7 +1047,7 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType, file *syntax.File) opTy
 		return opTyp{} // `(a, b T)` is a multi-result signature
 	}
 	te := res.Type
-	if id, ok := ast.Unparen(te).(*ast.Ident); ok && funcTypeHasParam(ft, id.Name) {
+	if exprMentionsTypeParam(te, ft) {
 		return opTyp{}
 	}
 	iface := c.isIfaceTypeExpr(te)
@@ -1210,6 +1210,27 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 		pos += arity
 	}
 	return opTyp{}
+}
+
+// exprMentionsTypeParam reports whether a result type expr spells the
+// signature's own type parameters anywhere — `*T`, `[]T`, `map[K]T`
+// — not just as a bare `T`. Such a result is opaque to the caller:
+// the param binds per instantiation, never as the static name.
+func exprMentionsTypeParam(e ast.Expr, ft *ast.FuncType) bool {
+	if ft.TypeParams == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(ast.Unparen(e), func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && funcTypeHasParam(ft, id.Name) {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // funcTypeHasParam reports whether name is one of ft's declared type
@@ -2118,6 +2139,18 @@ func (c *compiler) argHint(e ast.Expr) bytecode.ArgHint {
 					return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(rs.List[0].Type, e.Pos()))}
 				}
 			}
+			// a declared callee's single result type is the argument's
+			// static type — `MyBuf(makeBuffer())` sees bytes.Buffer.
+			if ot := c.callOpTyp(x); ot.te != nil {
+				return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSiteAt(ot.te, ot.teFile, e.Pos()))}
+			}
+		}
+		return bytecode.ArgHint{Kind: bytecode.HintNil}
+	case *ast.CompositeLit:
+		// T{...} — the static type is the literal's own type, the same
+		// recipe a conversion T(v) spells.
+		if x.Type != nil {
+			return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(x.Type, e.Pos()))}
 		}
 		return bytecode.ArgHint{Kind: bytecode.HintNil}
 	}
