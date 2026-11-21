@@ -969,13 +969,8 @@ var errorType = reflect.TypeFor[error]()
 
 // vmOf reports the VM behind a caller (nil for a foreign caller).
 func vmOf(vc runtime.VMCaller) *VM {
-	switch v := vc.(type) {
-	case *VM:
-		return v
-	case ownerCaller:
-		return v.VM
-	case processCaller:
-		return v.VM
+	if b, ok := vc.(ownerVMBearer); ok {
+		return b.ownerVM()
 	}
 	return nil
 }

@@ -6,6 +6,12 @@ import "github.com/podhmo/minigo/runtime"
 // keep the process in which it was obtained, even after the public VM is reused
 // for another root Call. The other methods are execution-local: embedding the
 // VM preserves the frame/type context of the host call currently running.
+// bindProc keeps the process binding: the embedded *VM's bindProc would
+// rebind this caller to the VM's *current* proc, but a retained
+// processCaller must keep its own proc or a callback could run under a
+// different process.
+func (c processCaller) bindProc() runtime.VMCaller { return c }
+
 type processCaller struct {
 	*VM
 	p *proc
@@ -15,10 +21,8 @@ type processCaller struct {
 // outside a process keeps its existing host-driven behavior; calls executing
 // script always have a process before crossing a host boundary.
 func bindCaller(vc runtime.VMCaller) runtime.VMCaller {
-	if v, ok := vc.(*VM); ok {
-		if p := v.proc.Load(); p != nil {
-			return processCaller{VM: v, p: p}
-		}
+	if b, ok := vc.(procBinder); ok {
+		return b.bindProc()
 	}
 	return vc
 }
@@ -71,11 +75,11 @@ func (c processCaller) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Ta
 // Host interface/error proxies probe methods before invoking them. These two
 // metadata operations may therefore happen on a retained caller off-owner.
 func (c processCaller) Member(value runtime.Value, name string) (runtime.Value, bool) {
-	return callbackContext(c).(processCaller).VM.Member(value, name)
+	return c.callbackVM().Member(value, name)
 }
 
 func (c processCaller) MethodSetOf(value runtime.Value) (map[string]bool, bool) {
-	return callbackContext(c).(processCaller).VM.MethodSetOf(value)
+	return c.callbackVM().MethodSetOf(value)
 }
 
 // callbackContext is for adapters that do work outside Call itself (method
@@ -83,14 +87,79 @@ func (c processCaller) MethodSetOf(value runtime.Value) (map[string]bool, bool) 
 // execution-local metadata. Foreign and stale callbacks get private metadata
 // while retaining the same process-bound Call/Spawn capability.
 func callbackContext(vc runtime.VMCaller) runtime.VMCaller {
-	if c, ok := vc.(processCaller); ok {
-		gid := goroutineID()
-		c.callMu.Lock()
-		owner := c.proc.Load() == c.p && c.callDepth > 0 && c.callGid == gid
-		c.callMu.Unlock()
-		if !owner {
-			return processCaller{VM: c.anchor(), p: c.p}
-		}
+	if a, ok := vc.(callbackAnchorer); ok {
+		return a.callbackAnchor()
 	}
 	return vc
 }
+
+// callbackAnchor is the process-scoped callers' anchored-callback
+// capability (P2-4): foreign and stale callbacks get private metadata
+// while retaining the same process-bound Call/Spawn capability.
+type callbackAnchorer interface {
+	callbackAnchor() runtime.VMCaller
+}
+
+func (c processCaller) callbackAnchor() runtime.VMCaller {
+	if v := c.callbackVM(); v != c.VM {
+		return processCaller{VM: v, p: c.p}
+	}
+	return c
+}
+
+// callbackVM is the *VM whose metadata a callback running off its
+// owner goroutine may use — an idle anchor, never the owner's frames.
+func (c processCaller) callbackVM() *VM {
+	gid := goroutineID()
+	c.callMu.Lock()
+	owner := c.proc.Load() == c.p && c.callDepth > 0 && c.callGid == gid
+	c.callMu.Unlock()
+	if !owner {
+		return c.anchor()
+	}
+	return c.VM
+}
+
+// Caller capabilities over the VM's own types (P2-4): these replace
+// the *VM/ownerCaller/processCaller type switches, so a foreign caller
+// answers the same questions without downcasting. Embedded *VM gives
+// ownerCaller and processCaller the shared answers for free; only the
+// ones that differ get an explicit method.
+
+// ownerVMBearer is a caller bound to a *VM — how vmOf reaches hooks
+// and caches without a concrete-type switch.
+type ownerVMBearer interface {
+	ownerVM() *VM
+}
+
+func (v *VM) ownerVM() *VM { return v }
+
+// procBinder binds a bare VM to the process it is currently inside.
+type procBinder interface {
+	bindProc() runtime.VMCaller
+}
+
+func (v *VM) bindProc() runtime.VMCaller {
+	if p := v.proc.Load(); p != nil {
+		return processCaller{VM: v, p: p}
+	}
+	return v
+}
+
+// currentProcBearer answers the caller's current proc — *VM and
+// ownerCaller share the promoted answer; processCaller's proc is fixed
+// at bind time instead.
+type currentProcBearer interface {
+	currentProc() *proc
+}
+
+func (v *VM) currentProc() *proc           { return v.proc.Load() }
+func (c processCaller) currentProc() *proc { return c.p }
+
+// vcParker is the parkable callers' capability — park belongs to the
+// VM regardless of which caller wrapper is held.
+type vcParker interface {
+	parkCaller(w parkWake) func()
+}
+
+func (v *VM) parkCaller(w parkWake) func() { return v.park(w) }

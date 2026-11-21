@@ -53,7 +53,7 @@
   - [x] メソッド別の原子 capability（`ValTyper`/`Converter`/`Equaler`/`ElemZeroer`/`ArraySizer`/`MapKeyer`/`NewMapper`/`Copier`）と合成型を追加し、中間層の受け渡し関数を絞った。`fmtValue.c`/`scriptLocker.vc` フィールドも `MemberCaller` 化。
   - [ ] 残り。`BuiltinFunc.Fn`/`src.Each`/`scriptIface.vc`/`bindCaller`/`callbackContext`/`vmOf` など VMCaller 型のフィールド・ダウンキャストにアンカーされている関数（bf() 登録群・ffi marshaling 群の大半）は P2-4 の前提になる。
 - [x] **P2-3 使っていない `VMCaller` 引数を削る**: 対象は 96 関数。完了条件: スキャナ（[references/vmcaller.md](./references/vmcaller.md)）の「未使用」が 0 になる。
-- [ ] **P2-4 `vmOf` のダウンキャストをなくす**: 7 箇所を capability のメソッドに置き換える。
+- [x] **P2-4 `vmOf` のダウンキャストをなくす**: 7 箇所を capability のメソッドに置き換える。
 - [ ] **P2-5 `internal/process` を抽出する**: goroutine、park/wake、デッドロック検出を移す。ループとのやり取りは `spawn`/`park`/`unpark` だけにする。完了条件: `make test-race` と `make concurrency-stress` が通る。
 - [ ] **P2-6 `special` を公開パッケージとして切り出す**: `SymbolID`、`QuotedCall`、`SpecialFunc`、`SpecialContext` を移し、`runtime` には型エイリアスを残す（I7）。レジストリと VM 側の context 実装は `internal/execution` に移す。完了条件: examples が無修正でコンパイルできる。
 - [ ] **P2-7 `internal/hostbridge` を抽出する**: `goValueOf`、`toReflectValueDepth`、`hostMarshal`、`adaptFunc`、`hostArgAs`、opaque store、host↔script の変換層（`hostErrTwins`、`goNative`、プロキシのボックス）を移す。完了条件: archcheck が `vm/` での `reflect` を禁止している。
