@@ -1,4 +1,4 @@
-.PHONY: all test test-spike test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
+.PHONY: all test test-spike test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all simcheck
 
 all:
 	go build ./...
@@ -38,6 +38,13 @@ test-spike:
 # Internal import-graph ratchet; see docs/next/ja/references/archcheck.md.
 archcheck:
 	go run ./internal/cmd/archcheck
+
+# Similarity ratchet (TODO #238): gosimilarity pairs + in-process
+# 8-line fragment windows vs internal/archcheck/similarity-baseline.json.
+# Refresh the baseline with
+#   make simcheck ARGS=-write-baseline
+simcheck:
+	@tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; 	gosimilarity --exclude 'testdata/**' --exclude 'examples/**' --exclude 'tools/**' --exclude '.claude/**' --min-tokens 30 --threshold 0.95 --format json . > "$$tmp" 	&& go run ./internal/cmd/simcheck -pairs "$$tmp" $(ARGS)
 
 # Classified shared-engine stress; see docs/concurrency-stress.md. Reuses
 # the callback/release fixture introduced with the fix in #1061.

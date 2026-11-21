@@ -47,14 +47,18 @@ jobs:
     - name: Internal import graph (archcheck)
       run: make archcheck
 
-    - name: File budgets vs base branch (M1-4)
+    - name: Similarity ratchet (simcheck)
+      run: |
+        GOTOOLCHAIN=auto go install github.com/Songmu/gosimilarity/cmd/gosimilarity@298b2cd
+        # the pinned gosimilarity wants a newer toolchain than go.mod's;
+        # auto lets go fetch it just for the tool build.
+        make simcheck
+
+    - name: File budgets vs merge base (M1-4)
       if: github.event_name == 'pull_request'
       run: |
-        # Compare with the base commit GitHub diffs this PR against
-        # (pull_request.base.sha = the base branch's tip at event time).
-        # A stacked PR's merge base is an older commit whose budgets do
-        # not reflect raises that legitimately landed below it.
-        git show "${{ github.event.pull_request.base.sha }}:internal/archcheck/budgets.go" > /tmp/base_budgets.go
+        base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
+        git show "$base:internal/archcheck/budgets.go" > /tmp/base_budgets.go
         go run ./internal/cmd/archcheck -budget-base /tmp/base_budgets.go
 
   race-test:
