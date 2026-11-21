@@ -68,7 +68,11 @@ func (e *Env) rtypeOf(td *runtime.TypeDef) *RType {
 	// Name, methods and Implements see the aliased declaration
 	// (kin-openapi's `type AdditionalProperties = BoolSchema`).
 	td = e.peelAlias(td)
-	return e.intern(e.keyOf(td), td, nil)
+	// a facade typedef also carries the real gc type it stands in
+	// for — field/kind ops answer the public surface (reflect.Value's
+	// abi fields), while methodRT maps it back to the internal type
+	// whose methods dispatch on facade receivers.
+	return e.intern(e.keyOf(td), td, e.facadeRT[td])
 }
 
 // peelAlias follows `type A = T` chains to the target typedef.
@@ -83,12 +87,86 @@ func (e *Env) peelAlias(td *runtime.TypeDef) *runtime.TypeDef {
 	return td
 }
 
-// hostTypeOf interns a host reflect.Type.
+// hostTypeOf interns a host reflect.Type. A host type that stands in
+// for one of the facade's public types (*RValue for reflect.Value)
+// maps back to that typedef, so signatures and field types spelled
+// with it report the public type — `func() reflect.Value`, not
+// `func() *minireflect.RValue`.
 func (e *Env) hostTypeOf(rt reflect.Type) *RType {
-	if e.h.TypeAlias != nil && rt != nil {
-		rt = e.h.TypeAlias(rt)
+	if rt != nil {
+		rt = e.publicRT(rt)
+		if td, ok := e.facadeTyp[rt]; ok {
+			return e.rtypeOf(td)
+		}
+		if e.h.TypeAlias != nil {
+			rt = e.h.TypeAlias(rt)
+		}
 	}
 	return e.intern(hostTypeKey(rt), nil, rt)
+}
+
+// publicRT rewrites the facade's own host types inside a host type to
+// the real gc types they stand in for, so a signature spells the
+// public API — `func(*reflect.MapIter) reflect.Value`, not
+// `func(*minireflect.MapIter) *minireflect.RValue`. Composites are
+// rebuilt when an element changed.
+func (e *Env) publicRT(rt reflect.Type) reflect.Type {
+	return e.publicRTSeen(rt, map[reflect.Type]bool{})
+}
+
+// publicRTSeen is publicRT with a guard against host types that recur
+// through their own shape — `type Nodes []Nodes` has no facade
+// substitution but walks its element forever without one.
+func (e *Env) publicRTSeen(rt reflect.Type, seen map[reflect.Type]bool) reflect.Type {
+	if pub, ok := e.facadePub[rt]; ok {
+		return pub
+	}
+	if seen[rt] {
+		return rt
+	}
+	// in-progress marking only: a completed rewrite stays reusable,
+	// so the same composite in two positions rewrites both.
+	seen[rt] = true
+	defer delete(seen, rt)
+	switch rt.Kind() {
+	case reflect.Pointer:
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
+			return reflect.PointerTo(el)
+		}
+	case reflect.Slice:
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
+			return reflect.SliceOf(el)
+		}
+	case reflect.Array:
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
+			return reflect.ArrayOf(rt.Len(), el)
+		}
+	case reflect.Map:
+		k, el := e.publicRTSeen(rt.Key(), seen), e.publicRTSeen(rt.Elem(), seen)
+		if k != rt.Key() || el != rt.Elem() {
+			return reflect.MapOf(k, el)
+		}
+	case reflect.Chan:
+		if el := e.publicRTSeen(rt.Elem(), seen); el != rt.Elem() {
+			return reflect.ChanOf(rt.ChanDir(), el)
+		}
+	case reflect.Func:
+		changed := false
+		ins := make([]reflect.Type, rt.NumIn())
+		for i := range ins {
+			ins[i] = e.publicRTSeen(rt.In(i), seen)
+			changed = changed || ins[i] != rt.In(i)
+		}
+		outs := make([]reflect.Type, rt.NumOut())
+		for i := range outs {
+			outs[i] = e.publicRTSeen(rt.Out(i), seen)
+			changed = changed || outs[i] != rt.Out(i)
+		}
+		if changed {
+			return reflect.FuncOf(ins, outs, rt.IsVariadic())
+		}
+	}
+	return rt
 }
 
 // hostRTOf derives the host reflect.Type a typedef stands for, when
@@ -98,7 +176,14 @@ func (e *Env) hostTypeOf(rt reflect.Type) *RType {
 // the typedef's own pointer depth re-applied.
 func (e *Env) hostRTOf(td *runtime.TypeDef) reflect.Type {
 	depth := 0
+	seen := map[*runtime.TypeDef]bool{}
 	for td != nil && td.Kind == runtime.KindPointer {
+		if seen[td] {
+			// a recursive pointer type (`type P *P`) peels forever —
+			// it has no host type to stand for anyway.
+			return nil
+		}
+		seen[td] = true
 		et := td.Elem
 		if et == nil {
 			et = e.elemOf(td)
@@ -1009,20 +1094,111 @@ func (t *RType) FieldByNameFunc(match func(string) bool) (*StructField, bool) {
 	return result, ok
 }
 
-func (t *RType) NumMethod() int {
+// methodRT returns the reflect.Type whose method set this Type
+// reports: the host type itself, or the host type a bound typedef
+// stands for (time.Weekday's methods live on the host type, not in
+// the script method set).
+func (t *RType) methodRT() reflect.Type {
 	if t.rt != nil {
-		return t.rt.NumMethod()
+		// the real gc type's own method set — enumeration matches gc
+		// exactly (reflect.Value reports 79, reflect.MapIter 0)
+		return t.rt
+	}
+	if t.td != nil {
+		return t.e.hostRTOf(t.td)
+	}
+	return nil
+}
+
+// methodSigType rewrites a concrete method's signature to its public
+// spelling: facade types map to the real gc types, and the receiver —
+// In(0) — keeps the enumerated type's pointer shape (gc spells
+// TypeFor[*T].Method as func(*T, ...) even for value-receiver
+// methods).
+func (e *Env) methodSigType(recv, mt reflect.Type) reflect.Type {
+	pub := e.publicRT(mt)
+	if mt == nil || recv.Kind() != reflect.Pointer || mt.NumIn() == 0 || mt.In(0) != recv {
+		return pub
+	}
+	pr := e.publicRT(recv)
+	if pr.Kind() != reflect.Pointer {
+		pr = reflect.PointerTo(pr)
+	}
+	ins := make([]reflect.Type, mt.NumIn())
+	ins[0] = pr
+	for i := 1; i < mt.NumIn(); i++ {
+		ins[i] = pub.In(i)
+	}
+	outs := make([]reflect.Type, mt.NumOut())
+	for i := range outs {
+		outs[i] = pub.Out(i)
+	}
+	return reflect.FuncOf(ins, outs, mt.IsVariadic())
+}
+
+// facadeInternalMethods names exported methods of the facade's own
+// types (*RValue, *RType) that are not part of gc's public reflect
+// surface — the other facades (MapIter, StructField) expose exactly
+// the public names already.
+var facadeInternalMethods = map[string]bool{
+	"APIType": true, // the facade's api-type marker
+	"Payload": true, // RValue's inner-value reader
+}
+
+// hostMethodNames lists rt's exported method names in reflect order,
+// minus the internal facade methods a minireflect type would report
+// that gc's public reflect API does not have.
+func hostMethodNames(rt reflect.Type) []string {
+	base := rt
+	for base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+	facade := base.PkgPath() == reflect.TypeOf(RValue{}).PkgPath()
+	var names []string
+	for i := 0; i < rt.NumMethod(); i++ {
+		n := rt.Method(i).Name
+		if facade && facadeInternalMethods[n] {
+			continue
+		}
+		names = append(names, n)
+	}
+	return names
+}
+
+func (t *RType) NumMethod() int {
+	if rt := t.methodRT(); rt != nil {
+		return len(hostMethodNames(rt))
 	}
 	return len(exportedMethodNames(t.e.methodSet(t.td)))
 }
 
 func (t *RType) Method(i int) *Method {
-	if t.rt != nil {
-		m := t.rt.Method(i)
+	if rt := t.methodRT(); rt != nil {
+		names := hostMethodNames(rt)
+		if i < 0 || i >= len(names) {
+			// An interface type's requirements are a plain list in
+			// Go: out-of-range returns the zero Method instead of
+			// panicking (matching the script-type path below).
+			if rt.Kind() == reflect.Interface {
+				return &Method{}
+			}
+			panic(&runtime.Panic{Value: "reflect: Method index out of range"})
+		}
+		m, _ := rt.MethodByName(names[i])
+		if rt.Kind() == reflect.Interface {
+			// Interface requirements carry no receiver in Type and
+			// gc reports a zero Func — no implementation to call.
+			return &Method{Name: m.Name, PkgPath: m.PkgPath,
+				Type: t.e.hostTypeOf(m.Type), Index: i,
+				Func: &RValue{e: t.e}}
+		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
+		// gc's Method.Func.Type agrees with Method.Type — the
+		// receiver keeps the enumerated type's pointer shape.
+		f.rtSig = t.e.methodSigType(rt, m.Type)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Type: t.e.hostTypeOf(t.e.methodSigType(rt, m.Type)), Index: i,
 			Func: f}
 	}
 	set := t.e.methodSet(t.td)
@@ -1050,15 +1226,39 @@ func (t *RType) Method(i int) *Method {
 }
 
 func (t *RType) MethodByName(name string) (*Method, bool) {
-	if t.rt != nil {
-		m, ok := t.rt.MethodByName(name)
+	if rt := t.methodRT(); rt != nil {
+		if facadeInternalMethods[name] {
+			base := rt
+			for base.Kind() == reflect.Pointer {
+				base = base.Elem()
+			}
+			if base.PkgPath() == reflect.TypeOf(RValue{}).PkgPath() {
+				return &Method{}, false
+			}
+		}
+		m, ok := rt.MethodByName(name)
 		if !ok {
 			return &Method{}, false
 		}
+		// Index is the position in the filtered method list — the
+		// same number Method(i) reports — not the host index.
+		idx := -1
+		for i, n := range hostMethodNames(rt) {
+			if n == name {
+				idx = i
+				break
+			}
+		}
+		if rt.Kind() == reflect.Interface {
+			return &Method{Name: m.Name, PkgPath: m.PkgPath,
+				Type: t.e.hostTypeOf(m.Type), Index: idx,
+				Func: &RValue{e: t.e}}, true
+		}
 		f := t.e.wrapHost(nil, m.Func)
 		f.mexpr = m.Name
+		f.rtSig = t.e.methodSigType(rt, m.Type)
 		return &Method{Name: m.Name, PkgPath: m.PkgPath,
-			Type: t.e.hostTypeOf(m.Type), Index: m.Index,
+			Type: t.e.hostTypeOf(t.e.methodSigType(rt, m.Type)), Index: idx,
 			Func: f}, true
 	}
 	set := t.e.methodSet(t.td)
