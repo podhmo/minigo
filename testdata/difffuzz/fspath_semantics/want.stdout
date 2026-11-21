@@ -1,0 +1,3 @@
+stat-empty: stat : no such file or directory
+lstat-slash: lstat d/f.txt/: not a directory
+walkdir-slash: 2
