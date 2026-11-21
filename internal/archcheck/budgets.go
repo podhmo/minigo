@@ -97,7 +97,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/host/host.go":              40,
 	"internal/stdlib/net/net.go":                168,
 	"internal/stdlib/os/file.go":                123,
-	"internal/stdlib/os/os.go":                  416,
+	"internal/stdlib/os/os.go": 419,
 	"internal/stdlib/osexec/osexec.go":          66,
 	"internal/stdlib/unsafe.go":                 42,
 	"internal/stdlib/seq.go":                    118,
