@@ -1543,8 +1543,12 @@ func ReadIt() string {
 	if _, err := e.RunFile(context.Background(), fname, "LinkInside"); err != nil {
 		t.Fatalf("LinkInside: %v", err)
 	}
-	if t2, err := os.Readlink(filepath.Join(root, "d", "lnk")); err != nil || t2 != "f.txt" {
-		t.Fatalf("link target: %q, %v", t2, err)
+	t2, err := os.Readlink(filepath.Join(root, "d", "lnk"))
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if diff := cmp.Diff("f.txt", t2); diff != "" {
+		t.Fatalf("link target (-want +got): %s", diff)
 	}
 }
 
