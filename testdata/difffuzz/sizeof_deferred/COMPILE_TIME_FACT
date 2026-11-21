@@ -1,0 +1,1 @@
+compile-time fact: operand type of unsafe.Sizeof (never evaluates)

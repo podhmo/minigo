@@ -18,11 +18,33 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// trySpecial emits OpSpecialCall when the call's callee resolves to a
-// registered special form (importIdent.Name matching a canonical symbol
-// in the engine's registry). The arguments stay quoted for the handler.
-func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
-	if c.pkg == nil || c.pkg.Specials.Len() == 0 || c.file == nil {
+// isSpecialCall reports whether x calls a registered special form —
+// importIdent.Name matching a canonical symbol in the engine's
+// registry. Its dispatch is decided by the registry, not the package
+// member, and its arguments stay quoted for the handler — the
+// undecidable-call and eager-hoist walks must never rewrite them.
+func (c *compiler) isSpecialCall(x *ast.CallExpr) bool {
+	if c.pkg == nil || c.pkg.Specials.Len() == 0 {
+		return false
+	}
+	// unwrap F[...] like call() does — explicit instantiation carries
+	// no meaning for the quoted handler.
+	fun := x.Fun
+	for {
+		switch ix := fun.(type) {
+		case *ast.IndexExpr:
+			fun = ix.X
+		case *ast.IndexListExpr:
+			fun = ix.X
+		case *ast.ParenExpr:
+			fun = ix.X
+		default:
+			goto unwrapped
+		}
+	}
+unwrapped:
+	sel, ok := fun.(*ast.SelectorExpr)
+	if !ok {
 		return false
 	}
 	id, ok := sel.X.(*ast.Ident)
@@ -33,10 +55,19 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 	if !ok {
 		return false
 	}
-	sym := runtime.SymbolID{PackagePath: ref.Path, Name: sel.Sel.Name}
-	if !c.pkg.Specials.Has(sym) {
+	return c.pkg.Specials.Has(runtime.SymbolID{PackagePath: ref.Path, Name: sel.Sel.Name})
+}
+
+// trySpecial emits OpSpecialCall when the call's callee resolves to a
+// registered special form (importIdent.Name matching a canonical symbol
+// in the engine's registry). The arguments stay quoted for the handler.
+func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
+	if c.file == nil || !c.isSpecialCall(x) {
 		return false
 	}
+	id := sel.X.(*ast.Ident)
+	ref, _ := c.importRef(id.Name)
+	sym := runtime.SymbolID{PackagePath: ref.Path, Name: sel.Sel.Name}
 	q := &runtime.QuotedCall{Call: x, File: c.file, Locals: map[string]int{}, Upvals: map[string]int{}}
 	// snapshot every visible name: outer blocks first, inner shadows win
 	for _, block := range c.fs.blocks {

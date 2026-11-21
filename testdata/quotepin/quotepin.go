@@ -42,3 +42,13 @@ func shadowed() int {
 	d := localT{v: 10}
 	return d.Convert(5)
 }
+
+// nestedCall puts the registered special form inside another call's
+// argument list: under strict lazy compile `d.Convert` also reads as an
+// undecidable member call — it must stay a quoted call, not a
+// member-shape branch.
+func nestedCall() int {
+	return define.OtherConvert(d.Convert(func(c *d.Config) {
+		c.Map(1, 2)
+	}))
+}

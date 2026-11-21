@@ -94,4 +94,47 @@ func TestQuotedGoPin(t *testing.T) {
 			t.Errorf("shadowed mismatch (-want +got):\n%s", diff)
 		}
 	})
+
+	t.Run("NestedSpecialStillDispatches", func(t *testing.T) {
+		var fired []string
+		e := newEngine(t, &fired)
+		v, err := e.Call(ctx, load(t, e), "nestedCall")
+		if err != nil {
+			t.Fatalf("nestedCall: %v", err)
+		}
+		if diff := cmp.Diff([]string{"Convert"}, fired); diff != "" {
+			t.Errorf("fired specials mismatch (-want +got):\n%s", diff)
+		}
+		if diff := cmp.Diff(int64(42), v); diff != "" {
+			t.Errorf("nestedCall mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("NestedSpecialStillDispatchesStrict", func(t *testing.T) {
+		// strict lazy compile: `d.Convert` also reads as an
+		// undecidable member call inside OtherConvert's args — it must
+		// stay a quoted call, not a member-shape branch.
+		var fired []string
+		e := minigo.NewEngine(".", minigo.WithStrictLazyCompile())
+		e.RegisterSpecial(runtime.SymbolID{PackagePath: "example.com/define", Name: "Convert"},
+			func(ctx runtime.SpecialContext, call *runtime.QuotedCall) (runtime.Value, error) {
+				fired = append(fired, "Convert")
+				return runtime.NIL, nil
+			})
+		e.Bind("other.com/define", map[string]runtime.Value{
+			"OtherConvert": &runtime.BuiltinFunc{Name: "define.OtherConvert", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+				return int64(42), nil
+			}},
+		})
+		v, err := e.Call(ctx, load(t, e), "nestedCall")
+		if err != nil {
+			t.Fatalf("nestedCall: %v", err)
+		}
+		if diff := cmp.Diff([]string{"Convert"}, fired); diff != "" {
+			t.Errorf("fired specials mismatch (-want +got):\n%s", diff)
+		}
+		if diff := cmp.Diff(int64(42), v); diff != "" {
+			t.Errorf("nestedCall mismatch (-want +got):\n%s", diff)
+		}
+	})
 }

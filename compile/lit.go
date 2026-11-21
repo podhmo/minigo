@@ -164,7 +164,7 @@ func (c *compiler) instantiateLitType(e ast.Expr) ast.Expr {
 		p, ts = c.pkg, pkgTypeSpec(c.pkg, b.Name)
 	case *ast.SelectorExpr:
 		if ref, name, ok := c.selTypRef(b); ok {
-			p, ts = selTypeSpec(ref, name)
+			p, ts = c.selTypeSpec(ref, name)
 		}
 	}
 	if ts == nil {

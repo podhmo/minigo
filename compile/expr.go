@@ -160,6 +160,10 @@ func (c *compiler) expr(e ast.Expr) {
 				c.emit(bytecode.OpConst, c.constIdx(&runtime.UConst{V: constant.MakeBool(false)}), 0, x.Pos())
 			}
 		default:
+			if dc, ok := c.deferCallTemps[x.Name]; ok {
+				c.deferredCallOperand(dc, x.Pos())
+				return
+			}
 			c.getRef(x.Name, x.Pos())
 		}
 	case *ast.SelectorExpr:

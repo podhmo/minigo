@@ -89,3 +89,90 @@ func TestDeferFacts(t *testing.T) {
 		})
 	}
 }
+
+// TestStrictLazyCompile runs the COMPILE_TIME_FACT-pinned cases under
+// WithStrictLazyCompile (M4-8a): every indexed fact asks IndexedOnly,
+// so a package not yet indexed defers instead of building. Each case
+// runs twice on one engine — the first run compiles while nothing is
+// indexed, the second runs against packages indexed by the first —
+// and both must produce exactly the recorded output.
+func TestStrictLazyCompile(t *testing.T) {
+	for _, slug := range []string{
+		"assign_pkgname_differs",
+		"litkey_named_peel",
+		"src_pkgtype_maplit_keys",
+		"shift_const_count",
+		"gate_qualconst",
+		"gate_qualconstbind",
+		"gate_qualforeign",
+		"gate_qualforeign_case",
+		"gate_qualforeign_mon",
+		"gate_qualforeign_nil",
+		"gate_qualscalbind",
+		"selconv_typearg",
+		"selnilable_trap",
+		"gate_nilinit",
+		"gate_nilhost",
+		"gate_builtinconst",
+		"gate_nilgeneric",
+		"gate_nilvariadic",
+		"gate_nilaliasfile",
+		"convarg_order",
+		"convarg_nested",
+		"convarg_seqorder",
+		"convarg_gate",
+		"convarg_pair",
+		"convarg_ucorder",
+		"shift_lenarr",
+		"sizeof_deferred",
+		"sizeof_funcret",
+		"sizeof_ucall",
+		"sizeof_sideeffect",
+	} {
+		dir := filepath.Join("testdata/difffuzz", slug)
+		t.Run(slug, func(t *testing.T) {
+			want, err := os.ReadFile(filepath.Join(dir, "want.stdout"))
+			if err != nil {
+				t.Fatalf("want.stdout: %v", err)
+			}
+			wantErrText, err := os.ReadFile(filepath.Join(dir, "want.err"))
+			expectErr := err == nil
+			var buf bytes.Buffer
+			opts := []minigo.Option{minigo.WithStrictLazyCompile(), minigo.WithOutput(&buf)}
+			if src, err := os.ReadFile(filepath.Join(dir, "SRC")); err == nil {
+				modes := map[string]minigo.PackageMode{}
+				for _, p := range strings.Fields(string(src)) {
+					modes[p] = minigo.ModeSource
+				}
+				opts = append(opts, minigo.WithPackageModes(modes))
+			}
+			e := minigo.NewEngine(".", opts...)
+			for run := 0; run < 2; run++ {
+				buf.Reset()
+				resCh := make(chan error, 1)
+				go func() {
+					_, runErr := e.Run(context.Background(), "./"+filepath.ToSlash(dir), "")
+					resCh <- runErr
+				}()
+				select {
+				case runErr := <-resCh:
+					if expectErr {
+						if runErr == nil {
+							t.Fatalf("run %d under strict lazy: want error %q, got nil", run, strings.TrimSpace(string(wantErrText)))
+						}
+						if !strings.Contains(runErr.Error(), strings.TrimSpace(string(wantErrText))) {
+							t.Fatalf("run %d under strict lazy: error %q does not contain %q", run, runErr, strings.TrimSpace(string(wantErrText)))
+						}
+					} else if runErr != nil {
+						t.Fatalf("run %d under strict lazy: %v", run, runErr)
+					}
+				case <-time.After(runCaseTimeout):
+					t.Fatalf("run %d under strict lazy timed out", run)
+				}
+				if diff := cmp.Diff(string(want), buf.String()); diff != "" {
+					t.Fatalf("run %d under strict lazy: stdout mismatch (-want +got):\n%s", run, diff)
+				}
+			}
+		})
+	}
+}
