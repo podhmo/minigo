@@ -441,3 +441,57 @@ func RuneSlice(rs []rune) any {
 	}
 	return &runtime.Slice{Elems: out, Typ: hostbridge.AnonSliceTyp("rune")}
 }
+
+// Helpers is the slice of the engine's host binding helpers a moved
+// stdlib installer needs — *hostHelpers in the root package satisfies it
+// through its exported Fn/Fnvc/FnvcRaw/Fn1/Fn2 methods (P2-12c).
+type Helpers interface {
+	Fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc
+	Fnvc(name string, f func(runtime.VMCaller, []any) (any, error), target ...any) *runtime.BuiltinFunc
+	FnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc
+	Fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc
+	Fn2(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc
+}
+
+// Str renders a script value as a host string: Named peels, UConst
+// materializes at its default type, everything else formats.
+func Str(v any) string {
+	if n, ok := v.(*runtime.Named); ok {
+		return Str(n.V)
+	}
+	if u, ok := v.(*runtime.UConst); ok {
+		// a builtin argument position materializes an untyped
+		// constant at its default type — the same fold IntOf does.
+		return Str(hostbridge.MustNativeConst(u))
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+// templateMust binds text/template's or html/template's Must. It takes
+// the (t, err) pair of New/Parse — a Tuple arg unpacks — or the two
+// values spelled out. The panic on a non-nil err mirrors stdtemplate.Must
+// and carries the error value itself, so recover() hands back the
+// script's error.
+func TemplateMust(name string, target any) *runtime.BuiltinFunc {
+	return &runtime.BuiltinFunc{Name: name, Target: target, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		var t, ev runtime.Value
+		switch {
+		case len(args) == 1:
+			t, ev = args[0], runtime.NIL
+			if tup, ok := args[0].(*runtime.Tuple); ok && len(tup.Elems) == 2 {
+				t, ev = tup.Elems[0], tup.Elems[1]
+			}
+		case len(args) == 2:
+			t, ev = args[0], args[1]
+		default:
+			return nil, fmt.Errorf("stdtemplate.Must needs 2 args, got %d", len(args))
+		}
+		if err := hostbridge.HostErrOf(v, ev); err != nil {
+			panic(&runtime.Panic{Value: ErrVal(err), VC: v})
+		}
+		return ScriptVal(hostbridge.GoNative(t)), nil
+	}}
+}

@@ -5,13 +5,6 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// materializerOf views a builtin caller as the optional constant
-// materialization capability display needs.
-func materializerOf(v runtime.VMCaller) runtime.ConstMaterializer {
-	mc, _ := v.(runtime.ConstMaterializer)
-	return mc
-}
-
 // Format returns a form of v to print with %v, such as an [Engine.Run]
 // result, without running script code. Unlike repl.REPL.Display it does
 // not call String or Error methods, and nil values take the print

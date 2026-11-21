@@ -1,7 +1,11 @@
 package minigo
 
 import (
+	stdlibcontext "github.com/podhmo/minigo/internal/stdlib/context"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
+	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
+	stdlibtexttemplate "github.com/podhmo/minigo/internal/stdlib/texttemplate"
+	stdlibtime "github.com/podhmo/minigo/internal/stdlib/time"
 	stdlibutf8 "github.com/podhmo/minigo/internal/stdlib/utf8"
 )
 
@@ -42,10 +46,10 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("github.com/podhmo/minigo/inspect", func() { e.installInspect() })
 	e.pending.Register("unsafe", func() { e.installUnsafe(h) })
 	e.pending.Register("runtime", func() { e.installRuntime(h) })
-	e.pending.Register("time", func() { e.installTime(h) })
+	e.pending.Register("time", func() { stdlibtime.Install(e.bindBound, h) })
 	e.pending.Register("sync", func() { e.installSync(h) })
 	e.pending.Register("sync/atomic", func() { e.installSyncAtomic(h) })
-	e.pending.Register("context", func() { e.installContext(h) })
+	e.pending.Register("context", func() { stdlibcontext.Install(e.bindBound, h) })
 	e.pending.Register("net", func() { e.installNet(h) })
 	e.pending.Register("net/netip", func() { e.installNetNetip(h) })
 	e.pending.Register("io", func() { e.installIo(h) })
@@ -53,6 +57,6 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("crypto/sha256", func() { e.installCryptoSha256(h) })
 	e.pending.Register("encoding/csv", func() { e.installEncodingCsv(h) })
 	e.pending.Register("bufio", func() { e.installBufio(h) })
-	e.pending.Register("text/template", func() { e.installTextTemplate(h) })
-	e.pending.Register("html/template", func() { e.installHtmlTemplate(h) })
+	e.pending.Register("text/template", func() { stdlibtexttemplate.Install(e.bindBound, h, e.templateFuncMap()) })
+	e.pending.Register("html/template", func() { stdlibhtmltemplate.Install(e.bindBound, h, e.templateFuncMap()) })
 }
