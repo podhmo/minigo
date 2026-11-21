@@ -13,6 +13,7 @@ import (
 	stdlibcsv "github.com/podhmo/minigo/internal/stdlib/csv"
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
 	stdlibfilepath "github.com/podhmo/minigo/internal/stdlib/filepath"
+	stdfmt "github.com/podhmo/minigo/internal/stdlib/fmt"
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
 	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
 	stdlibhex "github.com/podhmo/minigo/internal/stdlib/hex"
@@ -52,7 +53,7 @@ import (
 // them: bound packages build on first use through the install entry.
 func (e *Engine) registerStdlib() {
 	h := &hostHelpers{env: bindEnv{e}}
-	e.pending.Register("fmt", func() { e.installFmt(h) })
+	e.pending.Register("fmt", func() { stdfmt.Install(e.bindBound, h, h.ioAdapters(), h.out) })
 	e.pending.Register("errors", func() { stdliberrors.Install(e.bindBound, h, e.ifaceReqSet) })
 	e.pending.Register("strings", func() { stdlibstrings.Install(e.bindBound, h, e.typedSeq) })
 	e.pending.Register("strconv", func() { stdlibstrconv.Install(e.bindBound) })
@@ -63,7 +64,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("regexp", func() { stdlibregexp.Install(e.bindBound, h) })
 	e.pending.Register("encoding/base64", func() { stdlibbase64.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("encoding/hex", func() { stdlibhex.Install(e.bindBound, h, h.ioAdapters()) })
-	e.pending.Register("encoding/json", func() { stdjson.Install(e.bindBound, h, h.ioAdapters(), scriptTypeString) })
+	e.pending.Register("encoding/json", func() { stdjson.Install(e.bindBound, h, h.ioAdapters(), stdfmt.ScriptTypeString) })
 	e.pending.Register("internal/godebug", func() { stdlibgodebug.Install(e.bindBound, h) })
 	e.pending.Register("internal/testenv", func() { stdlibtestenv.Install(e.bindBound, h) })
 	e.pending.Register("syscall", func() { stdlibsyscall.Install(e.bindBound, h) })
@@ -102,7 +103,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("net", func() { stdlibnet.Install(e.bindBound, h, engineFileOf) })
 	e.pending.Register("net/netip", func() { stdlibnetip.Install(e.bindBound) })
 	e.pending.Register("io", func() { stdio.Install(e.bindBound, h, h.ioAdapters()) })
-	e.pending.Register("crypto/rand", func() { stdlibcrand.Install(e.bindBound, h, h.ioAdapters(), scriptTypeString) })
+	e.pending.Register("crypto/rand", func() { stdlibcrand.Install(e.bindBound, h, h.ioAdapters(), stdfmt.ScriptTypeString) })
 	e.pending.Register("crypto/sha256", func() { stdlibsha256.Install(e.bindBound) })
 	e.pending.Register("encoding/csv", func() { stdlibcsv.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("bufio", func() { stdlibbufio.Install(e.bindBound, h, h.ioAdapters()) })
