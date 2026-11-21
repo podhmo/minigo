@@ -16,27 +16,21 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	goruntime "runtime"
 	"slices"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/podhmo/minigo/builtin"
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
-	stdcontext "github.com/podhmo/minigo/internal/stdlib/context"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdlibos "github.com/podhmo/minigo/internal/stdlib/os"
 	stdtime "github.com/podhmo/minigo/internal/stdlib/time"
 	"github.com/podhmo/minigo/runtime"
 )
 
-var (
-	memStatsOnce     sync.Once
-	memStatsSnapshot goruntime.MemStats
-)
+var ()
 
 // hostType delegates to the shared binding machinery in internal/stdlib.
 func hostType(name string, new func() any) *runtime.TypeDef {
@@ -366,7 +360,6 @@ type afterFuncTimer = stdtime.AfterFuncTimer
 
 // scriptCoro emulates runtime's coro for the iter.Pull/Pull2 linknames;
 // the type lives with the moved context installer (P2-12c).
-type scriptCoro = stdcontext.ScriptCoro
 
 // proxyHostType resolves the public spelling of a host type — the
 // TypeAlias hook for the reflect facade (moved with the time

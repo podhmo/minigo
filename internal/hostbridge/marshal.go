@@ -110,14 +110,14 @@ var HostBasicTypes = map[string]reflect.Type{
 // gc's interface boxing keeps it — marshaling to a host projection
 // would invoke the value's niladic methods on every Store (a json
 // Decoder's ReadToken/SkipValue on every Put), calls gc never makes. Keyed by
-// reflect.Type's string so *minigo.atomicBox — the bound
-// sync/atomic.Value/Pointer cell in package minigo — can join; vm
+// reflect.Type's string so *stdatomic.AtomicBox — the bound
+// sync/atomic.Value/Pointer cell (it lives in internal/stdlib/atomic now) — can join; vm
 // cannot name it without an import cycle.
 var OpaqueContainers = map[string]bool{
-	"*sync.Pool":        true,
-	"*sync.Map":         true,
-	"*context.valueCtx": true,
-	"*minigo.atomicBox": true,
+	"*sync.Pool":           true,
+	"*sync.Map":            true,
+	"*context.valueCtx":    true,
+	"*stdatomic.AtomicBox": true,
 }
 
 var stringAnyMapType = reflect.TypeFor[map[string]any]()
