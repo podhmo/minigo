@@ -915,22 +915,11 @@ func (e *noDeclError) Error() string {
 
 // lookupDeclIn finds a top-level decl by name in an indexed package.
 func (e *Engine) lookupDeclIn(p *runtime.Package, name string) (*index.Decl, error) {
-	if p == nil || p.Index == nil {
+	if p == nil {
 		return nil, nil
 	}
-	if d, ok := p.Index.Funcs[name]; ok {
-		return d, nil
-	}
-	if td, ok := p.Index.Types[name]; ok && td.Decl != nil {
-		return td.Decl, nil
-	}
-	if d, ok := p.Index.Consts[name]; ok {
-		return d, nil
-	}
-	if d, ok := p.Index.Vars[name]; ok {
-		return d, nil
-	}
-	return nil, nil
+	d, _ := p.Index.Lookup(name)
+	return d, nil
 }
 
 // lookupSymbol implements inspect.Symbol(pkg, name): the findSymbol

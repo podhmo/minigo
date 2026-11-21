@@ -485,7 +485,7 @@ func jsonFieldIsIface(c runtime.VMCaller, def *runtime.TypeDef, i int) bool {
 	if ft.Kind == runtime.KindInterface {
 		return true
 	}
-	_, ok := typedefAst(ft).(*ast.InterfaceType)
+	_, ok := ft.TypeExpr().(*ast.InterfaceType)
 	return ok
 }
 
@@ -1120,14 +1120,14 @@ func jsonStructFields(c runtime.VMCaller, td *runtime.TypeDef) []jsonFieldEntry 
 				if et == nil {
 					continue
 				}
-				if _, ok := typedefAst(et).(*ast.StructType); !ok {
+				if _, ok := et.TypeExpr().(*ast.StructType); !ok {
 					continue
 				}
 			}
 			p := append(append(make([]int, 0, len(prefix)+1), prefix...), i)
 			if jsonEmbedded(st, i) && !named {
 				if et := jsonPeelPtr(c, jsonEmbedTyp(c, st, i)); et != nil {
-					if _, ok := typedefAst(et).(*ast.StructType); ok {
+					if _, ok := et.TypeExpr().(*ast.StructType); ok {
 						walk(et, p, depth+1)
 						continue
 					}
@@ -1220,7 +1220,7 @@ func jsonResolveTypName(c runtime.VMCaller, st *runtime.TypeDef, e ast.Expr) *ru
 func jsonPeelPtr(c runtime.VMCaller, td *runtime.TypeDef) *runtime.TypeDef {
 	for td != nil {
 		if td.Kind != runtime.KindPointer {
-			if _, ok := typedefAst(td).(*ast.StarExpr); !ok {
+			if _, ok := td.TypeExpr().(*ast.StarExpr); !ok {
 				return td
 			}
 		}
@@ -1233,7 +1233,7 @@ func jsonPeelPtr(c runtime.VMCaller, td *runtime.TypeDef) *runtime.TypeDef {
 		if et == nil || et == td {
 			if td.Elem != nil {
 				et = td.Elem
-			} else if st, ok := typedefAst(td).(*ast.StarExpr); ok {
+			} else if st, ok := td.TypeExpr().(*ast.StarExpr); ok {
 				et = elemTyp(st.X, td.Pkg)
 			} else {
 				return td
@@ -1667,7 +1667,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 // synthetic approximation in mapElemTyps carries no method set, and
 // the key's UnmarshalText probe needs the real typedef).
 func jsonMapKeyTyp(c runtime.VMCaller, td *runtime.TypeDef) *runtime.TypeDef {
-	mt, ok := typedefAst(td).(*ast.MapType)
+	mt, ok := td.TypeExpr().(*ast.MapType)
 	if !ok {
 		return nil
 	}
@@ -1694,7 +1694,7 @@ func jsonMapKey(c runtime.VMCaller, k string, kt *runtime.TypeDef, ectx *jsonErr
 		return runtime.Value(k), true
 	}
 	// a pointer key decodes as the pointee, then addresses
-	if pt, ok := typedefAst(kt).(*ast.StarExpr); ok {
+	if pt, ok := kt.TypeExpr().(*ast.StarExpr); ok {
 		et := bindTyp(kt, elemTyp(pt.X, kt.Pkg))
 		if rt, err := c.ResolveType(kt, pt.X); err == nil && rt != nil {
 			et = rt

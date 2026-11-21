@@ -654,7 +654,7 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 		return gv, nil, true, nil
 	}
 	if pkg.Index != nil {
-		if d, ok := lookupDecl(pkg, name); ok {
+		if d, ok := pkg.Index.Lookup(name); ok {
 			mv, err := v.H.Materialize(pkg, d)
 			if err != nil {
 				return nil, nil, false, fmt.Errorf("materialize %s: %s", name, err)
@@ -709,7 +709,7 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 			_, inGlobals := p.Globals.Get(name)
 			inIndex := false
 			if p.Index != nil {
-				_, inIndex = lookupDecl(p, name)
+				_, inIndex = p.Index.Lookup(name)
 			}
 			if !inGlobals && !inIndex {
 				continue
@@ -749,22 +749,6 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 		return bv, nil, cacheable, nil
 	}
 	return nil, nil, false, fmt.Errorf("undefined: %s", name)
-}
-
-func lookupDecl(pkg *runtime.Package, name string) (*index.Decl, bool) {
-	if d, ok := pkg.Index.Funcs[name]; ok {
-		return d, true
-	}
-	if td, ok := pkg.Index.Types[name]; ok && td.Decl != nil {
-		return td.Decl, true
-	}
-	if d, ok := pkg.Index.Consts[name]; ok {
-		return d, true
-	}
-	if d, ok := pkg.Index.Vars[name]; ok {
-		return d, true
-	}
-	return nil, false
 }
 
 // importGlobalCell resolves &pkg.name to the package global's storage

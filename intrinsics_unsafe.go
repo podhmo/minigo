@@ -146,7 +146,7 @@ func (e *Engine) unsafeStaticTyp(args []runtime.Value) *runtime.TypeDef {
 			container := ctd.Kind == runtime.KindSlice ||
 				ctd.Kind == runtime.KindMap || ctd.Kind == runtime.KindChan
 			if !container {
-				switch typedefAst(ctd).(type) {
+				switch ctd.TypeExpr().(type) {
 				case *ast.ArrayType, *ast.MapType, *ast.ChanType:
 					container = true
 				}

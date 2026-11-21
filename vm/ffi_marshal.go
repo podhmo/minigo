@@ -1355,10 +1355,7 @@ func hostShapeOf(v *VM, td *runtime.TypeDef, depth int) reflect.Type {
 	if rt := hostBasicTypes[runtime.BasicNameOf(td)]; rt != nil {
 		return rt
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	switch t := x.(type) {
 	case *ast.InterfaceType:
 		if t.Methods == nil || len(t.Methods.List) == 0 {

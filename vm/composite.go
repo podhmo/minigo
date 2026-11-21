@@ -1722,10 +1722,7 @@ func (v *VM) elemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 // element name, then find that typedef among the frame's locals/upvals.
 func (v *VM) localElemTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 	u := v.peelNamed(td)
-	x := u.Anon
-	if x == nil && u.Spec != nil {
-		x = u.Spec.Type
-	}
+	x := u.TypeExpr()
 	for x != nil {
 		switch t := x.(type) {
 		case *ast.ParenExpr:
@@ -1777,10 +1774,7 @@ func (v *VM) mapKeyTypedef(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 	if u == nil || u.Kind != runtime.KindMap {
 		return nil
 	}
-	x := u.Anon
-	if x == nil && u.Spec != nil {
-		x = u.Spec.Type
-	}
+	x := u.TypeExpr()
 	mt, ok := x.(*ast.MapType)
 	if !ok {
 		return nil
@@ -3022,10 +3016,7 @@ func sizedNameOf(td *runtime.TypeDef) string {
 	if sizedIntName(td.Name) {
 		return td.Name
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	if id, ok := x.(*ast.Ident); ok && sizedIntName(id.Name) {
 		return id.Name
 	}

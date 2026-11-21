@@ -1326,10 +1326,7 @@ func PtrArrayType(td *TypeDef) *ast.ArrayType {
 	if td == nil {
 		return nil
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	st, ok := x.(*ast.StarExpr)
 	if !ok {
 		return nil
@@ -1350,10 +1347,7 @@ func arrayTypedef(td *TypeDef) bool {
 	if td == nil {
 		return false
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	at, ok := x.(*ast.ArrayType)
 	return ok && at.Len != nil
 }
@@ -1401,10 +1395,7 @@ func typeTagOf(td *TypeDef) string {
 		}
 		return name
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	if x != nil {
 		return anonTag(x)
 	}
@@ -1571,10 +1562,7 @@ func IsZeroSizeValue(v Value) bool {
 		if td == nil {
 			return false
 		}
-		a := td.Anon
-		if a == nil && td.Spec != nil {
-			a = td.Spec.Type
-		}
+		a := td.TypeExpr()
 		at, ok := a.(*ast.ArrayType)
 		return ok && at.Len != nil
 	}

@@ -983,10 +983,7 @@ func (e *Engine) elemOfFuel(td *runtime.TypeDef, fuel int) (*runtime.TypeDef, er
 	if td.Elem != nil {
 		return td.Elem, nil
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	for {
 		switch t := x.(type) {
 		case *ast.ParenExpr:

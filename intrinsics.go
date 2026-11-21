@@ -1008,7 +1008,7 @@ func sliceTypFromPtr(td *runtime.TypeDef) *runtime.TypeDef {
 	if td == nil {
 		return nil
 	}
-	switch x := typedefAst(td).(type) {
+	switch x := td.TypeExpr().(type) {
 	case *ast.StarExpr:
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.X}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
 	case *ast.ArrayType:
@@ -2323,7 +2323,7 @@ func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 		// an interface-typed element (incl. any) names the value's
 		// dynamic type, not the interface — []any{1} gives %!v(int=1)
 		if s.et != nil && s.et.Name != "any" {
-			if _, isIface := typedefAst(s.et).(*ast.InterfaceType); !isIface {
+			if _, isIface := s.et.TypeExpr().(*ast.InterfaceType); !isIface {
 				name = typedefSpelling(s.et)
 			}
 		}

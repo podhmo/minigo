@@ -506,25 +506,10 @@ func scriptScalarName(x runtime.Value) string {
 	return fmt.Sprintf("%T", x)
 }
 
-// typedefAst returns the underlying type AST of a typedef — Anon for
-// anonymous types, Spec.Type for declared ones.
-func typedefAst(td *runtime.TypeDef) ast.Expr {
-	if td == nil {
-		return nil
-	}
-	if td.Anon != nil {
-		return td.Anon
-	}
-	if td.Spec != nil {
-		return td.Spec.Type
-	}
-	return nil
-}
-
 // isArrayTyp reports whether td denotes a fixed-length array ([N]T) —
 // arrays have no addressable backing pointer under %p.
 func isArrayTyp(td *runtime.TypeDef) bool {
-	at, ok := typedefAst(td).(*ast.ArrayType)
+	at, ok := td.TypeExpr().(*ast.ArrayType)
 	return ok && at.Len != nil
 }
 
@@ -537,7 +522,7 @@ func byteSliceTyp(td *runtime.TypeDef) bool {
 	if td.Elem != nil {
 		return typedefSpelling(td.Elem) == "uint8"
 	}
-	at, ok := typedefAst(td).(*ast.ArrayType)
+	at, ok := td.TypeExpr().(*ast.ArrayType)
 	if !ok {
 		return false
 	}
@@ -578,7 +563,7 @@ func sliceElemTyp(td *runtime.TypeDef) *runtime.TypeDef {
 	if td.Elem != nil {
 		return td.Elem
 	}
-	if at, ok := typedefAst(td).(*ast.ArrayType); ok {
+	if at, ok := td.TypeExpr().(*ast.ArrayType); ok {
 		return bindTyp(td, elemTyp(at.Elt, td.Pkg))
 	}
 	return nil
@@ -586,7 +571,7 @@ func sliceElemTyp(td *runtime.TypeDef) *runtime.TypeDef {
 
 // mapElemTyps resolves a map typedef's key and value typedefs.
 func mapElemTyps(td *runtime.TypeDef) (key, val *runtime.TypeDef) {
-	if mt, ok := typedefAst(td).(*ast.MapType); ok && td != nil {
+	if mt, ok := td.TypeExpr().(*ast.MapType); ok && td != nil {
 		return bindTyp(td, elemTyp(mt.Key, td.Pkg)), bindTyp(td, elemTyp(mt.Value, td.Pkg))
 	}
 	return nil, nil
@@ -595,7 +580,7 @@ func mapElemTyps(td *runtime.TypeDef) (key, val *runtime.TypeDef) {
 // fieldTypOf resolves the i'th field's typedef from a struct typedef's
 // declaration — embedded fields count once and multi-name decls expand.
 func fieldTypOf(td *runtime.TypeDef, i int) *runtime.TypeDef {
-	st, ok := typedefAst(td).(*ast.StructType)
+	st, ok := td.TypeExpr().(*ast.StructType)
 	if !ok {
 		return nil
 	}
@@ -672,10 +657,7 @@ func unsignedIntTyp(td *runtime.TypeDef) bool {
 	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
 		return true
 	}
-	x := td.Anon
-	if x == nil && td.Spec != nil {
-		x = td.Spec.Type
-	}
+	x := td.TypeExpr()
 	if id, ok := x.(*ast.Ident); ok {
 		switch id.Name {
 		case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
