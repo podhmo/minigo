@@ -467,7 +467,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 				// a deferred bound call sees the constants call() hands
 				// it: `defer strconv.FormatUint(1<<63, 10)` is legal.
 				var err error
-				if args, err = v.matBuiltinArgs(args, c.Target); err != nil {
+				if args, err = v.matBuiltinArgs(args, c.Target, c.KeepConstArgs); err != nil {
 					err = fmt.Errorf("%s %w", c.Name, err)
 					panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
 				}

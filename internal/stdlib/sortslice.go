@@ -1532,10 +1532,24 @@ func SliceIndexScript(vc runtime.IndexTyper, name string, args []runtime.Value) 
 		return slices.Index(AnySlice(hostbridge.GoNative(args[0])), hostbridge.GoNative(args[1])), nil
 	}
 	x := args[1]
+	if u, ok := x.(*runtime.UConst); ok {
+		// a constant operand is representable-or-reject at the
+		// element type — `Index([]uint8{}, 300)` overflows where a
+		// value conversion would truncate (gc: cannot use 300 as
+		// uint8). BuiltinFunc.KeepConstArgs keeps the constant domain
+		// arriving here.
+		if cm, isCM := vc.(runtime.ConstMaterializer); isCM && et != nil && et.Kind != runtime.KindInterface {
+			cx, err := cm.MaterializeConstErr(u, et)
+			if err != nil {
+				return 0, fmt.Errorf("%s: %w", name, err)
+			}
+			x = cx
+		}
+	}
 	switch x.(type) {
-	case *runtime.UConst, int64, float64:
-		// an untyped operand (a call materializes `1<<n` to int) takes
-		// the element type, truncating like Go's context typing.
+	case int64, float64:
+		// a non-constant operand takes the element type, wrapping at
+		// its width like a context-typed `1<<n` shift result does.
 		if et == nil || et.Kind == runtime.KindInterface {
 			break
 		}
