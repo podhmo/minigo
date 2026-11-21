@@ -453,6 +453,13 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 			if tagIsNamed(td) {
 				return runtime.Tag(td, x), nil
 			}
+			// converting into an anonymous func type drops the name:
+			// `var f func() = sf` has func()'s dynamic type in gc, so a
+			// stored value is re-assignable to any signature-equal named
+			// func type later.
+			if n, ok := x.(*runtime.Named); ok {
+				return n.V, nil
+			}
 			return x, nil // signatures are not modeled
 		}
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
@@ -786,6 +793,9 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 				return runtime.Tag(td, x), nil
 			}
 		}
+		if n, ok := x.(*runtime.Named); ok {
+			return n.V, nil
+		}
 		return x, nil
 	}
 	if _, ok := runtime.Deref(x); !ok && srcUnsafe {
@@ -1011,6 +1021,14 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 		// tag. Named-to-named still needs a conversion.
 		if v.tdShapeEq(n.Typ, td) {
 			if !tagIsNamed(td) {
+				// an anonymous func target drops the name — gc's
+				// dynamic type of `var f func() = sf` is func(), not
+				// bufio.SplitFunc — so the bare payload rebinds to
+				// any signature-equal named func type later.
+				switch n.V.(type) {
+				case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+					return n.V
+				}
 				return x
 			}
 			if !tagIsNamed(n.Typ) {
