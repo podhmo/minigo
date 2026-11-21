@@ -54,33 +54,12 @@ func zeroSizeValue(v runtime.Value) bool {
 	return runtime.IsZeroSizeValue(v)
 }
 
-// isArrayTyp reports whether td keeps a fixed array length — the value
-// it types is an array (copying, comparable), not a slice.
-func isArrayTyp(td *runtime.TypeDef) bool {
-	if td == nil {
-		return false
-	}
-	x := td.TypeExpr()
-	at, ok := x.(*ast.ArrayType)
-	return ok && at.Len != nil
-}
-
-// arrayASTOf returns the ArrayType AST behind an array typedef (Anon or
-// the named spec's type).
-func arrayASTOf(td *runtime.TypeDef) *ast.ArrayType {
-	if td == nil {
-		return nil
-	}
-	at, _ := td.TypeExpr().(*ast.ArrayType)
-	return at
-}
-
 // sliceTypOf: slicing an array-typed value yields the slice type []Elem —
 // `a[1:]` on [4]int is []int, not [4]int. Carrying the array typedef
 // would make later binds deep-copy it like an array (losing the shared
 // backing) and would key it differently as a map key.
 func sliceTypOf(td *runtime.TypeDef) *runtime.TypeDef {
-	at := arrayASTOf(td)
+	at := runtime.ArrayASTOf(td)
 	if at == nil || at.Len == nil {
 		return td
 	}
@@ -110,11 +89,11 @@ func (v *VM) uncomparableTypDeep(td *runtime.TypeDef) bool {
 	if td == nil {
 		return false
 	}
-	if uncomparableTyp(td) && !isArrayTyp(td) {
+	if uncomparableTyp(td) && !runtime.ArrayTypedef(td) {
 		return true // slice / map / func leaf
 	}
 	switch {
-	case isArrayTyp(td):
+	case runtime.ArrayTypedef(td):
 		return v.uncomparableTypDeep(v.elemTypedef(nil, td))
 	case td.Kind == runtime.KindStruct:
 		for _, ft := range v.fieldTypedefs(td) {
@@ -133,7 +112,7 @@ func (v *VM) uncomparableTypDeep(td *runtime.TypeDef) bool {
 func uncomparableDynamicTyp(v runtime.Value) *runtime.TypeDef {
 	switch x := v.(type) {
 	case *runtime.Slice:
-		if x.Typ != nil && !isArrayTyp(x.Typ) {
+		if x.Typ != nil && !runtime.ArrayTypedef(x.Typ) {
 			return x.Typ
 		}
 	case *runtime.Map:
@@ -155,7 +134,7 @@ func uncomparableDynamicTyp(v runtime.Value) *runtime.TypeDef {
 func uncomparableValue(v runtime.Value) bool {
 	switch x := runtime.Unwrap(v).(type) {
 	case *runtime.Slice:
-		return !isArrayTyp(x.Typ)
+		return !runtime.ArrayTypedef(x.Typ)
 	case *runtime.Map, *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return true
 	case *runtime.TypedNil:

@@ -2651,15 +2651,10 @@ func (n *Node) localTypeSpec(name string, pos token.Pos) *ast.TypeSpec {
 
 // pkgTypeSpec returns the package-level `type name` decl of n's package.
 func (n *Node) pkgTypeSpec(name string) *ast.TypeSpec {
-	if n.pkg == nil || n.pkg.Index == nil {
+	if n.pkg == nil {
 		return nil
 	}
-	td, ok := n.pkg.Index.Types[name]
-	if !ok || td.Decl == nil {
-		return nil
-	}
-	ts, _ := td.Decl.Spec.(*ast.TypeSpec)
-	return ts
+	return n.pkg.Index.TypeSpec(name)
 }
 
 // ASTNode returns the underlying go/ast node.

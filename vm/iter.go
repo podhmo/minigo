@@ -75,7 +75,7 @@ func (v *VM) itFrom(f *frame, coll runtime.Value, viaPtr bool) *runtime.Iterator
 			return mkIter(runtime.Iterator{Kind: 's', Limit: int(c.Len()), Zero: c.Zero})
 		}
 		elems := c.Elems
-		if !viaPtr && isArrayTyp(c.Typ) {
+		if !viaPtr && runtime.ArrayTypedef(c.Typ) {
 			// `range a` evaluates the array once — the loop reads a
 			// snapshot, so writes to a's elements stay invisible.
 			elems = make([]runtime.Value, len(c.Elems))

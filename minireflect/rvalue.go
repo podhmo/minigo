@@ -3543,19 +3543,14 @@ func isExported(name string) bool {
 	return unicode.IsUpper(rune(name[0]))
 }
 
-// arrayTypeOf returns td's underlying ArrayType when td spells a
-// fixed-size array — its AST carries a length (slices have none),
-// mirroring runtime's arrayTypedef.
+// arrayTypeOf returns td's underlying fixed-size ArrayType — nil for
+// slice typedefs (their AST has no length).
 func arrayTypeOf(td *runtime.TypeDef) *ast.ArrayType {
-	if td == nil {
+	at := runtime.ArrayASTOf(td)
+	if at == nil || at.Len == nil {
 		return nil
 	}
-	x := td.TypeExpr()
-	at, _ := x.(*ast.ArrayType)
-	if at != nil && at.Len != nil {
-		return at
-	}
-	return nil
+	return at
 }
 
 // normVal normalizes an ifaceVal payload back into a script value:
