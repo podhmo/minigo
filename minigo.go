@@ -386,7 +386,18 @@ func (e *Engine) fieldPath(td *runtime.TypeDef, name string) ([]int, bool, bool)
 	if e.fieldPaths == nil {
 		return nil, false, false
 	}
-	switch res := e.fieldPaths.Of(td, name); res.Kind {
+	// M4-1d: memoize decided answers by (TypeID, name). The key carries
+	// the source version (*syntax.File), so a re-parsed declaration
+	// keys differently and a stale path can never hit. LocalTypes are
+	// func-local — invisible to the index anyway — and "?" keys would
+	// collide across unidentifiable typedefs.
+	var key string
+	if td != nil && len(td.LocalTypes) == 0 && td.TypeExpr() != nil {
+		if tid := e.typeIDOf(td); tid != "" && tid != "?" {
+			key = string(tid)
+		}
+	}
+	switch res := e.fieldPaths.OfKeyed(td, name, key); res.Kind {
 	case source.FieldPathFound:
 		return res.Index, true, true
 	case source.FieldPathMissing:
