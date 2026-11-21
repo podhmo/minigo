@@ -46,7 +46,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 	if rv.Kind() == reflect.Map && rv.Type().Name() == "" {
 		// recursing through snapshotValue unboxes nested maps too —
 		// m["a"]["b"] keeps working at any depth.
-		td := AnonMapTypX(AnonExprOf(rv.Type().Key()), AnonExprOf(rv.Type().Elem()))
+		td := HostMapTypOf(rv.Type())
 		if rv.IsNil() {
 			return &runtime.TypedNil{Typ: td}
 		}
@@ -78,7 +78,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 			// element name never reaches the param check).
 			var td *runtime.TypeDef
 			if rv.Kind() == reflect.Slice {
-				td = AnonSliceTypX(AnonExprOf(rv.Type().Elem()))
+				td = HostSliceTypOf(rv.Type().Elem())
 				if rv.IsNil() {
 					return &runtime.TypedNil{Typ: td}
 				}
@@ -96,7 +96,7 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 					defer delete(visiting, rv.Pointer())
 				}
 			} else {
-				td = AnonArrayTypX(rv.Len(), AnonExprOf(rv.Type().Elem()))
+				td = HostArrayTypOf(rv.Type())
 			}
 			et := rv.Type().Elem()
 			el := make([]runtime.Value, rv.Len())

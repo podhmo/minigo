@@ -5,10 +5,12 @@ import (
 	"go/token"
 	"io/fs"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	stdatomic "github.com/podhmo/minigo/internal/stdlib/atomic"
 
 	"github.com/google/go-cmp/cmp"
@@ -160,6 +162,50 @@ func TestTypeIDAnonymousIsStructural(t *testing.T) {
 	}
 	if a, b := e.typeIDOf(withBinds(runtime.BasicTypedef("int"))), e.typeIDOf(withBinds(runtime.BasicTypedef("string"))); a != b {
 		t.Errorf("enclosing generic's binds split an anonymous typedef's key: %q vs %q", a, b)
+	}
+}
+
+// the elem-composed key keeps the parts TypeDef has no slot for — an
+// array's length and a map's key — or [3]T/[4]T and map[string]T/
+// map[int]T collide (Devin Review on the host map/array elem work).
+func TestTypeIDAnonCompositeKeepsLenAndKey(t *testing.T) {
+	e := NewEngine(".")
+	elem := hostbridge.HostPkgElemTypedef(reflect.TypeOf(time.Duration(0)))
+	arr := func(n int) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindSlice,
+			Elem: elem,
+			Anon: &ast.ArrayType{
+				Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(n)},
+				Elt: ast.NewIdent("Duration"),
+			},
+		}
+	}
+	if diff := cmp.Diff(false, e.typeIDOf(arr(3)) == e.typeIDOf(arr(4))); diff != "" {
+		t.Errorf("[3]T and [4]T key alike (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(false, e.typeIDOf(arr(3)) == e.typeIDOf(&runtime.TypeDef{
+		Kind: runtime.KindSlice,
+		Elem: elem,
+		Anon: &ast.ArrayType{Elt: ast.NewIdent("Duration")},
+	})); diff != "" {
+		t.Errorf("[3]T and []T key alike (-want +got):\n%s", diff)
+	}
+	mk := func(key string) *runtime.TypeDef {
+		return &runtime.TypeDef{
+			Kind: runtime.KindMap,
+			Elem: elem,
+			Anon: &ast.MapType{
+				Key:   ast.NewIdent(key),
+				Value: ast.NewIdent("Duration"),
+			},
+		}
+	}
+	if diff := cmp.Diff(false, e.typeIDOf(mk("string")) == e.typeIDOf(mk("int"))); diff != "" {
+		t.Errorf("map[string]T and map[int]T key alike (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(true, e.typeIDOf(mk("string")) == e.typeIDOf(mk("string"))); diff != "" {
+		t.Errorf("same map typedef keys differently (-want +got):\n%s", diff)
 	}
 }
 
