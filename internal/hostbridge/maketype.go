@@ -103,3 +103,42 @@ func argSize(v any) int64 {
 	}
 	return 0
 }
+
+// Int64Of reads a builtin argument's int64 value after constant and
+// box unwrapping — the helper make(len)/append/clear positions share.
+func Int64Of(v any) int64 {
+	return int64(IntOf(v))
+}
+
+// IntOf reads a builtin argument's native int value: Named peels,
+// UConst materializes at its default type, boxed host scalars unwrap,
+// and a defined numeric type still carries its integer value.
+func IntOf(v any) int {
+	switch x := v.(type) {
+	case *runtime.Named:
+		return IntOf(x.V)
+	case *runtime.Cell:
+		return IntOf(x.Elem)
+	case *runtime.UConst:
+		return IntOf(MustNativeConst(x))
+	case int64:
+		return int(x)
+	case int:
+		return x
+	case float64:
+		return int(x)
+	case uint64:
+		return int(x)
+	case uint, uint8, uint16, uint32, uintptr:
+		return int(reflect.ValueOf(x).Uint())
+	case *runtime.GoValue:
+		return IntOf(x.V)
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return int(rv.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return int(rv.Uint())
+	}
+	return 0
+}
