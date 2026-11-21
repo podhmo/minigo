@@ -880,7 +880,7 @@ func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptr
 		ptrs = append(ptrs, true)
 	}
 	for _, ptr := range ptrs {
-		for name, m := range c.r.engine.MethodFuncs(td, ptr, map[*runtime.TypeDef]bool{}) {
+		for name, m := range c.r.engine.MethodFuncs(td, ptr) {
 			c.add(out, name, CandMethod, funcDetail(m))
 		}
 	}

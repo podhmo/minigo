@@ -449,6 +449,14 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 	// shallower-or-equal depth — the bounded member search owns those.
 	if v.H.FieldPath != nil && len(s.Def.LocalTypes) == 0 {
 		if idx, found, decided := v.H.FieldPath(s.Def, name); decided {
+			// the method set answers the non-field members — methods,
+			// interface-dispatched and host members all locate their
+			// receiver slot by declared index path, so the value-level
+			// walk only re-runs for a member the set cannot name (a
+			// promoted host FIELD is not in the method set).
+			if mv, ok := v.promotedViaMethodSet(f, s, name, idx, found); ok {
+				return mv
+			}
 			if found {
 				if pr, ok := v.promotedMemberEx(f, s, name, true, false, len(idx)-1); ok {
 					return v.promotedValue(f, name, pr)
@@ -467,6 +475,66 @@ func (v *VM) structMember(f *frame, s *runtime.Struct, name string, recv runtime
 	}
 	f.trap("%s has no field or method %s", def.Name, name)
 	return nil
+}
+
+// promotedViaMethodSet resolves a promoted member through the typedef's
+// shared method set — methods, interface-dispatched and host members the
+// set locates by declared index path. A member the set cannot name (a
+// host embed's promoted FIELD is not a method) reports not-found so the
+// caller falls back to the value walk; an ambiguous or outranked member
+// is decided here — ambiguous traps like Go's compile-time rejection, a
+// member deeper than the declared field path loses to it.
+func (v *VM) promotedViaMethodSet(f *frame, s *runtime.Struct, name string, fieldPath []int, fieldFound bool) (runtime.Value, bool) {
+	if v.H.TypeMethodInfoOf == nil {
+		return nil, false
+	}
+	ms, err := v.H.TypeMethodInfoOf(s.Def, true)
+	if err != nil || ms == nil {
+		return nil, false
+	}
+	fieldDepth := -1
+	if fieldFound {
+		fieldDepth = len(fieldPath) - 1
+	}
+	if ad, contested := ms.Ambiguous[name]; contested {
+		if fieldDepth < 0 || ad <= fieldDepth {
+			f.trap("ambiguous selector %s", name)
+		}
+		return nil, false // the shallower declared field wins
+	}
+	pm := ms.Members[name]
+	if pm == nil {
+		return nil, false
+	}
+	if fieldDepth >= 0 {
+		if pm.Depth > fieldDepth {
+			return nil, false // the declared field wins
+		}
+		if pm.Depth == fieldDepth {
+			f.trap("ambiguous selector %s", name)
+		}
+	}
+	if len(pm.Path) == 0 {
+		return nil, false
+	}
+	st, ix := v.fieldSlotAtPath(f, s, pm.Path, name)
+	if st == nil {
+		return nil, false
+	}
+	slot := st.Fields[ix]
+	switch pm.Via {
+	case "iface":
+		// dispatch dynamically on the stored interface value — the
+		// synthesized signature shell in Funcs is not callable.
+		return v.selectMember(f, slot, name), true
+	case "host":
+		return v.selectMember(f, runtime.Unwrap(slot), name), true
+	}
+	fn := ms.Funcs[name]
+	if fn == nil {
+		return nil, false
+	}
+	return v.promotedValue(f, name, &promoted{m: fn, recv: slot, mst: st, midx: ix}), true
 }
 
 // promotedValue binds the member promotedMember found: a field value,

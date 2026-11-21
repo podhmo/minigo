@@ -1988,6 +1988,67 @@ func TestPromotedMethodResolution(t *testing.T) {
 	}
 }
 
+func TestMethodSetDepthContests(t *testing.T) {
+	e := newEngine(t)
+	// The shared method set must answer the same depth contests the
+	// value walk did — each case verified against `go run`:
+	// an interface requirement at depth 1 beats a deeper same-name
+	// promotion, and a defined type promotes through its underlying
+	// struct's anonymous fields (see fixture comments in msetchk).
+	if got := run(t, e, "./testdata/msetchk", "F2"); got != "u" {
+		t.Errorf("F2: want %q, got %v", "u", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F3"); got != "inner" {
+		t.Errorf("F3: want %q, got %v", "inner", got)
+	}
+	for _, fn := range []string{"F1", "F4"} {
+		if _, err := e.Run(context.Background(), "./testdata/msetchk", fn); err == nil ||
+			!strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("%s: expected \"ambiguous\" error, got %v", fn, err)
+		}
+	}
+	// a requirement promoted through two embeds keeps its signature:
+	// W00's M is M() int — it satisfies I0 but not an M() string
+	// requirement, and a recursive generic embed reaches the same
+	// fixpoint gc does.
+	if got := run(t, e, "./testdata/msetchk", "F5ok"); got != "ok" {
+		t.Errorf("F5ok: want %q, got %v", "ok", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F9"); got != "ok" {
+		t.Errorf("F9: want %q, got %v", "ok", got)
+	}
+	// a promoted host FIELD wins the selector but is no method, and a
+	// defined pointer type promotes nothing its pointee carries.
+	if got := run(t, e, "./testdata/msetchk", "F6sel"); got != "0" {
+		t.Errorf("F6sel: want %q, got %v", "0", got)
+	}
+	for fn, want := range map[string]string{
+		"F5":  "missing method M",
+		"F6":  "missing method Port",
+		"F8":  "missing method M",
+		"F8b": "missing method M",
+		// one level out the winning host field contests the same-depth
+		// method — gc calls the member ambiguous, so the interface is
+		// not implemented.
+		"F7": "missing method Port",
+	} {
+		if got := run(t, e, "./testdata/msetchk", fn); !strings.Contains(got.(string), want) {
+			t.Errorf("%s: want a recover string containing %q, got %v", fn, want, got)
+		}
+	}
+	// parenthesized underlying expressions resolve, and two defined
+	// pointer types' nils are not the same nil.
+	if got := run(t, e, "./testdata/msetchk", "F10"); got != "0 <nil> <nil>" {
+		t.Errorf("F10: want %q, got %v", "0 <nil> <nil>", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F11"); got != "false" {
+		t.Errorf("F11: want %q, got %v", "false", got)
+	}
+	if got := run(t, e, "./testdata/msetchk", "F12"); got != "true true true false" {
+		t.Errorf("F12: want %q, got %v", "true true true false", got)
+	}
+}
+
 // toolchainAtLeast reports whether the host Go toolchain is >= major.minor
 // — the parsed language surface (go/parser) depends on it.
 func toolchainAtLeast(major, minor int) bool {

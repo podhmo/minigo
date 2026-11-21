@@ -53,7 +53,7 @@ type Hooks struct {
 
 	// Type machinery — the same helpers member dispatch uses.
 	MethodFunc     func(pkg *runtime.Package, recv string, md *index.Decl) *runtime.Function
-	MethodFuncs    func(td *runtime.TypeDef, ptr bool, seen map[*runtime.TypeDef]bool) map[string]*runtime.Function
+	MethodFuncs    func(td *runtime.TypeDef, ptr bool) map[string]*runtime.Function
 	FieldTypes     func(td *runtime.TypeDef) ([]*runtime.TypeDef, error)
 	ElemOf         func(td *runtime.TypeDef) (*runtime.TypeDef, error)
 	PeelAliasTd    func(td *runtime.TypeDef) *runtime.TypeDef

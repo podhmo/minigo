@@ -93,6 +93,12 @@ type Hooks struct {
 	// TypeMethodFuncs is MethodFuncsOf's typedef variant — the
 	// declared method set of a type rather than a value.
 	TypeMethodFuncs func(td *runtime.TypeDef) (map[string]*runtime.Function, error)
+	// TypeMethodInfoOf is MethodInfoOf's typedef variant: the set of
+	// the type itself. ptr reports whether the set is computed through
+	// a pointer — *T's set includes pointer receivers while T's does
+	// not. Selector binding asks with ptr=true: the member walk binds
+	// &x where Go's addressability rules allow.
+	TypeMethodInfoOf func(td *runtime.TypeDef, ptr bool) (*runtime.MethodSet, error)
 	// SigMemo, when set, remembers member signature comparisons across
 	// the engine's VMs (see runtime.SigMemo). Nil compares every time.
 	SigMemo *runtime.SigMemo
