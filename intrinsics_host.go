@@ -19,7 +19,7 @@ func (e *Engine) installHost(h *hostHelpers) {
 		}),
 	}
 
-	if len(e.cfg.AllowedRoots) == 0 {
+	if len(h.env.AllowedRoots()) == 0 {
 		hostpkg["Getenv"] = h.fn("host.Getenv", func(a []any) (any, error) { return os.Getenv(str(a[0])), nil })
 		hostpkg["Environ"] = h.fn("host.Environ", func(a []any) (any, error) { return strsSlice(os.Environ()), nil })
 		hostpkg["Args"] = h.fn("host.Args", func(a []any) (any, error) { return strsSlice(os.Args), nil })

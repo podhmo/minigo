@@ -15,7 +15,6 @@ import (
 	"go/ast"
 	"io"
 	"os"
-	"path/filepath"
 	"reflect"
 	goruntime "runtime"
 	"slices"
@@ -23,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -68,7 +68,7 @@ func hostSplitFunc(name string, f bufio.SplitFunc) *runtime.BuiltinFunc {
 // hostHelpers builds BuiltinFuncs whose Fn marshals arguments to Go natives
 // and results back to runtime values.
 type hostHelpers struct {
-	e *Engine // for the configured output writer
+	env bind.Env // the narrow host-environment surface the bindings see
 }
 
 // engineStdout is the script-visible os.Stdout: a *os.File facade whose
@@ -99,12 +99,12 @@ func (w *engineStdout) ReadFrom(r io.Reader) (int64, error) {
 	return io.Copy(w.h.out(), r)
 }
 
-// out returns the engine's output writer (io.Discard when unset).
+// out returns the environment's output writer (io.Discard when unset).
 func (h *hostHelpers) out() io.Writer {
-	if h.e == nil || h.e.out == nil {
+	if h.env == nil {
 		return io.Discard
 	}
-	return h.e.out
+	return h.env.Out()
 }
 
 func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
@@ -1114,16 +1114,6 @@ func walkCallback(v runtime.MemberCaller, cb runtime.Value, root, ap, p string, 
 	return hostErrOf(v, r)
 }
 
-// hostSpelling anchors a script path at the virtual cwd WITHOUT
-// cleaning it, so a host lstat names the result like gc's lstat of the
-// spelled path (basename "." for ".", ".." for "a/b/..").
-func (e *Engine) hostSpelling(p string) string {
-	if filepath.IsAbs(p) {
-		return p
-	}
-	return e.cwd + string(filepath.Separator) + p
-}
-
 // hostBoxOf unwraps a host struct value (`var sb strings.Builder`,
 // `&strings.Builder{}`), which rides as Named{HostNew typedef, GoValue},
 // to its GoValue box, so io helpers hand the real host value to the host
@@ -1558,7 +1548,7 @@ func deepNilish(v runtime.Value) bool {
 // installStdlib binds the intrinsic packages onto the engine's import-path
 // table; Bound packages win over source resolution (loadPath checks pkgs).
 func (e *Engine) installStdlib() {
-	h := &hostHelpers{e: e}
+	h := &hostHelpers{env: bindEnv{e}}
 	e.installFmt(h)
 	e.installErrors(h)
 	e.installStrings(h)

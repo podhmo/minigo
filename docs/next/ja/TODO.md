@@ -64,9 +64,11 @@
 - [x] **P2-8 `scriptIface` のアダプタ一族を生成に切り替える**: インタフェース → メソッド → arity の表から生成し、`scriptFileSeek` などの組み合わせ爆発をなくす。
 - [ ] **P2-9 `builtin/` を抽出する**: `builtins.go` を移す。
   - [ ] ブロック中: `builtins.go` は root パッケージの helper（`display`/`uconstNative`/`makeHostType`/`constAtWidth` 他 ~17 個）を `intrinsics_*.go` と共有しており、先に helper 層の切り出しが必要（P2-7 残り + P2-14 と同じ地層）
-- [ ] **P2-10 stdlib: 名前レジストリと `bind.Env`**: テーブルはまだ即時に構築したまま、`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位/bound-shadow チェックを `names` ビューに移す。エンジンを捕捉している約 45 個のクロージャを `bind.Env` 経由にする。完了条件: 振る舞いが変わっていない。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
-- [ ] **P2-11 stdlib: `hostTwin` の検索で install を起動する**: 他のパッケージから流れてきた host 値（`ctx.Deadline()` → `time.Time`）が bind 済みの typedef を見つけられるようにする。完了条件: `time` を import しないスクリプトでのテストがある。
-- [ ] **P2-12 stdlib: パッケージ単位の遅延構築**: `internal/stdlib/<path>` ごとに `Install(r, env)` を持たせ、初めて必要になったときに構築する。グローバルな `templateFuncMap` もここでレジストリ単位にする（バグとしてはルートの [TODO.md](../../../TODO.md) で管理している）。完了条件: `NewSession` のベンチで差分を報告している（ベースラインでは実行時間の 60〜70%）。
+- [-] **P2-10 stdlib: 名前レジストリと `bind.Env`**: テーブルはまだ即時に構築したまま、`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位/bound-shadow チェックを `names` ビューに移す。エンジンを捕捉している約 45 個のクロージャを `bind.Env` 経由にする。完了条件: 振る舞いが変わっていない。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
+  - [x] `bind.Env` インタフェース（`internal/bind`）を導入し、エンジン捕捉のクロージャを `h.env` 経由に変更（`bindenv.go` アダプタ）（PR #1144）
+  - [ ] 残り: `names` ビューへの移行（`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位・bound-shadow チェック）
+- [ ] **P2-11 stdlib: `hostTwin` を install の入口につなぐ**: P2-10 の名前レジストリを使い、登録済みの stdlib パスについて、typedef を検索する前に対象パッケージの install を保証する入口を通す。この段階では起動時の即時構築を続ける。未登録のパスは従来どおり既存パッケージだけを検索する。完了条件: `time` を import しないスクリプトに別のパッケージから `time.Time`（例 `ctx.Deadline()` の戻り値）を渡し、対応する typedef を使えることをテストで固定する。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
+- [ ] **P2-12 stdlib: パッケージ単位の遅延構築**: P2-11 の入口で、`internal/stdlib/<path>` ごとの `Install(r, env)` を初回利用時に実行する。グローバルな `templateFuncMap` もここでレジストリ単位にする（バグとしてはルートの [TODO.md](../../../TODO.md) で管理している）。完了条件: P2-11 の回帰テストが通り、`time` のテーブルが初回の `hostTwin` 検索で構築されることを確認する。`NewSession` のベンチで差分を報告する（ベースラインでは install が実行時間の 60〜70%）。
 - [ ] **P2-13 純粋なシグネチャの bind を生成する**: 約半分のエントリを `gen-intrinsics` で生成し、`// Code generated` ヘッダ付きでチェックインする。完了条件: 生成したパッケージに、source 解釈版との parity テストがある。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
 - [ ] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root と `vm.go` がそれぞれ約 3,000 行を下回る。
 
