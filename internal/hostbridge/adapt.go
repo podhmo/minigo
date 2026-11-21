@@ -121,7 +121,28 @@ func (m *Marshal) funcMapPanicValue(err error, vc runtime.VMCaller) any {
 	if s, ok := runtime.IfaceCallString(vc, p.Value, "String"); ok {
 		return s
 	}
-	return m.DeepHost(p.Value, vc, m.NewWalk())
+	hv := m.DeepHost(p.Value, vc, m.NewWalk())
+	// a plain script struct VALUE deep-hosts to a *projection pointer;
+	// the script panicked with the struct, not a pointer to it — hand
+	// the host the pointee so template's %v reads `{x}` like gc, not
+	// `&{x}`. Only a *runtime.Struct payload qualifies: a panic with
+	// `&S{}` arrives as *runtime.Cell and keeps its `&` form. Keep
+	// the pointer too when it carries error/Stringer — the method
+	// set lives on it (e.g. a boundsError projection's Error).
+	// the payload may carry a declared-type tag — peel it for the
+	// shape check; *runtime.Cell (a `&S{}` panic) stays wrapped and
+	// keeps the `&` form.
+	if _, isStruct := runtime.Unwrap(p.Value).(*runtime.Struct); isStruct {
+		if rv := reflect.ValueOf(hv); rv.IsValid() &&
+			rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
+			if _, isErr := hv.(error); !isErr {
+				if _, isStr := hv.(fmt.Stringer); !isStr {
+					return rv.Elem().Interface()
+				}
+			}
+		}
+	}
+	return hv
 }
 
 // adaptFunc wraps a script callable as a host-typed func so methods taking
