@@ -1,0 +1,4 @@
+ptr true
+val true
+host true
+*main.rd main.rd *strings.Reader
