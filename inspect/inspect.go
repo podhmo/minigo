@@ -271,6 +271,13 @@ type Import struct {
 // NewImport returns the [Import] view of imp. ref may be nil.
 func NewImport(fset *token.FileSet, imp *syntax.Import, ref *runtime.ImportRef) *Import {
 	i := &Import{Path: imp.Path, Name: imp.LocalName(), ref: ref}
+	if imp.Alias == "" && ref != nil {
+		// an unaliased import binds the declared package name, which may
+		// differ from the path tail (gopkg.in/yaml.v3 declares yaml).
+		if n := ref.PackageName(); n != "" {
+			i.Name = n
+		}
+	}
 	if fset != nil {
 		i.Pos = posOf(fset, imp.Pos)
 	}
@@ -1639,6 +1646,12 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 			// have to locate the imported package.
 			return runtime.SymbolID{}, false
 		}
+		if fileDotImports(te.file) {
+			// a name no declaration in the package claims may arrive
+			// through a dot import — attributing it to the file's own
+			// package would misattribute it.
+			return runtime.SymbolID{}, false
+		}
 		if te.pkg != nil {
 			return runtime.SymbolID{PackagePath: te.pkg.Path, Name: e.Name}, true
 		}
@@ -1660,6 +1673,20 @@ func (te *TypeExpr) SymbolID() (runtime.SymbolID, bool) {
 		return runtime.SymbolID{}, false
 	}
 	return runtime.SymbolID{}, false
+}
+
+// fileDotImports reports whether sf has a dot import (`import . "p"`),
+// whose members any unqualified identifier in the file could name.
+func fileDotImports(sf *syntax.File) bool {
+	if sf == nil {
+		return false
+	}
+	for _, imp := range sf.Imports {
+		if imp.Alias == "." {
+			return true
+		}
+	}
+	return false
 }
 
 // importOf returns the import of te's file whose local name (alias or

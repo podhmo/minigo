@@ -51,12 +51,31 @@ func (r Result) String() string {
 func Scan(ctx context.Context, p *runtime.Package, deps Deps) ([]Result, error) {
 	var out []Result
 	for _, sf := range p.Files {
+		refs := map[int]*runtime.ImportRef{} // import's position in sf.Imports -> its engine ref
+		if rl := p.Imports[sf]; rl != nil {
+			for i, im := range sf.Imports {
+				if i < len(rl) && rl[i] != nil && rl[i].Path == im.Path {
+					refs[i] = rl[i]
+				}
+			}
+		}
 		imports := map[string]string{} // local name -> import path
-		for _, im := range sf.Imports {
+		for i, im := range sf.Imports {
 			if im.Alias == "_" || im.Alias == "." {
 				continue
 			}
-			imports[im.LocalName()] = im.Path
+			name := im.LocalName()
+			if im.Alias == "" {
+				// an unaliased import binds the declared package name,
+				// which may differ from the path tail (gopkg.in/yaml.v3
+				// declares yaml).
+				if ref := refs[i]; ref != nil {
+					if n := ref.PackageName(); n != "" {
+						name = n
+					}
+				}
+			}
+			imports[name] = im.Path
 		}
 		for _, decl := range sf.AST.Decls {
 			var shadow map[string]bool

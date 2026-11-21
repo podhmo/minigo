@@ -2685,11 +2685,12 @@ func TestVet(t *testing.T) {
 	}
 	want := []string{
 		"github.com/podhmo/minigo/testdata/vetstub.Unreg",
+		"github.com/podhmo/minigo/testdata/vetstub2.Unreg2",
 	}
 	if diff := cmp.Diff(want, resolved); diff != "" {
 		t.Errorf("findings mismatch (-want +got):\n%s", diff)
 	}
-	if len(got) == 1 && !strings.HasSuffix(got[0].Pos.Filename, "vetmain/main.go") {
+	if len(got) == 2 && !strings.HasSuffix(got[0].Pos.Filename, "vetmain/main.go") {
 		t.Errorf("finding position: got %v", got[0].Pos)
 	}
 }
