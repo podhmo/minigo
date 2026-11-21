@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"text/template"
@@ -298,6 +299,44 @@ func PtrConv() string {
 	sp := (*SV)(p)
 	sp.Set("y")
 	return fmt.Sprintf("%v %T %T", s, *sp, *p)
+}
+
+// (*T)(p) on a pointee of a different underlying type is a gc compile
+// error — minigo traps at conversion time instead of re-tagging. The
+// same rule holds for host types: *strings.Builder does not convert to
+// *strings.Reader.
+type SS string
+
+func PtrConvDeclBad() string {
+	i := 3
+	p := &i
+	sp := (*SS)(p)
+	return string(*sp)
+}
+
+func PtrConvHostBad() string {
+	var b strings.Builder
+	p := &b
+	rp := (*strings.Reader)(p)
+	return rp.String()
+}
+
+// (*T)(p) also stays legal when the pointee's underlying shape only
+// matches structurally: an anonymous struct literal's def and two
+// host types over the same []byte both satisfy gc's identical-
+// underlying rule.
+func PtrConvAnonLit() string {
+	a := struct{ X int }{1}
+	sp := (*SV2)(&a)
+	return fmt.Sprintf("%v", *sp)
+}
+
+type SV2 struct{ X int }
+
+func PtrConvHostUnderlying() string {
+	var ip net.IP
+	mp := (*net.IPMask)(&ip)
+	return fmt.Sprintf("%v %T", mp == nil, mp)
 }
 
 // (*T)(p) shares the pointee's address: storing through *p is
