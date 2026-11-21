@@ -1853,6 +1853,7 @@ func CallerHooks(v runtime.VMCaller) Hooks {
 		ElemOf:      v.ElemOf,
 		FieldTypes:  v.FieldTypes,
 		ResolveType: v.ResolveType,
+		Underlying:  v.Underlying,
 	}
 }
 
@@ -1928,6 +1929,12 @@ func (t *RType) sizeOf() uintptr {
 		for i := 0; i < t.NumField(); i++ {
 			ft := t.Field(i).Type
 			off = roundUp(off, uintptr(ft.alignOf())) + ft.sizeOf()
+		}
+		// gc pads a struct whose LAST field is zero-size so the
+		// field's address stays in bounds: struct{i int64; s struct{}}
+		// measures 16, not 8.
+		if n := t.NumField(); n > 0 && t.Field(n-1).Type.sizeOf() == 0 {
+			off++
 		}
 		return roundUp(off, uintptr(t.alignOf()))
 	}
