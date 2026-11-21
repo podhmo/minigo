@@ -1070,10 +1070,11 @@ func (m *Marshal) fillHostStruct(out reflect.Value, s *runtime.Struct, vc runtim
 // a pointer-receiver method on a value receiver, and any non-matching
 // shape, the bound function value stays verbatim. A call that fails —
 // panic, or a non-nil error result — leaves the field nil, printing
-// <no value> as the dropped map entry did before. Only declared
-// methods bind here — promoted ones stay out — and unexported members
-// are absent, matching Go's can't-evaluate and unexported-field errors
-// as a missing field.
+// <no value> as the dropped map entry did before. Members promoted
+// through embedded fields join the projection by promotedData — gc
+// resolves them through the interface boundary — and unexported
+// members are absent, matching Go's can't-evaluate and
+// unexported-field errors as a missing field.
 func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *HostMarshal) any {
 	if old, ok := h.Walk.Seen(s); ok {
 		return old
@@ -1082,21 +1083,35 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	var sfs []reflect.StructField
 	var fidx []int
 	var mnames []string
+	declared := map[string]bool{}
 	if td != nil {
 		for i, name := range td.Fields {
 			if i < len(s.Fields) && ast.IsExported(name) {
 				sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
 				fidx = append(fidx, i)
+				declared[name] = true
 			}
 		}
 		for name := range td.Methods {
 			if ast.IsExported(name) {
 				mnames = append(mnames, name)
+				declared[name] = true
 			}
 		}
 	}
 	sort.Strings(mnames)
 	for _, name := range mnames {
+		sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
+	}
+	// a value receiver excludes pointer receivers from the method set,
+	// exactly as Go does — a *runtime.Struct recv is the struct value,
+	// anything else is a pointer carrying its ref.
+	_, valueRecv := recv.(*runtime.Struct)
+	// members promoted through embedded fields resolve through the
+	// interface boundary in gc — `{{.C.Hidden}}` on an embed-receiving
+	// *T — so they join the projection as direct members.
+	pnames, pitems := promotedData(s, td, vc, !valueRecv, declared)
+	for _, name := range pnames {
 		sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
 	}
 	if len(sfs) == 0 {
@@ -1119,39 +1134,23 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	if td == nil {
 		return out.Interface()
 	}
-	// a value receiver excludes pointer-receiver methods from the method
-	// set, exactly as Go does — a *runtime.Struct recv is the struct
-	// value, anything else is a pointer carrying its ref.
-	_, valueRecv := recv.(*runtime.Struct)
 	for k, name := range mnames {
-		m := td.Methods[name]
-		r := recv
-		if !m.PtrRecv {
-			if dv, ok := runtime.Deref(r); ok {
-				r = dv
+		h.projMethod(ev.Field(len(fidx)+k), td.Methods[name], recv, td.Methods[name].PtrRecv && valueRecv, vc)
+	}
+	for j, name := range pnames {
+		fv := ev.Field(len(fidx) + len(mnames) + j)
+		it := pitems[name]
+		switch {
+		case it.hm:
+			h.projHostMethod(fv, it.hv)
+		case it.hv.IsValid():
+			fv.Set(it.hv)
+		case it.m != nil:
+			h.projMethod(fv, it.m, it.recv, false, vc)
+		default:
+			if hv := h.M.DeepHost(it.fv, vc, h); hv != nil {
+				fv.Set(reflect.ValueOf(hv))
 			}
-		}
-		bm := &runtime.BoundMethod{Recv: r, Fn: m}
-		fv := ev.Field(len(fidx) + k)
-		nout := h.M.TemplateCallableNout(m)
-		if vc == nil || h.Budget <= 0 || nout == 0 || (m.PtrRecv && valueRecv) {
-			fv.Set(reflect.ValueOf(bm))
-			continue
-		}
-		h.Budget--
-		res, err := vc.Call(bm, nil)
-		if err != nil {
-			continue
-		}
-		if nout == 2 {
-			t, ok := res.(*runtime.Tuple)
-			if !ok || len(t.Elems) != 2 || !nilishHost(t.Elems[1]) {
-				continue
-			}
-			res = t.Elems[0]
-		}
-		if hv := h.M.DeepHost(res, vc, h); hv != nil {
-			fv.Set(reflect.ValueOf(hv))
 		}
 	}
 	return out.Interface()
