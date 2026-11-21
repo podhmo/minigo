@@ -568,15 +568,11 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		}
 		return v.typeMatches(f, et, dv)
 	}
-	dv := x
-	// a *Struct under a Cell/other ref still matches T — pointers share the
-	// element typedef in this model.
-	if d, ok := runtime.Deref(dv); ok {
-		if _, isStruct := d.(*runtime.Struct); isStruct {
-			dv = d
-		}
-	}
-	switch xv := dv.(type) {
+	// a Cell/other ref inside an interface box is a *T value, not a T
+	// lvalue — `var b any = &v` asserts to *rd, not rd. The pointer arm
+	// above already handled that spelling; a bare Struct here is the T
+	// value itself.
+	switch xv := x.(type) {
 	case *runtime.Struct:
 		if xv.Def == td {
 			return true
@@ -636,7 +632,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		// a raw host scalar — a time.Duration a host call returned, or
 		// `any(2*time.Second)` whose constant folded untagged — is a
 		// value of its bound typedef: x.(time.Duration) matches.
-		return td.HostScalar != nil && hostbridge.TypeOf(dv) == hostbridge.TypeOf(td.HostScalar)
+		return td.HostScalar != nil && hostbridge.TypeOf(x) == hostbridge.TypeOf(td.HostScalar)
 	}
 }
 
