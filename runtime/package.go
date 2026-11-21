@@ -13,6 +13,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/syntax"
 )
 
@@ -323,6 +324,7 @@ func (p *Package) EnsureReadyRun(run func(*Function) error) error {
 			return
 		}
 		p.SetState(Initializing)
+		spike.NoteInitDuringCompile()
 		if err := p.runBootstrap(run); err != nil {
 			p.initErr = err
 			p.SetState(Failed)
@@ -400,6 +402,7 @@ func (p *Package) EnsureConstsRun(run func(*Function) error) error {
 			p.constErr = fmt.Errorf("package %s: no init runner", p.Name)
 			return
 		}
+		spike.NoteInitDuringCompile()
 		p.constErr = p.ConstBootstrap(p, run)
 	})
 	return p.constErr

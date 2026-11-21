@@ -1,4 +1,4 @@
-.PHONY: all test test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
+.PHONY: all test test-spike test-race concurrency-stress todo-gc format clean lint go-mod-tidy-all difffuzz difffuzz-corpus tmpltests tmpltests-parse tmpltests-html tmpltests-examples tmpltests-html-examples tmpltests-all
 
 all:
 	go build ./...
@@ -29,6 +29,11 @@ test:
 # goroutines share compiled code and typedefs, so CI runs it too.
 test-race:
 	go test -race ./...
+
+# test-spike runs the C1-invariant test with the minigo_spike counters
+# compiled in (internal/spike, docs/next/ja/references/spike-instrumentation.md).
+test-spike:
+	go test -tags minigo_spike -run '^TestSpike' .
 
 # Classified shared-engine stress; see docs/concurrency-stress.md. Reuses
 # the callback/release fixture introduced with the fix in #1061.

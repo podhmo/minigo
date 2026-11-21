@@ -42,6 +42,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -954,6 +955,7 @@ scan:
 			}
 		}
 	}
+	spike.NoteChunkEscape(esc)
 	if esc {
 		ch.Escapes.Store(2)
 	} else {
