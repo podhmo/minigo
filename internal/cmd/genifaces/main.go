@@ -1,4 +1,5 @@
-// Command genifaces generates vm/scriptiface_gen.go: the scriptIface
+// Command genifaces generates internal/hostbridge/scriptiface_gen.go:
+// the scriptIface
 // adapter family's optional-method variants. Each family is a base
 // proxy type plus a table of optional methods; every non-empty subset
 // gets a variant named <base><suffixes>, so adding an optional surface
@@ -21,7 +22,7 @@ import (
 func main() {
 	// go generate runs in the directive file's dir and exports GOFILE;
 	// plain `go run ./internal/cmd/genifaces` runs at the repo root.
-	out := "vm/scriptiface_gen.go"
+	out := "internal/hostbridge/scriptiface_gen.go"
 	if f := os.Getenv("GOFILE"); f != "" {
 		out = filepath.Join(filepath.Dir(f), "scriptiface_gen.go")
 	}

@@ -39,17 +39,15 @@ type Marshal struct {
 	Materialize func(u *runtime.UConst) (runtime.Value, error)
 	// ConstArg converts a UConst at the target type without folding.
 	ConstArg func(u *runtime.UConst, t reflect.Type) (rv reflect.Value, ok bool, err error)
-	// AdaptFunc wraps a callable script value as a host func value.
-	AdaptFunc func(x runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error)
-	// AdaptFuncOpaque wraps a callable whose result must not marshal.
-	AdaptFuncOpaque func(x runtime.Value, ft reflect.Type, vc runtime.VMCaller) (reflect.Value, error)
-	// AdaptIface builds a live host proxy for a script value satisfying
-	// a non-empty interface.
-	AdaptIface func(orig runtime.Value, t reflect.Type, vc runtime.MemberCaller) (reflect.Value, bool)
+	// AnchorCaller re-roots a callback caller on an idle anchor VM for
+	// work outside Call (method selection, marshaling results).
+	AnchorCaller func(vc runtime.VMCaller) runtime.VMCaller
+	// AnchorMember is AnchorCaller for MemberCaller-shaped callers.
+	AnchorMember func(vc runtime.MemberCaller) runtime.MemberCaller
 	// HostErr returns the VM's script-error box for the caller, nil
 	// when the caller carries no VM or the VM has no error binding —
 	// the check must run before IfaceMember, which dereferences vc.
-	HostErr func(vc runtime.VMCaller) func(runtime.MemberCaller, runtime.Value) error
+	HostErr func(vc runtime.CallerRef) func(runtime.MemberCaller, runtime.Value) error
 	// HasVM reports whether vc reaches a live VM — a provisional nil
 	// host shape must not cache when no VM can resolve the hooks.
 	HasVM func(vc runtime.VMCaller) bool
@@ -181,7 +179,7 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 		return out, nil
 	}
 	if t.Kind() == reflect.Func {
-		return m.AdaptFunc(v, t, vc)
+		return m.adaptFunc(v, t, vc)
 	}
 	// holder keeps the pointer-like node (Cell/FieldRef/IndexRef) the
 	// final value was loaded through: when the parameter wants a pointer
@@ -379,7 +377,7 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 				}
 			}
 		}
-		if pv, ok := m.AdaptIface(orig, t, vc); ok {
+		if pv, ok := m.adaptIface(orig, t, vc); ok {
 			return pv, nil
 		}
 	}
@@ -972,7 +970,7 @@ func (m *Marshal) HostFieldValue(x runtime.Value, owner reflect.Type, name strin
 		switch x.(type) {
 		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod:
 			if vc != nil {
-				return m.AdaptFuncOpaque(x, ft, vc)
+				return m.adaptFuncOut(x, ft, vc, true)
 			}
 		}
 	}
