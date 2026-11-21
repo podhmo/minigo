@@ -70,7 +70,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/pointee.go":            48,
 	"internal/hostbridge/argas.go":              124,
 	"internal/hostbridge/spell.go":              88,
-	"internal/hostbridge/callhost.go":           422,
+	"internal/hostbridge/callhost.go": 579,
 	"internal/hostbridge/snapshot.go":           147,
 	"internal/hostbridge/display.go":            132,
 	"internal/hostbridge/chanops.go":            201,
@@ -277,7 +277,7 @@ var FileBudgetExceptions = map[string]string{
 	"internal/stdlib/math/math.go":     "math.Sincos tuple bind",
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
-	"internal/hostbridge/callhost.go":     "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box",
+	"internal/hostbridge/callhost.go":     "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box; mapArg + mapWriteBack diff a callee's map-copy writes back into the caller's script map (three-way diff vs pre-call Clone + canonical-key liveness + cycle guard)",
 	"internal/hostbridge/marshal.go":      "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box",
 	"internal/stdlib/ioval.go":            "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box",
 	"internal/stdlib/net/net.go":          "#149: net.ParseMAC + net.IPMask binds",

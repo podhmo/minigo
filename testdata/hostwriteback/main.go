@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"example.com/hostwb"
 )
@@ -21,4 +22,48 @@ func Change() string {
 	rows[1]["more"] = 4
 	b, _ = json.Marshal(rows)
 	return out + "\n" + string(b)
+}
+
+// Touch hands a script map to a bound host func that adds, rewrites and
+// deletes entries in place; the writes must reach the caller's map. It
+// also mutates a nested map reached through a slice arg.
+func Touch() string {
+	m := map[string]int{"keep": 1, "gone": 2, "old": 3}
+	rows := []map[string]int{{"a": 1}, {"b": 2}}
+	hostwb.Touch(m, rows)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "err: " + err.Error()
+	}
+	b2, err := json.Marshal(rows)
+	if err != nil {
+		return "err: " + err.Error()
+	}
+	return string(b) + " " + string(b2)
+}
+
+// Cyc passes a self-referential map through a read-only host call: the
+// write-back must not loop forever and the map keeps its entries.
+func Cyc() string {
+	m := map[string]any{"a": 1}
+	m["self"] = m
+	hostwb.Cyc(m)
+	return fmt.Sprintf("%v %v", m["a"], m["self"] != nil)
+}
+
+// IntKey passes a map whose canonical int key must survive a read-only
+// host call (the host copy's key spelling differs).
+func IntKey() string {
+	m := map[any]int{1: 2}
+	hostwb.Peek(m)
+	return fmt.Sprintf("%v %d", len(m) == 1, m[1])
+}
+
+// Alias: the host merges m["a"] onto m["b"]'s map then writes through
+// "a" — gc shares the map so "b" sees x too; the write-back must reach
+// both script maps.
+func Alias() string {
+	m := map[string]any{"a": map[string]any{"n": 1}, "b": map[string]any{"k": 2}}
+	hostwb.Alias(m)
+	return fmt.Sprintf("%v %v", m["a"], m["b"])
 }

@@ -2344,6 +2344,53 @@ func TestHostReplacesMapElem(t *testing.T) {
 	}
 }
 
+// TestHostMapInPlaceWrites: a bound host func's in-place writes to a
+// script map arg — add, rewrite, delete — propagate to the caller's map,
+// including writes into a map nested in a slice arg.
+func TestHostMapInPlaceWrites(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/hostwb", map[string]runtime.Value{
+		"Touch": &runtime.GoValue{V: func(m map[string]int, rows []map[string]int) {
+			m["keep"] = 9
+			m["new"] = 7
+			delete(m, "gone")
+			rows[0]["a"] = 11
+		}},
+	})
+	got := run(t, e, "./testdata/hostwriteback", "Touch")
+	want := "{\"keep\":9,\"new\":7,\"old\":3} [{\"a\":11},{\"b\":2}]"
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("Touch mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestHostMapCyclicAndIntKey: a self-referential map arg survives a
+// read-only host call without hanging, and a map[any]int key marshaled
+// with a different host spelling stays present.
+func TestHostMapCyclicAndIntKey(t *testing.T) {
+	e := newEngine(t)
+	e.Bind("example.com/hostwb", map[string]runtime.Value{
+		"Cyc":  &runtime.GoValue{V: func(m map[string]any) {}},
+		"Peek": &runtime.GoValue{V: func(x any) {}},
+		"Alias": &runtime.GoValue{V: func(m map[string]any) {
+			m["a"] = m["b"]
+			m["a"].(map[string]any)["x"] = 1
+		}},
+	})
+	got := run(t, e, "./testdata/hostwriteback", "Cyc")
+	if diff := cmp.Diff("1 true", got); diff != "" {
+		t.Fatalf("Cyc mismatch (-want +got):\n%s", diff)
+	}
+	got = run(t, e, "./testdata/hostwriteback", "IntKey")
+	if diff := cmp.Diff("true 2", got); diff != "" {
+		t.Fatalf("IntKey mismatch (-want +got):\n%s", diff)
+	}
+	got = run(t, e, "./testdata/hostwriteback", "Alias")
+	if diff := cmp.Diff("map[k:2 x:1] map[k:2 x:1]", got); diff != "" {
+		t.Fatalf("Alias mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestSessionInheritsBinds: user-bound host packages must resolve in a
 // NewSession the same as on the parent engine.
 func TestSessionInheritsBinds(t *testing.T) {

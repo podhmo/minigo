@@ -44,10 +44,17 @@ type argBack struct {
 	// is a slice/array of maps: an element the callee left alone is the
 	// host copy of the caller's script map, one it replaced is new data.
 	maps []uintptr
+	// mapSnaps holds a pre-call clone of each map element (parallel to
+	// maps), and snap holds the clone of a top-level map arg — the
+	// three-way-diff base for write-back so a callback's mid-call
+	// writes survive.
+	snap     *runtime.Map
+	mapSnaps []*runtime.Map
 }
 
 // mapElemPtrs snapshots the map identities of a slice/array arg's
-// elements (nil for any other shape).
+// elements (nil for any other shape); mapElemSnaps clones the
+// corresponding script map elements as the write-back diff base.
 func mapElemPtrs(rv reflect.Value) []uintptr {
 	if rv.Kind() == reflect.Interface {
 		rv = rv.Elem()
@@ -60,6 +67,42 @@ func mapElemPtrs(rv reflect.Value) []uintptr {
 		ps[i] = rv.Index(i).Pointer()
 	}
 	return ps
+}
+
+// argBackOf builds the write-back record for one marshaled argument:
+// map identities (and pre-call clones) of slice elements, plus a clone
+// of a top-level map arg.
+func (mb *Marshal) argBackOf(a runtime.Value, rv reflect.Value) argBack {
+	wb := argBack{arg: a, rv: rv, maps: mapElemPtrs(rv), mapSnaps: mapElemSnaps(a, rv)}
+	if sm := mapArg(a); sm != nil {
+		wb.snap = sm.Clone()
+	}
+	return wb
+}
+
+// mapElemSnaps clones each script-map element of a slice/array arg
+// (parallel to mapElemPtrs; nil for any other shape).
+func mapElemSnaps(a runtime.Value, rv reflect.Value) []*runtime.Map {
+	ss := sliceArg(a)
+	if ss == nil {
+		return nil
+	}
+	rv2 := rv
+	if rv2.Kind() == reflect.Interface {
+		rv2 = rv2.Elem()
+	}
+	if !rv2.IsValid() || rv2.Type().Elem().Kind() != reflect.Map {
+		return nil
+	}
+	snaps := make([]*runtime.Map, rv2.Len())
+	for i := range snaps {
+		if i < len(ss.Elems) {
+			if sm, ok := runtime.Unwrap(ss.Elems[i]).(*runtime.Map); ok {
+				snaps[i] = sm.Clone()
+			}
+		}
+	}
+	return snaps
 }
 
 // scalarPayload is a script scalar's payload: the value itself, or a
@@ -115,6 +158,17 @@ func retagElem(old, nv runtime.Value) runtime.Value {
 		return nv
 	}
 	return runtime.Tag(on.Typ, p)
+}
+
+// mapArg resolves an argument to the script map it carries, through
+// Named tags and one level of pointer-like deref.
+func mapArg(a runtime.Value) *runtime.Map {
+	u := runtime.Unwrap(a)
+	if dv, ok := runtime.Deref(u); ok {
+		u = runtime.Unwrap(dv)
+	}
+	m, _ := u.(*runtime.Map)
+	return m
 }
 
 // sliceArg resolves an argument to the script slice it carries, through
@@ -192,7 +246,7 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 				if rv, err := mb.ToReflect(a, pt, vc); err == nil {
 					in[i] = rv
 					useSlice = true
-					backs = append(backs, argBack{arg: a, rv: rv, maps: mapElemPtrs(rv)})
+					backs = append(backs, mb.argBackOf(a, rv))
 					continue
 				}
 			}
@@ -203,7 +257,7 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 			return nil, fmt.Errorf("%s arg %d: %w", name, i, err)
 		}
 		in[i] = rv
-		backs = append(backs, argBack{arg: a, rv: rv, maps: mapElemPtrs(rv)})
+		backs = append(backs, mb.argBackOf(a, rv))
 	}
 	var out []reflect.Value
 	watched := false
@@ -270,11 +324,26 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 		}
 	}
 	// callee writes propagate back: a script slice crossed as a fresh
-	// host slice shares nothing (Reader.Read's buffer), and an
+	// host slice shares nothing (Reader.Read's buffer), a script map
+	// crossed as a fresh host map needs its diff applied, and an
 	// addressable arg crossed as a fresh host pointer (a *T param or an
 	// interface the pointer implements) needs its pointee mirrored.
 	for _, wb := range backs {
 		handled := false
+		if sm := mapArg(wb.arg); sm != nil {
+			rv := wb.rv
+			if rv.Kind() == reflect.Interface {
+				rv = rv.Elem()
+			}
+			if rv.IsValid() && rv.Kind() == reflect.Map {
+				snap := wb.snap
+				if snap == nil {
+					snap = &runtime.Map{}
+				}
+				mb.mapWriteBack(h, vc, sm, snap, rv, map[writeBackEdge]bool{})
+				continue
+			}
+		}
 		if ss := sliceArg(wb.arg); ss != nil {
 			rv := wb.rv
 			if rv.Kind() == reflect.Interface {
@@ -320,6 +389,14 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 							// (`rows[0]["a"]`). A map the callee put in its
 							// place lands as a script map, not a box.
 							if i < len(wb.maps) && wb.maps[i] == ev.Pointer() {
+								// the copy is still in place but the
+								// callee may have written into it —
+								// apply the diff to the script map.
+								isnap := &runtime.Map{}
+								if i < len(wb.mapSnaps) && wb.mapSnaps[i] != nil {
+									isnap = wb.mapSnaps[i]
+								}
+								mb.mapWriteBack(h, vc, runtime.Unwrap(ss.Elems[i]).(*runtime.Map), isnap, ev, map[writeBackEdge]bool{})
 								continue
 							}
 							ss.Elems[i] = retagElem(ss.Elems[i], SnapshotOf(ev.Interface()))
@@ -359,6 +436,86 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 		runtime.SetRef(ref, val)
 	}
 	return goResults(out)
+}
+
+// mapWriteBack applies the diff between the host map copy a callee
+// received and the script map it was marshaled from. The diff is
+// three-way — snap is the script map cloned before the call — so a
+// script callback that mutated the map while the host call ran keeps
+// its writes: an entry the callee left alone is identified against the
+// snapshot, not the live map, and only keys present in the snapshot and
+// absent from the copy delete (a callback-added key is never one).
+// A nested map value recurses so in-place writes inside `m["row"]["k"]`
+// reach the script map's own entry (replacing it would detach a
+// `row := m["row"]` alias — gc maps share); seen stops the recursion on
+// a self-referential map. Keys compare at the script-canonical level —
+// the host copy's key spelling (int vs int64) cannot make a live key
+// look absent.
+// writeBackEdge keys the map-write-back recursion guard: one edge per
+// (host copy, script map) pair so aliasing one host map under two
+// script maps still writes back to each.
+type writeBackEdge struct {
+	h uintptr
+	s *runtime.Map
+}
+
+func (mb *Marshal) mapWriteBack(h *CallHooks, vc runtime.VMCaller, sm, snap *runtime.Map, rv reflect.Value, seen map[writeBackEdge]bool) {
+	if rv.Kind() == reflect.Interface {
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || rv.Kind() != reflect.Map {
+		return
+	}
+	// seen keys the (host map, script map) pair, not the host map
+	// alone: one host map aliased under two existing script maps must
+	// write back into both.
+	edge := writeBackEdge{h: rv.Pointer(), s: sm}
+	if edge.h != 0 {
+		if seen[edge] {
+			return
+		}
+		seen[edge] = true
+	}
+	canonical := func(k runtime.Value) runtime.Value {
+		if sm.IfaceKey {
+			return runtime.IfaceKeyOf(k)
+		}
+		return runtime.CanonicalKey(k)
+	}
+	alive := map[runtime.Value]bool{}
+	it := rv.MapRange()
+	for it.Next() {
+		sk := GoSlotValueOf(it.Key())
+		alive[canonical(sk)] = true
+		ev := it.Value()
+		sv, had := snap.Get(sk)
+		if had && unchangedScalar(sv, ev) {
+			continue
+		}
+		cur, has := sm.Get(sk)
+		if ev.Kind() == reflect.Map && ev.Pointer() != 0 {
+			if inner, ok := runtime.Unwrap(cur).(*runtime.Map); ok {
+				isnap, _ := runtime.Unwrap(sv).(*runtime.Map)
+				if isnap == nil {
+					isnap = &runtime.Map{}
+				}
+				mb.mapWriteBack(h, vc, inner, isnap, ev, seen)
+				continue
+			}
+		}
+		if has {
+			sm.Insert(sk, retagElem(cur, GoSlotValueOf(ev)))
+		} else {
+			sm.Insert(sk, GoSlotValueOf(ev))
+		}
+	}
+	// a snapshot key with no host entry was deleted by the callee.
+	disps, cks := snap.SnapshotKeys()
+	for i, ck := range cks {
+		if !alive[ck] {
+			sm.Delete(disps[i])
+		}
+	}
 }
 
 // goResults converts a host call's results to script values: no result
