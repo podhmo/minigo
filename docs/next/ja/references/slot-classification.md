@@ -91,3 +91,53 @@ P4-2c で扱う。
 - `specialCtx.Eval` の shared-locals コピーは同じ配列型をコピー
   するだけで、参照可能なローカルは全部 boxed なので共有 cell
   ポインタとして届く。
+
+## P4-2c の分類規則（証明できる escape のみ事前 box）
+
+P4-2a の初版は「レシーバを証明できないものは全部 box」だったが、
+P4-2b で plain スロットが `localCell` による on-demand 昇格を得た
+ため、見落としのコストは「先確保するか実行時に 1 回確保するか」の
+違いだけになった。そこで分類を反転し、**コンパイル時に escape を
+証明できるスロットだけを box** する。ref を取る全経路
+（`OpLocalRef`/`OpMakeClosure`/`OpSelectCall` 経由）は plain
+スロットでも `localCell` が昇格するので、偽陰性は常に正しい。
+
+証明できるもの（box する）:
+
+- `&x`・`&x.f` の ref と upvalue 参照（"ref"/"fieldref"）
+- closure キャプチャ（"capture"）と特殊形式の見えるローカル
+  （"special"）
+- ポインタレシーバメソッドの select — `x.M()`/`x.M` で index の
+  宣言から M のレシーバが `*T` と確定するもの（"select:ptrrecv"）。
+  embedded フィールドは再帰的に掘る（`S` に `U` 埋め込みのとき
+  `s.PP()` は U の decl に降りて判定する）。`type A = T` エイリアス
+  と `pkg.T` も index 経由で同じ判定を受ける。
+
+証明できないもの（plain のまま、必要なら実行時に昇格）:
+
+- `x.M()` の x の declTyp が推論で解けない（`x := f()` で結果型が
+  得られない束縛。difffuzz 上で最大の発生源だった）
+- promoted member で embedded 先が index に無い、型パラメータ
+  レシーバ、index 上に無い型名、深度超過のエイリアス連鎖
+
+型推論側も 2 点補強した: calleeFuncTyp は `fs[0]()` のように
+宣言外の callee をオペランドの静的型（`func() T` 形）から引く。
+また `x := fs[0]()` のような `m[k]` 経由でも結果型が束縛先に
+届くようになった。
+
+同一性の検証（difffuzz `lazypromote`）: `x := id(C{})` のように
+declTyp が解けない束縛は plain のまま `x.Bump()` で昇格し、後続の
+`&x` や closure キャプチャと同じ cell を共有する（`*p`/`x`/closure
+の三経路で同じ N を読む）。
+
+### P4-2c の計測（同一 corpus = difffuzz 全件）
+
+| 指標 | P4-2a（保守的） | P4-2c（証明のみ） |
+|---|---:|---:|
+| boxed スロットを持つ chunk | 876（18.5%） | 433（9.1%） |
+| boxed スロット | 1641（13.4%） | 721（5.9%） |
+
+残る box の内訳は capture 415、ref 257、ptrrecv 26、
+fieldref 23、special。P4-2 の親 TODO が目標とした「escape する chunk
+~10%」を達成した。run-time の昇格（escaping ref の事後確認）は
+424 件で、全部コンパイル時分類が追い越した経路。

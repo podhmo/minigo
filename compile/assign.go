@@ -73,13 +73,13 @@ func (c *compiler) refRef(name string, pos token.Pos) {
 	case !isUp:
 		c.emit(bytecode.OpLocalRef, idx, 0, pos)
 		// `&x` — the ref itself is the produced value.
-		c.fs.box(idx)
+		c.fs.box(idx, "ref")
 	default:
 		c.emit(bytecode.OpUpvalRef, idx, 0, pos)
 		// the upvalue's cell lives in the declaring frame — box the
 		// owner's slot there (the capture already did, but a bare
 		// capture lookup may not have run yet).
-		c.fs.boxName(name)
+		c.fs.boxName(name, "ref")
 	}
 }
 

@@ -278,7 +278,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			// base's cell alive; `&x[i]` takes the index-ref branch and
 			// reads the container by value instead.
 			if id := rootIdent(t.X); id != nil {
-				c.fs.boxName(id.Name)
+				c.fs.boxName(id.Name, "fieldref")
 			}
 			c.refTargetBase(t.X, false)
 			c.emit(bytecode.OpFieldRef, c.nameIdx(t.Sel.Name), 0, t.Pos())
