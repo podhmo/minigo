@@ -2758,9 +2758,7 @@ func adaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCaller, o adapt
 		callee, call := x, vc.Call
 		if o.funcMap != nil {
 			callee = o.funcMap.guard(x)
-			if cc, ok := vc.(interface {
-				CallCatching(runtime.Value, []runtime.Value) (runtime.Value, error)
-			}); ok {
+			if cc, ok := vc.(runtime.CatchCaller); ok {
 				call = cc.CallCatching
 			}
 		}

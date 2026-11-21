@@ -207,10 +207,8 @@ func builtins(e *Engine) *runtime.Env {
 			for i := range elems {
 				elems2[i] = v.Copy(elems2[i])
 			}
-			if ez, ok := v.(interface {
-				ElemZero(*runtime.TypeDef) runtime.Value
-			}); ok {
-				zero := ez.ElemZero(rtyp)
+			{
+				zero := v.ElemZero(rtyp)
 				if runtime.IsZeroSizeValue(zero) {
 					// for a zero-size element Go's growslice never
 					// doubles — cap is exactly the new length — while
@@ -389,9 +387,7 @@ func builtins(e *Engine) *runtime.Env {
 			// delete on a nil map is a no-op
 		case *runtime.GoValue:
 			// a boxed host named map (url.Values, http.Header)
-			if hd, ok := v.(interface {
-				HostMapDelete(*runtime.GoValue, runtime.Value) bool
-			}); ok && hd.HostMapDelete(m, args[1]) {
+			if hd, ok := v.(runtime.HostMapDeleter); ok && hd.HostMapDelete(m, args[1]) {
 				return runtime.NIL, nil
 			}
 			return nil, fmt.Errorf("delete on %T", args[0])
@@ -418,12 +414,7 @@ func builtins(e *Engine) *runtime.Env {
 			if len(args) > 2 {
 				cap = int64Of(runtime.Unwrap(args[2]))
 			}
-			zero := runtime.Value(runtime.NIL)
-			if ez, ok := v.(interface {
-				ElemZero(*runtime.TypeDef) runtime.Value
-			}); ok {
-				zero = ez.ElemZero(td)
-			}
+			zero := v.ElemZero(td)
 			// Go's makeslice measures BYTES, so a zero-size element
 			// allocates 0 for any len — `make([]struct{}, maxInt)`
 			// succeeds ($GOROOT/test/fixedbugs/issue29190.go). A huge
@@ -585,12 +576,7 @@ func builtins(e *Engine) *runtime.Env {
 		case *runtime.Map:
 			m.Clear()
 		case *runtime.Slice:
-			zero := runtime.Value(runtime.NIL)
-			if ez, ok := v.(interface {
-				ElemZero(*runtime.TypeDef) runtime.Value
-			}); ok {
-				zero = ez.ElemZero(m.Typ)
-			}
+			zero := v.ElemZero(m.Typ)
 			for i := range m.Elems {
 				m.Elems[i] = zero
 			}
@@ -598,9 +584,7 @@ func builtins(e *Engine) *runtime.Env {
 			// clear of a nil map or slice is a no-op
 		case *runtime.GoValue:
 			// a boxed host named map or slice
-			if hc, ok := v.(interface {
-				HostClear(*runtime.GoValue) bool
-			}); !ok || !hc.HostClear(m) {
+			if hc, ok := v.(runtime.HostClearer); !ok || !hc.HostClear(m) {
 				return nil, fmt.Errorf("clear of %T", args[0])
 			}
 		default:

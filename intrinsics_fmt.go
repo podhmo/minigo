@@ -1182,9 +1182,7 @@ func constAtWidth(v runtime.VMCaller, x *runtime.Named) (runtime.Value, bool) {
 	if !ok {
 		return nil, false
 	}
-	mc, ok := v.(interface {
-		MaterializeConstErr(*runtime.UConst, *runtime.TypeDef) (runtime.Value, error)
-	})
+	mc, ok := v.(runtime.ConstMaterializer)
 	if !ok {
 		return nil, false
 	}

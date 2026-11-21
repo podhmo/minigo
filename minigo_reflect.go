@@ -38,9 +38,7 @@ func (e *Engine) installReflect() {
 			return nil, errors.New("reflect.DeepEqual needs 2 args")
 		}
 		var twin func(a, b *runtime.TypeDef) bool
-		if t, ok := vc.(interface {
-			HostNilTwin(a, b *runtime.TypeDef) bool
-		}); ok {
+		if t, ok := vc.(runtime.HostNilTwiner); ok {
 			twin = t.HostNilTwin
 		}
 		return deepEql(args[0], args[1], twin), nil
