@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -33,20 +34,6 @@ import (
 // named basic's payload that crossed an interface untagged, as
 // any(2*time.Second) does: against a Named of its bound typedef it
 // reads as that Named, so the interface comparison sees one type.
-func rawHostScalarOperands(a, b runtime.Value) (runtime.Value, runtime.Value) {
-	if n, ok := b.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostScalar != nil {
-		if _, isNamed := a.(*runtime.Named); !isNamed && reflect.TypeOf(a) == reflect.TypeOf(n.Typ.HostScalar) {
-			return runtime.Tag(n.Typ, a), b
-		}
-	}
-	if n, ok := a.(*runtime.Named); ok && n.Typ != nil && n.Typ.HostScalar != nil {
-		if _, isNamed := b.(*runtime.Named); !isNamed && reflect.TypeOf(b) == reflect.TypeOf(n.Typ.HostScalar) {
-			return a, runtime.Tag(n.Typ, b)
-		}
-	}
-	return a, b
-}
-
 // Equal implements [runtime.VMCaller].
 func (v *VM) Equal(td *runtime.TypeDef, a, b runtime.Value) bool {
 	if td == nil {
@@ -205,7 +192,7 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	if isGoValue(a) || isGoValue(b) {
 		a, b = runtime.TwinOperands(a, b)
 	} else {
-		a, b = rawHostScalarOperands(a, b)
+		a, b = hostbridge.RawHostScalarOperands(a, b)
 	}
 	atd, btd := v.typeOfValue(a), v.typeOfValue(b)
 	if !sameTypeDef(atd, btd) && !v.sameTypedef(atd, btd) {
@@ -556,8 +543,8 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 			// concrete uint op wraps, never the exact-domain reject.
 			a = v.materializeOperandConst(f, a, tag)
 			b = v.materializeOperandConst(f, b, tag)
-			if ua, aok := uintOperand(a); aok {
-				if ub, bok := uintOperand(b); bok {
+			if ua, aok := hostbridge.UintOperand(a); aok {
+				if ub, bok := hostbridge.UintOperand(b); bok {
 					res, isInt := uintBinOp(f, op, ua, ub)
 					if !isInt {
 						return res
@@ -658,18 +645,18 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	// string result is boxed back into the host type, as in Go.
 	// (the int64 check keeps the common arithmetic path call-free)
 	if _, isInt := a.(int64); !isInt {
-		if hs, ok := hostStrOperand(a); ok {
-			a = hs.s
-			strTag, strBoxed = hs.rt, hs.boxed
+		if hs, ok := hostbridge.HostStrOperand(a); ok {
+			a = hs.S
+			strTag, strBoxed = hs.Rt, hs.Boxed
 		}
 	}
 	if _, isInt := b.(int64); !isInt {
-		if hs, ok := hostStrOperand(b); ok {
-			if strTag != nil && hs.rt != strTag {
-				f.trap("invalid operation: mismatched types %s and %s", strTag, hs.rt)
+		if hs, ok := hostbridge.HostStrOperand(b); ok {
+			if strTag != nil && hs.Rt != strTag {
+				f.trap("invalid operation: mismatched types %s and %s", strTag, hs.Rt)
 			}
-			b = hs.s
-			strTag, strBoxed = hs.rt, strBoxed || hs.boxed
+			b = hs.S
+			strTag, strBoxed = hs.Rt, strBoxed || hs.Boxed
 		}
 	}
 	if s, ok := a.(string); ok {
@@ -730,44 +717,6 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	}
 	f.trap("unsupported types: %T %s %T", a, op, b)
 	return nil
-}
-
-// hostString is a host named string operand read as a plain string.
-type hostString struct {
-	s     string
-	rt    reflect.Type
-	boxed bool // carried in a GoValue (else a raw payload under a Named tag)
-}
-
-// hostStrOperand reads a host named string (template.HTML) — boxed in
-// a GoValue, or raw — as its string. Plain strings and the script's own
-// scalars are not host strings.
-func hostStrOperand(x runtime.Value) (hs hostString, ok bool) {
-	switch g := x.(type) {
-	case string, int64, float64, bool, nil:
-		return hs, false
-	case *runtime.GoValue:
-		x, hs.boxed = g.V, true
-	}
-	rv := reflect.ValueOf(x)
-	if rv.Kind() != reflect.String || rv.Type() == reflect.TypeFor[string]() {
-		return hs, false
-	}
-	hs.s, hs.rt = rv.String(), rv.Type()
-	return hs, true
-}
-
-// uintOperand reads an int-domain runtime value as uint64: int64s carry
-// two's-complement bits already and a GoValue holds its boxed unsigned
-// width verbatim.
-func uintOperand(v runtime.Value) (uint64, bool) {
-	switch x := v.(type) {
-	case int64:
-		return uint64(x), true
-	case *runtime.GoValue:
-		return hostUint(x.V)
-	}
-	return 0, false
 }
 
 // uintBinOp is intBinOp evaluated in the uint64 domain: only `/`, `%` and
@@ -999,7 +948,7 @@ func shiftCount(b runtime.Value) (uint64, bool) {
 		}
 		return uint64(x), true
 	case *runtime.GoValue:
-		if u, ok := hostUint(x.V); ok {
+		if u, ok := hostbridge.HostUint(x.V); ok {
 			return u, true
 		}
 		switch u := x.V.(type) {
@@ -1270,14 +1219,6 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 
 // hostNamedNonString is [runtime.HostNamedScalar] minus the string kind:
 // host-boxed strings keep comparing by contents (hostStringOperand).
-func hostNamedNonString(x runtime.Value) (runtime.Value, reflect.Type, bool) {
-	p, rt, ok := runtime.HostNamedScalar(x)
-	if !ok || rt.Kind() == reflect.String {
-		return nil, nil, false
-	}
-	return p, rt, true
-}
-
 // hostNamedEql decides a == b when either side is a boxed host named
 // basic (io/fs's FileMode from the host os, a go/token Token off
 // inspect.AST, reflect.Kind): Go compares (type, value), so it equals a
@@ -1286,8 +1227,8 @@ func hostNamedNonString(x runtime.Value) (runtime.Value, reflect.Type, bool) {
 // the same payload — never a look-alike of another type. ok is false
 // when neither side is such a box.
 func (v *VM) hostNamedEql(a, b runtime.Value) (eq, ok bool) {
-	pa, rta, okA := hostNamedNonString(a)
-	pb, rtb, okB := hostNamedNonString(b)
+	pa, rta, okA := hostbridge.HostNamedNonString(a)
+	pb, rtb, okB := hostbridge.HostNamedNonString(b)
 	switch {
 	case okA && okB:
 		return rta == rtb && pa == pb, true
@@ -1332,7 +1273,7 @@ func (v *VM) twinSlot(td *runtime.TypeDef, x runtime.Value) runtime.Value {
 	if td == nil || td.Kind == runtime.KindInterface {
 		return x
 	}
-	if p, rt, ok := hostNamedNonString(x); ok && v.hostTypedefIs(rt, td) {
+	if p, rt, ok := hostbridge.HostNamedNonString(x); ok && v.hostTypedefIs(rt, td) {
 		return runtime.Tag(td, p)
 	}
 	return x
@@ -1365,10 +1306,10 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	// its string contents — a converted StructTag and a field's Tag
 	// compare equal, and field.Tag == "json:..." holds like Go's.
 	if gv, ok := a.(*runtime.GoValue); ok {
-		a = hostStringOperand(gv)
+		a = hostbridge.HostStringOperand(gv)
 	}
 	if gv, ok := b.(*runtime.GoValue); ok {
-		b = hostStringOperand(gv)
+		b = hostbridge.HostStringOperand(gv)
 	}
 	// boxed complex values compare by value across widths — Go rejects
 	// complex64 == complex128 (mismatched types), but here both operands
@@ -1480,7 +1421,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			// an interface does not.
 			return runtime.IfaceTaggedNil(bi) != nil
 		case *runtime.GoValue:
-			return hostBoxIsNil(bi)
+			return hostbridge.HostBoxIsNil(bi)
 		}
 		return false
 	}
@@ -1580,7 +1521,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 		// http.Header, net.IP) equals nil, like the typed nil a host
 		// call result reads as.
 		if _, isNil := b.(runtime.Nil); isNil {
-			return hostBoxIsNil(av)
+			return hostbridge.HostBoxIsNil(av)
 		}
 		// host values compare by underlying identity: two wrappers
 		// around the same object (e.g. the io.EOF sentinel) are equal.
@@ -1653,11 +1594,3 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 
 // hostBoxIsNil reports whether a boxed host value holds a nil map,
 // slice, pointer, chan or func.
-func hostBoxIsNil(gv *runtime.GoValue) bool {
-	rv := reflect.ValueOf(gv.V)
-	switch rv.Kind() {
-	case reflect.Map, reflect.Slice, reflect.Pointer, reflect.Chan, reflect.Func:
-		return rv.IsNil()
-	}
-	return false
-}

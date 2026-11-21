@@ -63,3 +63,30 @@ import とセレクタ名の検査では、コールバック経由の実行が�
   `v.hostArgAsChecked` を使うため vm 側に残す（`guard` → `Guard` に公開化）。
 - `scriptiface_gen.go` の生成先を `internal/hostbridge` に変更
   （`genifaces` の `out` と `//go:generate` ディレクティブを iface.go へ移動）。
+
+### P2-7d の host 値操作（hostindex.go, hostslice.go, scalars.go, members.go, bounds.go）
+
+`composite`/`convert`/`binop` で host 値を直接触っていた reflect 操作を
+`internal/hostbridge` へ移動した。
+
+- `hostindex.go`: `HostIndex`/`HostIndexInt`/`HostMapKey`/`HostSetIndex`/
+  `HostElemRef`/`HostMapDelete`/`HostClear`/`HostSlice` は `*Marshal` メソッド。
+  VM 側の trap・materialize・bound 判定は呼び出し側が組み立てる `IndexHooks`
+  （`v.indexHooks(f)`）で注入する。
+- `hostslice.go`: `UnboxHostSlice`/`StoreHostSlice`/`ReboxHostSlice`/
+  `AppendHostSlice`/`CopyIntoHostSlice`/`HostSliceConv`/`HostSliceLiteral`。
+  `vm.HostSliceOf` 系は公開 API のため薄い wrapper を残す。
+- `scalars.go`: `HostFloat`/`HostScalarInts`/`HostInt64`/`HostUint`/`HostEnumConv`/
+  `ConstToHostInt`/`UnboxGoValue`/`NamedBasicElem`/`HostNamedInt`/`HostStringOperand`/
+  `HostString`/`HostStrOperand`/`HostNamedNonString`/`HostBoxIsNil`/
+  `RawHostScalarOperands`/`UintOperand`/`BasicKeyPayload`/`HostNilEmbed`/`HostNilCallable`。
+- `members.go`: `HostMemberInner`/`HostMethodInner`/`MethodInner`（host 値の
+  フィールド/メソッド索引検索）。
+- `bounds.go`: `BoundOperand`（公開フィールド I/U/Unsigned + `BoundOperandOf`
+  構築子 + `Pos()`）と `IndexSmallInt`/`SliceBoundsReason`。vm の
+  `boundOperand` は型エイリアス、`v.bounds`/`v.maxBound`/`v.boundUnsigned`/
+  `v.boundOperand` は materialize 依存で vm に残す。
+- vm に残るもの: typedef/同名性解決（`hostTypedefIs`/`twinPayloadEql`/
+  `mapKeyOperand`/`coerceConcrete`/`convert`/`hostPtrConv`）、frame/サイト依存の
+  dispatch（`selectMember`/`hostMember`/`namedMember`/`setField`/`setIndex`/
+  `compositeOf`/`binaryOpFlags`/`eqlValue`/`ifaceEql`）。
