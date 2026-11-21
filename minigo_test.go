@@ -3322,6 +3322,7 @@ func TestHostBoxedNamed(t *testing.T) {
 		{"Literal", nil, "1.2.3.4 net.IP 4|9.0.0.7|?0a000b 3 8|1.2.3.4|true 0", nil},
 		{"LiteralOps", nil, "?0102030405 net.IP|1 9.2.3.4|[9 2 3 4]|4.3.2.9 net.IP", nil},
 		{"MakeOOB", nil, "runtime error: makeslice: len out of range", nil},
+		{"MakeTypedConst", nil, "2 4", nil},
 		{"MakeMap", nil, "map[a:[1 2]] 1a=1&a=2", nil},
 		{"Add", html(), "<b>hi</b>x! template.HTML 11", template.HTML("<b>hi</b>")},
 		{"Order", html(), "true false true true true true", template.HTML("<b>hi</b>")},

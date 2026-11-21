@@ -401,7 +401,7 @@ func ptrSpelling(c runtime.MemberCaller, x runtime.Value) string {
 	case *runtime.Named:
 		return ptrSpelling(c, t.V)
 	case *runtime.UConst:
-		if nv, err := uconstNative(t); err == nil {
+		if nv, err := runtime.UConstNative(t); err == nil {
 			return ptrSpelling(c, nv)
 		}
 	}
@@ -496,7 +496,7 @@ func scriptScalarName(x runtime.Value) string {
 	case int64:
 		return "int"
 	case *runtime.UConst:
-		if nv, err := uconstNative(t); err == nil {
+		if nv, err := runtime.UConstNative(t); err == nil {
 			return scriptScalarName(nv)
 		}
 	case *runtime.Named:
@@ -1171,27 +1171,6 @@ func fmtArgs(v runtime.MemberCaller, args []runtime.Value) ([]any, []runtime.Val
 	return a, flat
 }
 
-// constAtWidth materializes a Named value's still-constant payload at
-// its declared type, when the caller can run the VM-side conversion —
-// display and fmtArg share it so a UConst never spills its untyped
-// reading into output. ok is false when x holds no UConst, the caller
-// can't materialize, or the conversion fails.
-func constAtWidth(v runtime.CallerRef, x *runtime.Named) (runtime.Value, bool) {
-	u, ok := x.V.(*runtime.UConst)
-	if !ok {
-		return nil, false
-	}
-	mc, ok := v.(runtime.ConstMaterializer)
-	if !ok {
-		return nil, false
-	}
-	mv, err := mc.MaterializeConstErr(u, x.Typ)
-	if err != nil {
-		return nil, false
-	}
-	return mv, true
-}
-
 // fmtArg routes a script value into a host fmt call: scalars unbox to
 // Go natives; composites keep their script shape inside a fmtValue.
 func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
@@ -1214,7 +1193,7 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 		// a still-constant payload materializes at the declared width
 		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
 		// untyped default reading overflows int inside fmtValue.
-		if mv, ok := constAtWidth(v, x); ok {
+		if mv, ok := hostbridge.ConstAtWidth(v, x); ok {
 			return fmtArg(v, runtime.Tag(x.Typ, mv))
 		}
 		return &fmtValue{c: v, x: x}
@@ -1434,7 +1413,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 				return fmt.Sprintf(formatOf(f, verb), float32(fv))
 			}
 			if uc, ok := v.V.(*runtime.UConst); ok {
-				if nv, err := uconstNative(uc); err == nil {
+				if nv, err := runtime.UConstNative(uc); err == nil {
 					if fv, ok := nv.(float64); ok {
 						return fmt.Sprintf(formatOf(f, verb), float32(fv))
 					}

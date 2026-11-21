@@ -2,7 +2,6 @@ package minigo
 
 import (
 	"fmt"
-	"math"
 	"reflect"
 	"slices"
 	"sort"
@@ -80,39 +79,6 @@ func copyIntoHostSlice(v runtime.VMCaller, dst runtime.Value, src []runtime.Valu
 		return nil, err
 	}
 	return int64(n), nil
-}
-
-// makeHostType is make(T, n, cap) of a bound host slice or map type
-// (net.IP, url.Values). ok is false for any other type.
-func makeHostType(td *runtime.TypeDef, args []runtime.Value) (runtime.Value, bool) {
-	if td.HostNew == nil {
-		return nil, false
-	}
-	rt := td.HostType()
-	if rt == nil {
-		return nil, false
-	}
-	switch rt.Kind() {
-	case reflect.Slice:
-		n := int64(0)
-		if len(args) > 1 {
-			n = int64Of(runtime.Unwrap(constNative(args[1])))
-		}
-		c := n
-		if len(args) > 2 {
-			c = int64Of(runtime.Unwrap(constNative(args[2])))
-		}
-		if n < 0 || n > math.MaxInt32 {
-			panic(runtime.MakeslicePanic("len"))
-		}
-		if c < n || c > math.MaxInt32 {
-			panic(runtime.MakeslicePanic("cap"))
-		}
-		return runtime.Tag(td, &runtime.GoValue{V: reflect.MakeSlice(rt, int(n), int(c)).Interface()}), true
-	case reflect.Map:
-		return runtime.Tag(td, &runtime.GoValue{V: reflect.MakeMap(rt).Interface()}), true
-	}
-	return nil, false
 }
 
 // hostSortSlice runs sort.Slice / sort.SliceStable on a boxed host slice:

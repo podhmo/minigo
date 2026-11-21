@@ -145,3 +145,9 @@ import とセレクタ名の検査では、コールバック経由の実行が�
   `KindOf`/`PointerToElem`/`TypeForOf`）で spelled だけを差し替え。
 - `archcheck.BannedImports` + `CheckBannedImports` で `vm` → `reflect`
   import を禁止（負例テスト `TestCheckBannedImportsViolation` 付き）。
+
+- P2-9a: builtin 引数の定数/型 helper は `internal/hostbridge/maketype.go`
+  へ。`uconstNative` は `runtime.UConstNative` の薄い wrapper だったため
+  廃止して直接呼びに。`constNative` → `ConstNative`、`constAtWidth`
+  （`runtime.ConstMaterializer` capability 注入）→ `ConstAtWidth`、
+  `makeHostType`（host slice/map の make）→ `MakeHostType`。
