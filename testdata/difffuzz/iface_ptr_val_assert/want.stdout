@@ -1,0 +1,3 @@
+val: true {3}
+ptr: false {0}
+star: true &{3}
