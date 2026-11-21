@@ -556,6 +556,41 @@ func ShadowMe(strings string) string {
 	return strings.TrimSpace(" x ")
 }
 
+// UseT spells its own type parameter in the body — Expr-fed SymbolID
+// must mark it :typeparam: (the func-wide local set and LocalScopes both
+// record T as bound, so without a dedicated path it reads as a plain
+// local).
+func UseT[T ~int](x T) T {
+	var y T = x
+	return y
+}
+
+// DeclSites: the names := and range-:= bind are declarations — the
+// bound idents themselves report no SymbolID (their positions precede
+// the scoped binding, so only the declaring-role check catches them).
+func DeclSites(m map[string]int) int {
+	x := 1
+	for k, v := range m {
+		x += v + len(k)
+	}
+	return x
+}
+
+// ShadowBlock binds strings only inside its first block; the sibling
+// block's strings.TrimSpace still resolves to the strings import — a
+// func-wide "possibly local" model would refuse it too.
+func ShadowBlock() string {
+	out := ""
+	{
+		strings := " shadowed "
+		out = strings + "!"
+	}
+	{
+		out += strings.TrimSpace(" x ")
+	}
+	return out
+}
+
 // LocalDecls declares types, vars and a const inside its body; Expr-fed
 // SymbolID must not attribute them to the package (#920), while the
 // package type User still resolves.

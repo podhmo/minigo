@@ -20,15 +20,22 @@ import (
 // each up to the end of the innermost enclosing block, if/for/switch,
 // select or case clause.
 type LocalScopes struct {
-	spans map[string][]span
+	spans map[string][]span // every below-package binding, type parameters included
+	local map[string][]span // the same minus type parameters — they are declarations of the generic's own contract, not shadowable locals
 }
 
 type span struct{ from, to token.Pos }
 
 // NewLocalScopes collects the local bindings of f.
 func NewLocalScopes(f *ast.File) *LocalScopes {
-	s := &LocalScopes{spans: map[string][]span{}}
+	s := &LocalScopes{spans: map[string][]span{}, local: map[string][]span{}}
 	bind := func(name string, from, to token.Pos) {
+		if name != "_" && to != token.NoPos {
+			s.spans[name] = append(s.spans[name], span{from, to})
+			s.local[name] = append(s.local[name], span{from, to})
+		}
+	}
+	bindParam := func(name string, from, to token.Pos) {
 		if name != "_" && to != token.NoPos {
 			s.spans[name] = append(s.spans[name], span{from, to})
 		}
@@ -65,10 +72,10 @@ func NewLocalScopes(f *ast.File) *LocalScopes {
 		switch x := n.(type) {
 		case *ast.FuncDecl:
 			for _, name := range RecvTypeParamNames(x.Recv) {
-				bind(name, x.Pos(), x.End())
+				bindParam(name, x.Pos(), x.End())
 			}
 			for _, name := range TypeParamNames(x.Type.TypeParams) {
-				bind(name, x.Pos(), x.End())
+				bindParam(name, x.Pos(), x.End())
 			}
 			bindFields(x.Recv, x.Body)
 			bindFields(x.Type.Params, x.Body)
@@ -78,7 +85,7 @@ func NewLocalScopes(f *ast.File) *LocalScopes {
 			bindFields(x.Type.Results, x.Body)
 		case *ast.TypeSpec:
 			for _, name := range TypeParamNames(x.TypeParams) {
-				bind(name, x.Pos(), x.End())
+				bindParam(name, x.Pos(), x.End())
 			}
 		case *ast.AssignStmt:
 			if x.Tok == token.DEFINE {
@@ -117,9 +124,21 @@ func NewLocalScopes(f *ast.File) *LocalScopes {
 	return s
 }
 
-// At reports whether a local binding of name is in scope at pos.
+// At reports whether a local binding of name is in scope at pos,
+// type parameters included.
 func (s *LocalScopes) At(name string, pos token.Pos) bool {
-	for _, sp := range s.spans[name] {
+	return s.in(s.spans, name, pos)
+}
+
+// AtLocal reports whether a non-type-parameter local binding of name is
+// in scope at pos: the "is this name local here" question attribution
+// asks, where a type parameter keeps its own answer instead.
+func (s *LocalScopes) AtLocal(name string, pos token.Pos) bool {
+	return s.in(s.local, name, pos)
+}
+
+func (s *LocalScopes) in(m map[string][]span, name string, pos token.Pos) bool {
+	for _, sp := range m[name] {
 		if sp.from <= pos && pos < sp.to {
 			return true
 		}
