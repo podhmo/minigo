@@ -1556,7 +1556,7 @@ func (v *VM) checkTArgs(ctx *runtime.TypeDef, tparams []string, cons []ast.Expr,
 		if td == nil || v.satisfiesConstraint(ctx, cons[i], td) {
 			continue
 		}
-		return fmt.Errorf("type argument %s does not satisfy constraint %s", tdName(td), typeExprName(cons[i]))
+		return fmt.Errorf("type argument %s does not satisfy constraint %s", tdName(td), typeExprName(td.Pkg, cons[i]))
 	}
 	return nil
 }
@@ -1633,7 +1633,7 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 			// `~int` matches any type whose UNDERLYING type is int —
 			// a named `type MyInt int` satisfies it; peel the argument.
 			u := v.peelNamed(td)
-			if underlyingNameOf(u) == typeExprName(t.X) {
+			if underlyingNameOf(u) == typeExprName(td.Pkg, t.X) {
 				return true
 			}
 			// a composite element usually mentions the other type
@@ -1688,9 +1688,9 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 			}
 		}
 		// bare type element: exact type-name match
-		return typeExprName(e) == tdNameOrAnon(td)
+		return typeExprName(td.Pkg, e) == tdNameOrAnon(td)
 	default:
-		return typeExprName(e) == tdNameOrAnon(td)
+		return typeExprName(td.Pkg, e) == tdNameOrAnon(td)
 	}
 }
 
@@ -1821,7 +1821,7 @@ func tdNameOrAnon(td *runtime.TypeDef) string {
 		return td.Name
 	}
 	if td.Anon != nil {
-		return typeExprName(td.Anon)
+		return typeExprName(td.Pkg, td.Anon)
 	}
 	return ""
 }
@@ -1829,7 +1829,7 @@ func tdNameOrAnon(td *runtime.TypeDef) string {
 // underlyingNameOf follows Anon to a builtin-ish shape name for `~T`.
 func underlyingNameOf(td *runtime.TypeDef) string {
 	if td.Anon != nil {
-		return typeExprName(td.Anon)
+		return typeExprName(td.Pkg, td.Anon)
 	}
 	if td.Name != "" {
 		return td.Name

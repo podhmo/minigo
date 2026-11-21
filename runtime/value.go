@@ -1448,7 +1448,7 @@ func typeTagOf(td *TypeDef) string {
 	}
 	x := td.TypeExpr()
 	if x != nil {
-		return anonTag(x)
+		return anonTag(td.Pkg, x)
 	}
 	if td.Kind == KindPointer && td.Elem != nil && td.Elem.HostIdent != nil {
 		// the *T of a nil host pointer (vm.HostNilPtrTypedef) carries
@@ -1462,16 +1462,16 @@ func typeTagOf(td *TypeDef) string {
 // anonTag renders an anonymous type for a canonical-key tag: the
 // structural spelling keeps two separately-written `struct{A int}` keys
 // equal, like Go's identical-type rule for unnamed types.
-func anonTag(e ast.Expr) string {
+func anonTag(p *Package, e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		return t.Name
 	case *ast.StarExpr:
-		return "*" + anonTag(t.X)
+		return "*" + anonTag(p, t.X)
 	case *ast.ArrayType:
 		n := ""
 		if t.Len != nil {
-			switch l := ArrayLenExpr(t).(type) {
+			switch l := ArrayLenExpr(p, t).(type) {
 			case *ast.BasicLit:
 				n = l.Value
 			case *ast.Ident:
@@ -1480,31 +1480,31 @@ func anonTag(e ast.Expr) string {
 				n = "..."
 			}
 		}
-		return "[" + n + "]" + anonTag(t.Elt)
+		return "[" + n + "]" + anonTag(p, t.Elt)
 	case *ast.MapType:
-		return "map[" + anonTag(t.Key) + "]" + anonTag(t.Value)
+		return "map[" + anonTag(p, t.Key) + "]" + anonTag(p, t.Value)
 	case *ast.ChanType:
-		return "chan " + anonTag(t.Value)
+		return "chan " + anonTag(p, t.Value)
 	case *ast.SelectorExpr:
-		return anonTag(t.X) + "." + t.Sel.Name
+		return anonTag(p, t.X) + "." + t.Sel.Name
 	case *ast.IndexExpr:
-		return anonTag(t.X) + "[" + anonTag(t.Index) + "]"
+		return anonTag(p, t.X) + "[" + anonTag(p, t.Index) + "]"
 	case *ast.IndexListExpr:
 		var sb strings.Builder
-		sb.WriteString(anonTag(t.X))
+		sb.WriteString(anonTag(p, t.X))
 		sb.WriteByte('[')
 		for i, ix := range t.Indices {
 			if i > 0 {
 				sb.WriteByte(',')
 			}
-			sb.WriteString(anonTag(ix))
+			sb.WriteString(anonTag(p, ix))
 		}
 		sb.WriteByte(']')
 		return sb.String()
 	case *ast.ParenExpr:
-		return anonTag(t.X)
+		return anonTag(p, t.X)
 	case *ast.Ellipsis:
-		return "[]" + anonTag(t.Elt)
+		return "[]" + anonTag(p, t.Elt)
 	case *ast.StructType:
 		var sb strings.Builder
 		sb.WriteString("struct{")
@@ -1518,7 +1518,7 @@ func anonTag(e ast.Expr) string {
 				}
 				sb.WriteString(n.Name)
 			}
-			sb.WriteString(":" + anonTag(f.Type))
+			sb.WriteString(":" + anonTag(p, f.Type))
 			if tag := structTagKey(f.Tag); tag != "" {
 				sb.WriteString(" " + tag)
 			}
