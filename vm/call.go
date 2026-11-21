@@ -218,14 +218,14 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 // spreadTd carries the element typedef a trailing `xs...` slice supplied
 // at the call site; nil when the call had no spread.
 func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
-	return v.callWindow(nil, callee, args, -1, nil, statics, spreadTd)
+	return v.callWindow(nil, callee, args, -1, nil, statics, spreadTd, nil)
 }
 
 // callHints is call for the OpCall site path (P4-4a): the per-arg
 // static-typedef recipes ride along unresolved — generic inference
 // asks for them lazily against the calling frame.
-func (v *VM) callHints(f *frame, callee runtime.Value, args []runtime.Value, hints []bytecode.ArgHint, spreadTd *runtime.TypeDef) (runtime.Value, error) {
-	return v.callWindow(f, callee, args, -1, hints, nil, spreadTd)
+func (v *VM) callHints(f *frame, callee runtime.Value, args []runtime.Value, hints []bytecode.ArgHint, spreadTd *runtime.TypeDef, site *bytecode.CallSite) (runtime.Value, error) {
+	return v.callWindow(f, callee, args, -1, hints, nil, spreadTd, site)
 }
 
 // callInPlace is call for an OpCall whose args stay on the operand
@@ -234,8 +234,8 @@ func (v *VM) callHints(f *frame, callee runtime.Value, args []runtime.Value, hin
 // calling frame — its argbuf backs any materialized args slice. The
 // dispatch paths that need a real slice (linkname receiver prepend,
 // builtin, conversion, host func) materialize it via inPlaceArgs.
-func (v *VM) callInPlace(f *frame, callee runtime.Value, argc int, hints []bytecode.ArgHint) (runtime.Value, error) {
-	return v.callWindow(f, callee, nil, argc, hints, nil, nil)
+func (v *VM) callInPlace(f *frame, callee runtime.Value, argc int, hints []bytecode.ArgHint, site *bytecode.CallSite) (runtime.Value, error) {
+	return v.callWindow(f, callee, nil, argc, hints, nil, nil, site)
 }
 
 // inPlaceArgs materializes argc operands off the arena tail — the
@@ -301,7 +301,7 @@ func (v *VM) resolveArgHints(cf *frame, hints []bytecode.ArgHint) []*runtime.Typ
 	return statics
 }
 
-func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, winArgs int, hints []bytecode.ArgHint, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
+func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, winArgs int, hints []bytecode.ArgHint, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, site *bytecode.CallSite) (runtime.Value, error) {
 	if p := v.proc.Load(); p != nil {
 		select {
 		case <-p.Done():
@@ -368,7 +368,7 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 		}
 		break
 	}
-	fr, err := v.prepFrameSeen(f, callee, args, winArgs, hints, statics, spreadTd, seen)
+	fr, err := v.prepFrameSeen(f, callee, args, winArgs, hints, statics, spreadTd, site, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +481,7 @@ func relinkCallee(callee, tv runtime.Value, args []runtime.Value) (runtime.Value
 // prepFrameSeen is prepFrame carrying the linkname resolutions already
 // followed for this call — a pull decl whose pushed symbol resolves to
 // itself (or a longer cycle) would otherwise re-dispatch forever.
-func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value, winArgs int, hints []bytecode.ArgHint, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, seen map[*runtime.Function]bool) (*frame, error) {
+func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value, winArgs int, hints []bytecode.ArgHint, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, site *bytecode.CallSite, seen map[*runtime.Function]bool) (*frame, error) {
 	// an in-place call reads its args off the arena tail — the view is
 	// aliased, never written, so inference and the BoundMethod arm see
 	// them without a copy.
@@ -546,7 +546,7 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
-				return v.prepFrameSeen(cf, tv, args, winArgs, hints, statics, spreadTd, seen)
+				return v.prepFrameSeen(cf, tv, args, winArgs, hints, statics, spreadTd, site, seen)
 			}
 		}
 		// An unresolved bodiless decl compiles to a zero-return shim,
@@ -578,11 +578,27 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 			// locals, upvals and globals.
 			statics = v.resolveArgHints(cf, hints)
 		}
-		inferred, err := v.inferCached(fn, expandSpread(args), statics, spreadTd)
-		if err != nil {
-			return nil, err
+		expanded := expandSpread(args)
+		matched := false
+		if site != nil {
+			if gs, ok := site.Cache.Load().(*genCallSlot); ok &&
+				gs.match(v, fn, expanded, statics, spreadTd) {
+				fn = gs.inst
+				matched = true
+			}
 		}
-		fn = inferred
+		if !matched {
+			inferred, err := v.inferCached(fn, expanded, statics, spreadTd)
+			if err != nil {
+				return nil, err
+			}
+			if site != nil {
+				if gs := newGenCallSlot(v, fn, inferred, expanded, statics, spreadTd); gs != nil {
+					site.Cache.Store(gs)
+				}
+			}
+			fn = inferred
+		}
 	}
 	// a method call is a value touch of the method's declaring package:
 	// under GoCompatibleInit its vars and init() must have run before
