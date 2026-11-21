@@ -431,7 +431,16 @@ func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
 				if !have[m] && !unsure {
 					continue // already counted above
 				}
-				if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
+				if dynFn, ok := dynFns[m]; ok {
+					sig, _, _, _ := runtime.FuncSigOf(dynFn)
+					if sig != nil {
+						if !v.memberSigEq(reqFn, dynFn) {
+							missing = append(missing, m)
+						}
+						continue
+					}
+				}
+				if !v.hostMethodSigMatch(reqFn, m, x) {
 					missing = append(missing, m)
 				}
 			}
@@ -883,13 +892,15 @@ func (v *VM) ifaceSigsMatch(td *runtime.TypeDef, x runtime.Value, ms *runtime.Me
 			return false, err
 		}
 	}
-	return v.memberSigsMatch(reqFns, dynFns), nil
+	return v.memberSigsMatch(reqFns, dynFns, x), nil
 }
 
 // memberSigsMatch reports whether every signature-bearing requirement
 // is met by a same-named member with an identical signature. A member
-// absent from dynFns kept its name-only pass.
-func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
+// absent from dynFns kept its name-only pass — except on a host box,
+// whose reflect method signature is compared by spelling instead
+// (`*fmt.wrapError`'s `Unwrap() error` never fulfills `Unwrap() []error`).
+func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function, x runtime.Value) bool {
 	// a pkg-qualified requirement (a.m) also lists its plain alias (m)
 	// for member selection — but satisfaction resolves the qualified
 	// key, so comparing the alias too would match a different package's
@@ -905,7 +916,16 @@ func (v *VM) memberSigsMatch(reqFns, dynFns map[string]*runtime.Function) bool {
 		if aliased[m] {
 			continue
 		}
-		if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
+		if dynFn, ok := dynFns[m]; ok {
+			sig, _, _, _ := runtime.FuncSigOf(dynFn)
+			if sig != nil {
+				if !v.memberSigEq(reqFn, dynFn) {
+					return false
+				}
+				continue
+			}
+		}
+		if !v.hostMethodSigMatch(reqFn, m, x) {
 			return false
 		}
 	}
@@ -1024,7 +1044,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 				if err != nil {
 					f.trap("%s", err)
 				}
-				return v.memberSigsMatch(reqFns, dynFns)
+				return v.memberSigsMatch(reqFns, dynFns, nil)
 			}
 		}
 		return true
