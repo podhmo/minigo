@@ -1249,7 +1249,28 @@ func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 		(a.Name != "" || a.Anon != nil) &&
 		(b.Name != "" || b.Anon != nil) &&
 		na == nb &&
-		na != "struct{}" && na != "func()" && na != "interface{}"
+		na != "struct{}" && na != "func()" && na != "interface{}" &&
+		!lossySpelling(a) && !lossySpelling(b)
+}
+
+// lossySpelling reports whether the name tdName derives from td.Anon
+// discards content: typeExprName folds every StructType to "struct{}",
+// FuncType to "func()" and InterfaceType to "interface{}", so a
+// spelling containing one — "*struct{}" for both *struct{X int} and
+// *struct{Y int} — cannot decide type identity.
+func lossySpelling(td *runtime.TypeDef) bool {
+	if td.Name != "" || td.Anon == nil {
+		return false
+	}
+	lossy := false
+	ast.Inspect(td.Anon, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.StructType, *ast.FuncType, *ast.InterfaceType:
+			lossy = true
+		}
+		return !lossy
+	})
+	return lossy
 }
 
 // hostElemTwin reports whether tag is an unnamed host slice whose
