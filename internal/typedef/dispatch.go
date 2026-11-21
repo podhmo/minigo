@@ -117,21 +117,29 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 		// on the tag rather than deref past it.
 		if n, ok := v.(*runtime.Named); ok {
 			if gv, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok {
+				// a declared-over-interface tag (`type A any`,
+				// `type E error`) declares no methods of its own —
+				// it is transparent to the payload's method set:
+				// `var a A = buf` still calls buf.String(), and a
+				// script-declared layer between the tag and the box
+				// (Named{W}.V = Named{T}.V = GoValue) keeps its own
+				// declared walk. Peel to the payload rather than
+				// reporting the interface's own walk.
+				if n.Typ != nil && (n.Typ.Kind == runtime.KindInterface || n.Typ.IfaceBase) {
+					v = n.V
+					continue
+				}
 				// a named type boxing a host value (type C128 complex128)
 				// still exposes its declared methods — the reflect set
 				// only fills in when the tag declares none (host box).
 				// Host reflect methods carry no decl signature, so the
 				// func view reports nil for the pure host box.
-				if n.Typ != nil && n.Typ.Kind != runtime.KindInterface && !n.Typ.IfaceBase &&
-					(len(n.Typ.Methods) > 0 || n.Typ.File != nil || declOverHost(n.Typ)) {
+				if n.Typ != nil && (len(n.Typ.Methods) > 0 || n.Typ.File != nil || declOverHost(n.Typ)) {
 					// a script-declared typedef (File set, or the
 					// pointee of an anonymous *T over one) reports its
 					// own walk — `type MyBuf bytes.Buffer` inherits
 					// none of the host methods, so its set is just
-					// what the declaration adds. A declared-over-
-					// interface tag is transparent instead: the
-					// payload's method set answers (`var a A = buf`
-					// with `type A any` still calls buf.String()).
+					// what the declaration adds.
 					return r.TypeMethodInfoU(n.Typ, ptr)
 				}
 				return &runtime.MethodSet{Names: hostMethodSet(gv.V)}, nil
