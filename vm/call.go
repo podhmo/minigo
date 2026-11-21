@@ -968,11 +968,16 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 		last = v.materialize(f, last)
 		if str, ok := last.(string); ok {
 			// append([]byte, s...) spreads the string's bytes — the
-			// only legal string spread in Go.
+			// only legal string spread in Go. Carry it as the Spread
+			// marker (like a slice spread) so a Forwards callee such as
+			// append counts it as a spread for gc's growth rule, not
+			// as individual element args.
 			args = args[:argc-1]
+			elems := make([]runtime.Value, len(str))
 			for i := 0; i < len(str); i++ {
-				args = append(args, int64(str[i]))
+				elems[i] = int64(str[i])
 			}
+			args = append(args, &runtime.Spread{S: &runtime.Slice{Elems: elems}})
 			return args, nil
 		}
 		if _, isNil := last.(runtime.Nil); isNil {
