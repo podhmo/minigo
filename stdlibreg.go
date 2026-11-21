@@ -1,5 +1,10 @@
 package minigo
 
+import (
+	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
+	stdlibutf8 "github.com/podhmo/minigo/internal/stdlib/utf8"
+)
+
 // registerStdlib registers the per-path installers without running
 // them: bound packages build on first use through the install entry.
 func (e *Engine) registerStdlib() {
@@ -10,7 +15,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("strconv", func() { e.installStrconv(h) })
 	e.pending.Register("bytes", func() { e.installBytes(h) })
 	e.pending.Register("unicode", func() { e.installUnicode(h) })
-	e.pending.Register("unicode/utf8", func() { e.installUnicodeUtf8(h) })
+	e.pending.Register("unicode/utf8", func() { stdlibutf8.Install(e.bindBound) })
 	e.pending.Register("math", func() { e.installMath(h) })
 	e.pending.Register("regexp", func() { e.installRegexp(h) })
 	e.pending.Register("encoding/base64", func() { e.installEncodingBase64(h) })
@@ -22,7 +27,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("internal/bytealg", func() { e.installInternalBytealg(h) })
 	e.pending.Register("internal/race", func() { e.installInternalRace(h) })
 	e.pending.Register("internal/stringslite", func() { e.installInternalStringslite(h) })
-	e.pending.Register("html", func() { e.installHtml(h) })
+	e.pending.Register("html", func() { stdlibhtml.Install(e.bindBound) })
 	e.pending.Register("path", func() { e.installPath(h) })
 	e.pending.Register("reflect", func() { e.installReflect() })
 	e.pending.Register("sort", func() { e.installSort(h) })

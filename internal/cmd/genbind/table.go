@@ -3,10 +3,13 @@ package main
 // spec is one generated bound package: Path is the stdlib import path,
 // File the intrinsics_gen_<file>.go suffix, and Skip the member names
 // that stay handwritten (custom adapters, richer typedefs, callback
-// builtins) so the generated map never shadows them.
+// builtins) so the generated map never shadows them. When Dir is set the
+// table moves out of the root package: the file is emitted as
+// <dir>/gen.go, package <dir base>, using internal/stdlib helpers (P2-12b).
 type spec struct {
 	Path string
 	File string
+	Dir  string
 	Skip map[string]bool
 }
 
@@ -20,10 +23,10 @@ var specs = []spec{
 		// the constructors adapt script io.Writer/io.Reader values.
 		Skip: map[string]bool{"NewEncoder": true, "NewDecoder": true}},
 	{Path: "crypto/sha256", File: "crypto_sha256"},
-	{Path: "html", File: "html"},
+	{Path: "html", File: "html", Dir: "internal/stdlib/html"},
 	{Path: "path", File: "path"},
 	{Path: "strconv", File: "strconv"},
-	{Path: "unicode/utf8", File: "unicode_utf8",
+	{Path: "unicode/utf8", File: "unicode_utf8", Dir: "internal/stdlib/utf8",
 		Skip: map[string]bool{"EncodeRune": true, "AppendRune": true}},
 	{Path: "path/filepath", File: "path_filepath",
 		Skip: map[string]bool{"Walk": true, "WalkDir": true,

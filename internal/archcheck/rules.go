@@ -11,10 +11,10 @@ package archcheck
 // A pkg_test file importing its own package does not count as an edge,
 // so self-edges never appear.
 var Rules = map[string][]string{
-	".":                      {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "minireflect", "repl", "resolve", "runtime", "syntax", "vm"},
+	".":                      {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "internal/stdlib", "internal/stdlib/html", "internal/stdlib/utf8", "minireflect", "repl", "resolve", "runtime", "syntax", "vm"},
+	"builtin":                {"compile", "internal/hostbridge", "internal/source", "runtime", "vm"},
 	"bytecode":               {"syntax"},
 	"cmd/minigo":             {".", "index", "repl", "resolve", "runtime"},
-	"builtin":                {"compile", "internal/hostbridge", "internal/source", "runtime", "vm"},
 	"compile":                {"bytecode", "index", "internal/semantics", "internal/source", "internal/spike", "runtime", "syntax"},
 	"host":                   {},
 	"index":                  {"syntax"},
@@ -32,6 +32,9 @@ var Rules = map[string][]string{
 	"internal/semantics":     {"index", "syntax"},
 	"internal/source":        {"index", "internal/semantics", "runtime", "syntax"},
 	"internal/spike":         {},
+	"internal/stdlib":        {"internal/hostbridge", "runtime"},
+	"internal/stdlib/html":   {"internal/stdlib", "runtime"},
+	"internal/stdlib/utf8":   {"internal/hostbridge", "internal/stdlib", "runtime"},
 	"minireflect":            {"runtime", "syntax"},
 	"pkg/gentest":            {},
 	"pkg/locator":            {},
