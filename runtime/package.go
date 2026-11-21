@@ -316,6 +316,10 @@ type PackageInstance struct {
 	inferMu    sync.Mutex
 	inferM     map[InstCacheKey]inferEntry // inferred generic instances (Inferred)
 	inferCount map[*ast.FuncDecl]int
+
+	specMu    sync.Mutex
+	specM     map[SpecKey]*TypeDef // specialized generic typedefs (Specialized)
+	specCount map[*ast.TypeSpec]int
 }
 
 // State reports the package's loading stage.
@@ -709,6 +713,45 @@ func (p *Package) SetInferred(key InstCacheKey, fn *Function) {
 	}
 	p.inferCount[key.Decl]++
 	p.inferM[key] = inferEntry{fn: fn}
+}
+
+// SpecKey identifies one cached specialized typedef: the type's spec
+// plus the TypeID spell of its arguments (and the enclosing
+// instantiation's args for function-local generics, folded by the
+// caller) — a REPL redeclaration mints a new spec, so it keys a new
+// specialization.
+type SpecKey struct {
+	Spec *ast.TypeSpec
+	Args string
+}
+
+// maxSpecPerSpec bounds the cached specializations per generic spec.
+const maxSpecPerSpec = 256
+
+// Specialized returns the typedef [Package.SetSpecialized] recorded
+// under key — a generic type already checked and specialized to the
+// same arguments.
+func (p *Package) Specialized(key SpecKey) (*TypeDef, bool) {
+	p.specMu.Lock()
+	defer p.specMu.Unlock()
+	td, ok := p.specM[key]
+	return td, ok
+}
+
+// SetSpecialized records td, the specialization of the generic type
+// spec under key, the way SetInferred records a function instance.
+func (p *Package) SetSpecialized(key SpecKey, td *TypeDef) {
+	p.specMu.Lock()
+	defer p.specMu.Unlock()
+	if p.specM == nil {
+		p.specM = map[SpecKey]*TypeDef{}
+		p.specCount = map[*ast.TypeSpec]int{}
+	}
+	if _, ok := p.specM[key]; ok || p.specCount[key.Spec] >= maxSpecPerSpec {
+		return
+	}
+	p.specCount[key.Spec]++
+	p.specM[key] = td
 }
 
 // writePtr spells a pointer-shaped value's address (0 for nil).

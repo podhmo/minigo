@@ -752,3 +752,18 @@ func TestREPLCompleteCommandArg(t *testing.T) {
 		}
 	}
 }
+
+// TestReplRedeclaredConstraint pins the specialization cache keying on
+// the resolved constraint typedef: redeclaring the constraint a generic
+// names must re-check existing argument spellings.
+func TestReplRedeclaredConstraint(t *testing.T) {
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{"main.go": `package main
+`})
+	r := New(minigo.NewEngine(dir))
+	replEval(t, r, `type C interface{ ~int }`)
+	replEval(t, r, `type G[T C] struct{ v T }`)
+	replEval(t, r, `var _ = G[int]{}`)
+	replEval(t, r, `type C interface{ ~string }`)
+	replFails(t, r, `var _ = G[int]{}`, "does not satisfy")
+}

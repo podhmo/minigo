@@ -199,10 +199,24 @@ func (v *VM) instantiate(f *frame, base runtime.Value, targs []runtime.Value, po
 		binds := map[string]runtime.Value{}
 		bindArgs(binds, g.TParams, targs)
 		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
+		key, ok := v.instTypeKey(f, ctx, g, targs)
+		if ok {
+			// an instantiated generic function re-spells its receiver's
+			// type T[args] per call — the specialization depends only on
+			// g's spec, binds and the arguments, so a hit skips
+			// checkTArgs and specializeType (~KBs per call) alike.
+			if r, hit := g.Pkg.Specialized(key); hit {
+				return r
+			}
+		}
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
 			f.trap("%s", err)
 		}
-		return v.specializeType(f, g, targs)
+		td := v.specializeType(f, g, targs)
+		if ok {
+			g.Pkg.SetSpecialized(key, td)
+		}
+		return td
 	default:
 		return v.indexFallback(f, base, targs)
 	}
@@ -298,6 +312,65 @@ func (v *VM) instFuncKey(g *runtime.Function, targs []runtime.Value) (runtime.In
 		fmt.Fprintf(&b, "|o%s", n)
 	}
 	return runtime.InstCacheKey{Decl: g.Decl, Args: b.String()}, true
+}
+
+// instTypeKey spells what the TypeDef arm of instantiate reads: the
+// generic's spec identity, its existing binds, each type argument, the
+// resolved identity of every named constraint (a REPL redeclaration
+// mints a different typedef, so a cached specialization never escapes a
+// changed constraint) and — for a function-local generic — the
+// enclosing instantiation's args, which specializeType folds into the
+// type's identity. A typedef without a package/spec cannot key: the
+// uncached path runs.
+func (v *VM) instTypeKey(f *frame, ctx, g *runtime.TypeDef, targs []runtime.Value) (runtime.SpecKey, bool) {
+	if g.Pkg == nil || g.Spec == nil {
+		return runtime.SpecKey{}, false
+	}
+	bk, ok := v.instBindsKey(g.Binds)
+	if !ok {
+		return runtime.SpecKey{}, false
+	}
+	var b strings.Builder
+	b.WriteString("instt")
+	b.WriteString(bk)
+	for _, a := range targs {
+		td, ok := a.(*runtime.TypeDef)
+		if !ok {
+			return runtime.SpecKey{}, false
+		}
+		tid, ok := v.typeIDArg(td)
+		if !ok {
+			return runtime.SpecKey{}, false
+		}
+		fmt.Fprintf(&b, "|t%s", tid)
+	}
+
+	for i := 0; i < len(targs) && i < len(g.TConstraints); i++ {
+		ct := v.constraintType(ctx, g.TConstraints[i])
+		if ct == nil {
+			continue
+		}
+		tid, ok := v.typeIDArg(ct)
+		if !ok {
+			return runtime.SpecKey{}, false
+		}
+		fmt.Fprintf(&b, "|c%s", tid)
+	}
+	if g.Local {
+		names, args := v.outerTypeArgs(f)
+		for i, bv := range args {
+			td := typedefOf(bv)
+			if td == nil {
+				return runtime.SpecKey{}, false
+			}
+			tid, ok := v.typeIDArg(td)
+			if !ok {
+				return runtime.SpecKey{}, false
+			}
+			fmt.Fprintf(&b, "|o%s=%s", names[i], tid)
+		}
+	}
+	return runtime.SpecKey{Spec: g.Spec, Args: b.String()}, true
 }
 
 func (v *VM) instantiateFuncUncached(f *frame, g *runtime.Function, targs []runtime.Value) *runtime.Function {
@@ -1410,28 +1483,46 @@ func compositeKindMatches(e ast.Expr, td *runtime.TypeDef) bool {
 // against it: an interface checks its required methods, a concrete type
 // requires an exact match. done=false means unresolvable — callers fall
 // back to their approximation.
-func (v *VM) satisfiesNamed(ctx *runtime.TypeDef, e ast.Expr, td *runtime.TypeDef) (ok bool, done bool) {
-	if v.H.ResolveType == nil {
-		return false, false
-	}
-	var base ast.Expr
+// constraintBase returns the named constraint e references — its
+// instantiated `C[...]` spelling reduces to the C itself — or nil when
+// e is not a named constraint (literal interfaces, builtins).
+func constraintBase(e ast.Expr) ast.Expr {
 	switch x := e.(type) {
 	case *ast.IndexExpr:
-		base = x.X
+		return x.X
 	case *ast.IndexListExpr:
-		base = x.X
+		return x.X
 	case *ast.Ident:
 		if isBuiltinTypeName(x.Name) {
-			return false, false
+			return nil
 		}
-		base = x
+		return x
 	case *ast.SelectorExpr:
-		base = x
-	default:
-		return false, false
+		return x
+	}
+	return nil
+}
+
+// constraintType resolves a named constraint's typedef for keying and
+// checking — nil for literals, builtins and the unresolvable.
+func (v *VM) constraintType(ctx *runtime.TypeDef, e ast.Expr) *runtime.TypeDef {
+	if v.H.ResolveType == nil {
+		return nil
+	}
+	base := constraintBase(e)
+	if base == nil {
+		return nil
 	}
 	nt, err := v.H.ResolveType(ctx, base)
-	if err != nil || nt == nil {
+	if err != nil {
+		return nil
+	}
+	return nt
+}
+
+func (v *VM) satisfiesNamed(ctx *runtime.TypeDef, e ast.Expr, td *runtime.TypeDef) (ok bool, done bool) {
+	nt := v.constraintType(ctx, e)
+	if nt == nil {
 		return false, false
 	}
 	if nt.Kind == runtime.KindInterface {
