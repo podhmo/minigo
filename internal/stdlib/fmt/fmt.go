@@ -1228,6 +1228,16 @@ func starOperand(x any, raw runtime.Value) any {
 		}
 		return false
 	}
+	if u := runtime.Unwrap(raw); u != nil {
+		if gv, ok := u.(*runtime.GoValue); ok {
+			if _, isRV := gv.V.(*minireflect.RValue); isRV {
+				// gc's intFromArg rejects a reflect.Value — keep the
+				// box so the host emits BADWIDTH/BADPREC instead of
+				// reading the viewed int.
+				return u
+			}
+		}
+	}
 	if x != nil && intKind(reflect.ValueOf(x).Kind()) {
 		return x
 	}
