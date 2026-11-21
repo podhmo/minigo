@@ -134,6 +134,12 @@ type Hooks struct {
 	// name the same type, "?" marks an unidentifiable one. Nil means
 	// identity-keyed caches stay cold (the uncached paths run).
 	TypeIDOf func(td *runtime.TypeDef) runtime.TypeID
+	// DeferredType resolves one deferred fact's type expression under
+	// AllowIndex (M4-7a), preserving the expression's full shape — a
+	// StarExpr answer stays a pointer where ResolveType strips it. ctx
+	// is the site's pinned context or the running frame's
+	// (package/file/binds). Nil falls back to ResolveType.
+	DeferredType func(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error)
 	// HostTwin returns the engine's own typedef for the named host type
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil

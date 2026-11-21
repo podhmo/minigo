@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 	"github.com/podhmo/minigo/vm"
@@ -1273,6 +1274,40 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		return td, nil
 	}
 	return nil, fmt.Errorf("unsupported embedded type expression %T", x)
+}
+
+// deferredTypeOf implements the Hooks.DeferredType hook (M4-7a): a
+// deferred fact's type expression resolved under AllowIndex. Unlike
+// resolveTypeRef — a reference resolver that strips `*` — the answer
+// keeps the expression's own shape: `*int` resolves to a pointer
+// typedef, parens count their inner stars the same way.
+func (e *Engine) deferredTypeOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
+	expr := site.Expr
+	var stars []*ast.StarExpr
+	for {
+		switch t := expr.(type) {
+		case *ast.ParenExpr:
+			expr = t.X
+		case *ast.StarExpr:
+			stars = append(stars, t)
+			expr = t.X
+		default:
+			goto peeled
+		}
+	}
+peeled:
+	td, err := e.resolveTypeRef(ctx, expr)
+	if err != nil {
+		return nil, err
+	}
+	// wrap innermost star first so `**int`'s *int level spells `*int`,
+	// and keep the context's local-type snapshot: typeExpr-minted
+	// pointers carry LocalTypes, and TypSpelling needs it to name
+	// function-local element types alike.
+	for i := len(stars) - 1; i >= 0 && td != nil; i-- {
+		td = &runtime.TypeDef{Kind: runtime.KindPointer, Anon: stars[i], Elem: td, Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds, LocalTypes: ctx.LocalTypes}
+	}
+	return td, nil
 }
 
 // elemOf implements the Hooks.ElemOf hook: the element typedef of a

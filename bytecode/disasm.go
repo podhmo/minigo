@@ -84,6 +84,7 @@ var opNames = [...]string{
 	OpLocalType:     "OpLocalType",
 	OpSelectCall:    "OpSelectCall",
 	OpLenCallFold:   "OpLenCallFold",
+	OpDeferredTyp:   "OpDeferredTyp",
 }
 
 // String renders the op's name for disassembly output.
@@ -104,6 +105,7 @@ const (
 	opdSlot                     // local slot, printed slot<N>
 	opdUpval                    // upvalue index, printed uv<N>
 	opdSite                     // Sites index, printed site<N>
+	opdCSite                    // CallSites index, printed csite<N>
 	opdJump                     // branch target, printed -><ip>
 	opdBinOp                    // BinOp, printed by name
 	opdUnOp                     // UnOp, printed by name
@@ -166,6 +168,7 @@ var opOperands = map[Op][3]operandKind{
 	OpSpecialCall:   {opdConst, opdConst, opdSkip},
 	OpFoldArrayLen:  {opdConst, opdSkip, opdSkip},
 	OpLenCallFold:   {opdJump, opdNum, opdSkip},
+	OpDeferredTyp:   {opdCSite, opdSkip, opdSkip},
 }
 
 // Disasm renders a chunk's code to a stable, line-oriented text form for
@@ -240,6 +243,8 @@ func disasmInto(b *strings.Builder, c *Chunk, indent string) {
 				fmt.Fprintf(b, " uv%d", v)
 			case opdSite:
 				fmt.Fprintf(b, " site%d", v)
+			case opdCSite:
+				fmt.Fprintf(b, " csite%d", v)
 			case opdJump:
 				fmt.Fprintf(b, " ->%d", v)
 			case opdBinOp:
