@@ -756,6 +756,14 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 	if len(args) < want {
 		return nil, fmt.Errorf("not enough arguments to %s: %d given, want %d", fn.Name, len(args), want)
 	}
+	if ch.IsVararg && len(args) < n && len(args) > 0 {
+		// the trailing `xs...` marker must land on the variadic slot:
+		// `f(xs...)` on `func f(x any, ys ...int)` leaves x unbound —
+		// gc's "not enough arguments in call to f".
+		if _, ok := args[len(args)-1].(*runtime.Spread); ok {
+			return nil, fmt.Errorf("not enough arguments in call to %s", fn.Name)
+		}
+	}
 	if !ch.IsVararg && len(args) > n {
 		return nil, fmt.Errorf("too many arguments to %s: %d given, want %d", fn.Name, len(args), n)
 	}
