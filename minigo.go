@@ -409,20 +409,41 @@ func (e *Engine) compileScopedExpr(pkg *runtime.Package, file *syntax.File, x as
 }
 
 func (e *Engine) compileFunc(fn *runtime.Function) error {
+	// a generic instantiation compiles once per distinct binds: every
+	// call of an inferred generic mints a fresh Function and fresh
+	// typedef copies, so the cache keys on the declaration plus each
+	// bind's TypeID (M4-6b) — same-typed instantiations share the chunk.
+	var key string
+	if len(fn.Binds) > 0 && fn.Pkg != nil {
+		key = e.instKey(fn)
+		if key != "" {
+			if ch, hit := fn.Pkg.InstChunk(key); hit {
+				fn.Chunk = ch
+				return nil
+			}
+		}
+	}
 	var err error
 	if e.strictLazy {
 		err = compile.FuncStrict(fn)
 	} else {
 		err = compile.Func(fn)
 	}
-	if err != nil || !e.verifyChunks || fn.Chunk == nil {
+	if err != nil {
 		return err
 	}
-	if _, verr := bytecode.Verify(fn.Chunk); verr != nil {
-		return fmt.Errorf("%s: %w", fn.Name, verr)
+	if e.verifyChunks && fn.Chunk != nil {
+		if _, verr := bytecode.Verify(fn.Chunk); verr != nil {
+			return fmt.Errorf("%s: %w", fn.Name, verr)
+		}
+		if _, verr := bytecode.VerifyKinds(fn.Chunk); verr != nil {
+			return fmt.Errorf("%s: %w", fn.Name, verr)
+		}
 	}
-	if _, verr := bytecode.VerifyKinds(fn.Chunk); verr != nil {
-		return fmt.Errorf("%s: %w", fn.Name, verr)
+	// store only after the chunk passed verification — a rejected chunk
+	// must not satisfy a later instantiation's lookup.
+	if key != "" {
+		fn.Pkg.SetInstChunk(key, fn.Decl, fn.Binds, fn.Chunk)
 	}
 	return nil
 }

@@ -235,6 +235,37 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 	return td
 }
 
+// instKey is the compiled-instantiation cache key (M4-6b): the
+// declaration and file pin the source version, the function name
+// distinguishes siblings, and each bound typedef keys by its TypeID —
+// inferred copies of one type share the compiled chunk — with a
+// pointer fallback for typedefs whose TypeID is not computable ("?").
+// A non-typedef bind cannot key an instantiation and yields "".
+func (e *Engine) instKey(fn *runtime.Function) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%p|%p|%s", fn.Decl, fn.File, fn.Name)
+	names := make([]string, 0, len(fn.Binds))
+	for n := range fn.Binds {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		td, ok := fn.Binds[n].(*runtime.TypeDef)
+		if !ok || td == nil {
+			return ""
+		}
+		b.WriteByte('|')
+		b.WriteString(n)
+		b.WriteByte('=')
+		if tid := e.typeIDOf(td); tid != "" && tid != "?" {
+			b.WriteString(string(tid))
+		} else {
+			fmt.Fprintf(&b, "@%p", td)
+		}
+	}
+	return b.String()
+}
+
 // boundTypedefOf unwraps a Binds value to its typedef (type arguments
 // bind typedefs; anything else means the parameter is unbound).
 func boundTypedefOf(v runtime.Value) *runtime.TypeDef {
