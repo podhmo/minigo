@@ -1314,15 +1314,44 @@ func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 		}
 	}
 	if rt.Kind() == hostbridge.KindPointer && rt.Name() == "" {
-		// `x.(**T)` hands an unnamed *T: resolve the element's twin
-		// and mint the *T typedef directly — interning a HostIdent
-		// stamp could park a hollow descriptor in the table, and a
-		// NAMED pointer type (`type P *T`) is not *T.
-		if ert := rt.Elem(); ert.Name() != "" && ert.PkgPath() != "" {
+		// `x.(**T)` hands an unnamed *T — or a chain of them: peel the
+		// unnamed pointer layers of rt, resolve the named element's
+		// twin, and mint the *...*T typedef directly — interning a
+		// HostIdent stamp could park a hollow descriptor in the table,
+		// and a NAMED pointer type (`type P *T`) is not *T.
+		ert := rt
+		depth := 0
+		for ert.Kind() == hostbridge.KindPointer && ert.Name() == "" {
+			ert = ert.Elem()
+			depth++
+		}
+		if depth > 0 && ert.Name() != "" && ert.PkgPath() != "" {
 			var want *runtime.TypeDef
 			if v.H.HostTwin != nil {
 				if et := v.H.HostTwin(ert); et != nil {
-					want = runtime.AnonPtrTypedefOf(et)
+					// a bound twin's name need not spell the declared
+					// element: `lib.T` resolves through td's own
+					// package scope to the bound td even when the bound
+					// name is not the host type's Go name (`T` over
+					// starPtrT), where a spelling compare would mint
+					// `*example.com/lib.starPtrT`.
+					e2 := td
+					d2 := 0
+					for e2 != nil && e2.Kind == runtime.KindPointer && e2.Spec == nil {
+						el := e2.Elem
+						if el == nil && v.H.ElemOf != nil {
+							el, _ = v.H.ElemOf(v.peelNamed(e2))
+						}
+						e2 = el
+						d2++
+					}
+					if d2 == depth && e2 != nil && v.sameTypedef(et, e2) {
+						return true
+					}
+					want = et
+					for i := 0; i < depth; i++ {
+						want = runtime.AnonPtrTypedefOf(want)
+					}
 				}
 			}
 			if want == nil {
@@ -1331,12 +1360,16 @@ func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 				// only: sameTypedef would intern the minted td and park
 				// it under the spelled key the real *T resolves to,
 				// leaving a hollow descriptor behind.
+				expr := ast.Expr(&ast.SelectorExpr{
+					X:   ast.NewIdent(ert.PkgPath()),
+					Sel: ast.NewIdent(ert.Name()),
+				})
+				for i := 0; i < depth; i++ {
+					expr = &ast.StarExpr{X: expr}
+				}
 				want := &runtime.TypeDef{
 					Kind: runtime.KindPointer,
-					Anon: &ast.StarExpr{X: &ast.SelectorExpr{
-						X:   ast.NewIdent(ert.PkgPath()),
-						Sel: ast.NewIdent(ert.Name()),
-					}},
+					Anon: expr,
 				}
 				if td.Anon != nil {
 					if gs := runtime.TypGoSpelling(td.Anon, td); gs != "" && gs == runtime.TypSpelling(want.Anon, want) {
