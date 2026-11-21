@@ -37,13 +37,22 @@ func main() {
 		return
 	}
 	violations := archcheck.Check(g, archcheck.Rules)
+
+	// M1-3: execution state must not leak into shared engine assets.
+	sv, err := archcheck.CheckSharedFields(*root, ".", "sharedAssets", archcheck.SharedStateTypes, archcheck.SharedFuncExempt)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "archcheck:", err)
+		os.Exit(2)
+	}
+	violations = append(violations, sv...)
+
 	if len(violations) > 0 {
 		for _, v := range violations {
 			fmt.Fprintln(os.Stderr, "archcheck:", v.Message)
 		}
 		os.Exit(1)
 	}
-	fmt.Println("archcheck: import graph matches the allow list")
+	fmt.Println("archcheck: import graph and shared assets match the allow lists")
 }
 
 func joinQuoted(ss []string) string {

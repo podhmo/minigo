@@ -82,6 +82,129 @@ func TestBuildSyntheticModule(t *testing.T) {
 	}
 }
 
+// CheckSharedFields on the real repo: sharedAssets must stay clean of
+// runtime execution-state types (M1-3).
+func TestSharedFieldsRealRepo(t *testing.T) {
+	root := filepath.Join("..", "..")
+	vs, err := archcheck.CheckSharedFields(root, ".", "sharedAssets", archcheck.SharedStateTypes, archcheck.SharedFuncExempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]archcheck.Violation(nil), vs); diff != "" {
+		t.Error(diff)
+	}
+}
+
+// CheckSharedFields: synthetic module — clean struct passes, a struct
+// holding a forbidden type or a non-exempt func field fails.
+func TestCheckSharedFields(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod":           "module example.com/m\n\ngo 1.26\n",
+		"assets/assets.go": "package assets\nimport \"example.com/m/rt\"\n\ntype Good struct {\n\tN    int\n\tCb   func() // exempt below\n\tCell *rt.Cell // forbidden\n}\n\ntype Clean struct {\n\tS string\n\tW *Wrap\n}\n\ntype Wrap struct {\n\tVals []int\n}\n",
+		"rt/rt.go":         "package rt\n\ntype Cell struct{ V int }\n",
+	})
+	root := dir
+	forbidden := map[string]bool{"example.com/m/rt.Cell": true}
+	exempt := map[string]bool{"Good.Cb": true}
+
+	// Positive: no forbidden types anywhere under Clean.
+	vs, err := archcheck.CheckSharedFields(root, "assets", "Clean", forbidden, exempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff([]archcheck.Violation(nil), vs); diff != "" {
+		t.Error(diff)
+	}
+
+	// Negative: Good.Cell points at a forbidden type; Good.Cb is exempt.
+	vs, err = archcheck.CheckSharedFields(root, "assets", "Good", forbidden, exempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("want 1 violation, got %d: %+v", len(vs), vs)
+	}
+	if vs[0].Dep != "example.com/m/rt.Cell" {
+		t.Errorf("unexpected violation: %s", vs[0].Message)
+	}
+
+	// Without the exemption the func field must also fire.
+	vs, err = archcheck.CheckSharedFields(root, "assets", "Good", forbidden, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("want 2 violations, got %d: %+v", len(vs), vs)
+	}
+}
+
+// Regression: the same import alias bound to different paths in
+// different files must still resolve each field through its own file.
+func TestSharedFieldsAliasCollision(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod":      "module example.com/m\n\ngo 1.26\n",
+		"assets/a.go": "package assets\nimport rt \"example.com/m/rt\"\n\ntype Good struct {\n\tC *rt.Cell\n}\n",
+		"assets/b.go": "package assets\nimport rt \"example.com/m/safe\"\n\ntype Also struct {\n\tC *rt.Thing\n}\n",
+		"rt/rt.go":    "package rt\n\ntype Cell struct{ V int }\n",
+		"safe/s.go":   "package safe\n\ntype Thing struct{ V int }\n",
+	})
+	forbidden := map[string]bool{"example.com/m/rt.Cell": true}
+	vs, err := archcheck.CheckSharedFields(dir, "assets", "Good", forbidden, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 1 || vs[0].Dep != "example.com/m/rt.Cell" {
+		t.Fatalf("want 1 rt.Cell violation, got %+v", vs)
+	}
+}
+
+// Regression: forbidden types inside generic instantiation args,
+// anonymous structs, parens and named chan types must be seen.
+func TestSharedFieldsNestedShapes(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.26\n",
+		"assets/assets.go": `package assets
+import rt "example.com/m/rt"
+
+type Box[T any] struct{ v T }
+
+type ViaGeneric struct{ B Box[*rt.Cell] }
+type ViaAnon    struct{ S struct{ C *rt.Cell } }
+type ViaParen   struct{ C (*rt.Cell) }
+type ViaChan    struct{ C CellChan }
+
+type CellChan chan *rt.Cell
+`,
+		"rt/rt.go": "package rt\n\ntype Cell struct{ V int }\n",
+	})
+	forbidden := map[string]bool{"example.com/m/rt.Cell": true}
+	for _, strct := range []string{"ViaGeneric", "ViaAnon", "ViaParen", "ViaChan"} {
+		vs, err := archcheck.CheckSharedFields(dir, "assets", strct, forbidden, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(vs) != 1 {
+			t.Errorf("%s: want 1 violation, got %+v", strct, vs)
+		}
+	}
+}
+
+// Regression: a parenthesized named struct decl must still match
+// "Type.Field" exemptions — not the doubled "Type.Type.Field".
+func TestSharedFieldsParenExempt(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod":           "module example.com/m\n\ngo 1.26\n",
+		"assets/assets.go": "package assets\n\ntype Good (struct{ Cb func() })\n",
+	})
+	vs, err := archcheck.CheckSharedFields(dir, "assets", "Good", nil, map[string]bool{"Good.Cb": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vs) != 0 {
+		t.Fatalf("exempt Cb reported: %+v", vs)
+	}
+}
+
 // BannedSelectors flags the named selector only inside the given package
 // dirs.
 func TestBannedSelectors(t *testing.T) {
