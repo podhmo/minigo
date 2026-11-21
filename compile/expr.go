@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -503,6 +504,7 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	} else {
 		localTypes = c.fs.localTypeDefs()
 	}
+	c.checkTypeExprMembers(e)
 	switch t := e.(type) {
 	case *ast.Ident:
 		c.typeIdent(e, t.Name)
@@ -573,4 +575,76 @@ func (c *compiler) typeExpr(e ast.Expr) {
 	// `func(U[int])` spells `func(main.U[int;int]·3)`. OpLocalType folds
 	// them onto the pushed typedef (a no-op outside instantiations).
 	c.emit(bytecode.OpLocalType, 0, 0, e.Pos())
+}
+
+// checkTypeExprMembers traps on a package-qualified name in type
+// position that an already-known package demonstrably lacks — gc
+// rejects `var x *json.Nope` at compile time; the lazy OpConst typedef
+// would silently mint a broken nilable. Unindexed packages still defer
+// (their facts arrive with materialization) and Failed queries stay
+// silent, so only a Missing answer traps.
+func (c *compiler) checkTypeExprMembers(e ast.Expr) {
+	checkList := func(l *ast.FieldList) {
+		if l == nil {
+			return
+		}
+		for _, f := range l.List {
+			c.checkTypeExprMembers(f.Type)
+		}
+	}
+	switch t := e.(type) {
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			// a.b.T — the qualifier is itself a member path.
+			c.checkTypeExprMembers(t.X)
+			return
+		}
+		ref, isPkg := c.importRef(id.Name)
+		if !isPkg {
+			return
+		}
+		// Only a source-indexed package can demonstrate a member is
+		// missing — bound packages expose types through their host
+		// bindings instead (`exec.Cmd` is usable but never indexed),
+		// so a Missing answer there stays lazy like before.
+		res := c.askIndexed(ref)
+		if res.Val == nil || res.Val.Index == nil {
+			return
+		}
+		if c.selMember(ref, t.Sel.Name).Kind == semantics.Missing {
+			c.trap(t.Pos(), "undefined: %s.%s", id.Name, t.Sel.Name)
+		}
+	case *ast.StarExpr:
+		c.checkTypeExprMembers(t.X)
+	case *ast.ParenExpr:
+		c.checkTypeExprMembers(t.X)
+	case *ast.Ellipsis:
+		c.checkTypeExprMembers(t.Elt)
+	case *ast.ArrayType:
+		// t.Len is a value expression (`[n]T`, `[strconv.IntSize]byte`),
+		// not a type — its selectors are resolved as members at compile
+		// time by the operand path, not here.
+		c.checkTypeExprMembers(t.Elt)
+	case *ast.MapType:
+		c.checkTypeExprMembers(t.Key)
+		c.checkTypeExprMembers(t.Value)
+	case *ast.ChanType:
+		c.checkTypeExprMembers(t.Value)
+	case *ast.FuncType:
+		checkList(t.Params)
+		checkList(t.Results)
+	case *ast.StructType:
+		checkList(t.Fields)
+	case *ast.InterfaceType:
+		checkList(t.Methods)
+	case *ast.IndexExpr:
+		c.checkTypeExprMembers(t.X)
+		c.checkTypeExprMembers(t.Index)
+	case *ast.IndexListExpr:
+		c.checkTypeExprMembers(t.X)
+		for _, i := range t.Indices {
+			c.checkTypeExprMembers(i)
+		}
+	}
 }
