@@ -89,7 +89,7 @@ var Rules = map[string][]string{
 	"pkg/gentest":                  {},
 	"pkg/locator":                  {},
 	"pkg/modulewalk":               {"pkg/locator", "resolve", "syntax"},
-	"repl":                         {".", "compile", "index", "internal/replhooks", "resolve", "runtime", "syntax"},
+	"repl":                         {".", "compile", "index", "internal/replhooks", "pkg/locator", "pkg/modulewalk", "resolve", "runtime", "syntax"},
 	"resolve":                      {"pkg/locator"},
 	"runtime":                      {"bytecode", "index", "internal/execution", "internal/spike", "special", "syntax"},
 	"special":                      {"syntax"},

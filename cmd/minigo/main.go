@@ -476,6 +476,10 @@ const replHelp = `commands:
                       note: this is the Go toolchain's documentation, not
                       minigo's — a bound package may expose fewer symbols
                       (:ls <pkg> shows what minigo actually provides)
+  :imports [ref]  list what a package imports (ref like :ls; empty =
+                  the entered package); test-file imports end in " (test)"
+  :importers [ref]  list which packages in the session's module import
+                    the ref — pure filesystem scan, nothing is loaded
   :dump <expr>  evaluate expr and print it in Go syntax, like fmt's
                 #v verb (type and field names, quoted strings, T(nil)) —
                 for debugging nested values (also :p)
@@ -654,6 +658,24 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 					fmt.Fprintf(out, "unloaded %s\n", path)
 				case ":doc":
 					runDoc(ctx, out, r, cwd, arg)
+				case ":imports":
+					lines, err := r.Imports(ctx, strings.TrimSpace(arg))
+					if err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+					} else {
+						for _, l := range lines {
+							fmt.Fprintln(out, l)
+						}
+					}
+				case ":importers":
+					lines, err := r.Importers(ctx, strings.TrimSpace(arg))
+					if err != nil {
+						fmt.Fprintf(out, "error: %s\n", err)
+					} else {
+						for _, l := range lines {
+							fmt.Fprintln(out, l)
+						}
+					}
 				case ":dump", ":p":
 					arg = strings.TrimSpace(arg)
 					if arg == "" {
@@ -1104,7 +1126,8 @@ func (w writeWithCRLF) Write(p []byte) (int, error) {
 // metaCommands are the `:`-lines the front-end completes itself — the
 // processor-side completer stays out of this namespace.
 var metaCommands = []string{
-	":bindings", ":cd", ":comp", ":doc", ":dump", ":exit", ":help", ":load", ":ls", ":p",
+	":bindings", ":cd", ":comp", ":doc", ":dump", ":exit", ":help", ":imports", ":importers",
+	":load", ":ls", ":p",
 	":pin", ":q", ":quit", ":reset", ":unload", ":unpin",
 }
 

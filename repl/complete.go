@@ -1151,7 +1151,7 @@ func (r *REPL) CompleteCommandArg(line string) (start int, cands []Candidate) {
 				return start + s, cands
 			}
 		}
-	case ":load", ":unload", ":cd", ":ls":
+	case ":load", ":unload", ":cd", ":ls", ":imports", ":importers":
 	default:
 		return len(line), nil
 	}
