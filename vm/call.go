@@ -526,8 +526,14 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 			winArgs++
 			args = v.vals[len(v.vals)-winArgs:]
 		} else {
-			args = append([]runtime.Value{c.Recv}, args...)
-			v.profAllocs++
+			// prepend into the VM scratch: the slice is consumed by
+			// arg binding below — no per-call alloc. Init code that
+			// may run between here and binding can issue bound-method
+			// spread calls on this VM, so the pending args lift off
+			// the scratch at the EnsureReadyRun site.
+			v.recvBuf = append(v.recvBuf[:0], c.Recv)
+			v.recvBuf = append(v.recvBuf, args...)
+			args = v.recvBuf
 		}
 	default:
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
@@ -610,6 +616,12 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 	// the member touch that served them.
 	if _, isMethod := callee.(*runtime.BoundMethod); isMethod {
 		if p := fn.Pkg; p != nil && p.Index != nil && !p.LazyInit && p.State() < runtime.Initializing {
+			if len(args) > 0 && len(v.recvBuf) > 0 && &args[0] == &v.recvBuf[0] {
+				// init runs on this VM and may issue its own bound-method
+				// spread calls — lift the pending args off the shared
+				// scratch before it can be overwritten.
+				args = append([]runtime.Value(nil), args...)
+			}
 			if err := p.EnsureReadyRun(v.runInit); err != nil {
 				return nil, err
 			}
@@ -763,6 +775,13 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 			break
 		}
 		fr.putLocal(i, valueCopy(a))
+	}
+	if len(v.recvBuf) > 0 {
+		// a receiver prepend's args are bound into locals (or the
+		// vararg pack) — drop the references so the scratch doesn't
+		// pin the last call's arguments until the next prepend.
+		clear(v.recvBuf[:cap(v.recvBuf)])
+		v.recvBuf = v.recvBuf[:0]
 	}
 	if winArgs >= 0 {
 		// params consumed — nil the arg slots (their values now live

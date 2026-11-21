@@ -198,6 +198,13 @@ type VM struct {
 	// this one instead of minting a throwaway per instantiate.
 	keyCtx *runtime.TypeDef
 
+	// recvBuf is the scratch arg slice for a BoundMethod's receiver
+	// prepend: the prepended args are consumed by arg binding inside
+	// the same prepFrameSeen — cleared after binding — and lifted to
+	// a fresh slice when init code that could write the buffer runs
+	// in between (a package's first method call on this VM).
+	recvBuf []runtime.Value
+
 	// frames is the live call stack (innermost last); recover() consults it.
 	frames []*frame
 	// vals is the goroutine's contiguous operand stack: each frame's
