@@ -49,3 +49,50 @@ The existing callback,
 panic/recovery and template suites cover compatibility. Run
 `make concurrency-stress` for the classified race matrix from #1063; passing
 that bounded matrix is not a proof of all callback lifetimes or schedules.
+
+## Callback-bearing host fields
+
+Before generic raw-VM value/field adaptation can extend the
+process-bound entry boundary, host struct fields that can hold script
+callables need a classification. Two axes decide the policy:
+
+- **Invocation lifetime** — synchronous inside a host call running under
+  a live root call vs. retained past the call that stored it.
+- **Storage scope** — a slot owned by one call's values vs. a shared or
+  package-global slot (engine reuse).
+
+Three classes fall out:
+
+- **Reusable synchronous factory** — the host calls the field
+  synchronously from inside a method that itself runs under whatever
+  root call is live. Bound today: `sync.Pool.New`,
+  `bufio.Scanner.Split`, and `sync.Cond.L` (settable via
+  `&sync.Cond{L: l}`). The slot outlives the storing call and may serve
+  later roots or other engines, so pinning it to the storing process
+  would break reuse — and a package-global factory (go/printer's
+  package-level pool) is shared state by definition. These keep their
+  existing anchored-caller behavior.
+- **Retained external entry** — the host keeps the func and calls it
+  after the storing call's process ended. No bound field is in this
+  class today (`time.AfterFunc`'s func arrives as an argument, which
+  the reflected host-call argument path already covers). When a field
+  of this class is bound, it needs the process-bound caller the
+  retaining builtins get.
+- **Data ferry** — fields the host only reads back verbatim.
+  `sync.Pool.New`'s *result* is the example: it must store opaque so a
+  later `Get` returns the script value, never a projection.
+
+### Adapter contract
+
+`internal/hostbridge.AdaptOpts` stays the option carrier; it gains a
+`Retain` bit marking a func adaptation whose caller must bind to the
+process the adaptation ran under. Field-level, the
+`owner == PoolType && name == "New"` special case in `HostFieldValue`
+becomes a declared policy table keyed by (owner type, field name) with
+three policies — `opaque`, `factory` (anchored reusable; the default
+for any func-typed field), and `retained` (process-bound). A field may
+be marked `retained` only after checking that no shared or
+package-global instance can reach it — `sync.Pool.New` is the canonical
+counter-example: the same field is a per-pool factory on one value and
+a package-global slot on another, so the binding table must be able to
+scope the policy to the value's provenance, not only its type.
