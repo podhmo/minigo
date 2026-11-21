@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 
 	"github.com/podhmo/minigo/internal/bind"
@@ -43,7 +42,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			return errVal(scriptPathErr(os.WriteFile(p, byteSlice(a[1]), fs.FileMode(intOf(a[2]))), sp, p)), nil
+			return errVal(stdlib.ScriptPathErr(os.WriteFile(p, byteSlice(a[1]), fs.FileMode(intOf(a[2]))), sp, p)), nil
 		}),
 		"Mkdir": h.fn2("os.Mkdir", func(a []any) (any, error) {
 			sp := str(a[0])
@@ -51,7 +50,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			return errVal(scriptPathErr(os.Mkdir(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
+			return errVal(stdlib.ScriptPathErr(os.Mkdir(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
 		}),
 		"MkdirAll": h.fn2("os.MkdirAll", func(a []any) (any, error) {
 			sp := str(a[0])
@@ -59,7 +58,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			return errVal(scriptPathErr(os.MkdirAll(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
+			return errVal(stdlib.ScriptPathErr(os.MkdirAll(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
 		}),
 		"Remove":    h.fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(h.env, "os.Remove", a, os.Remove) }),
 		"RemoveAll": h.fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(h.env, "os.RemoveAll", a, os.RemoveAll) }),
@@ -69,7 +68,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			return errVal(scriptPathErr(os.Chmod(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
+			return errVal(stdlib.ScriptPathErr(os.Chmod(p, fs.FileMode(intOf(a[1]))), sp, p)), nil
 		}),
 		"Truncate": h.fn2("os.Truncate", func(a []any) (any, error) {
 			sp := str(a[0])
@@ -77,7 +76,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			return errVal(scriptPathErr(os.Truncate(p, int64Of(a[1])), sp, p)), nil
+			return errVal(stdlib.ScriptPathErr(os.Truncate(p, int64Of(a[1])), sp, p)), nil
 		}),
 		"Rename": h.fn2("os.Rename", func(a []any) (any, error) {
 			old, err := h.env.FsPath(str(a[0]))
@@ -91,8 +90,8 @@ func (e *Engine) installOs(h *hostHelpers) {
 			err = os.Rename(old, newp)
 			if le, ok := err.(*os.LinkError); ok {
 				// each side maps through its own resolution.
-				le.Old = scriptPathOf(str(a[0]), old, le.Old)
-				le.New = scriptPathOf(str(a[1]), newp, le.New)
+				le.Old = stdlib.ScriptPathOf(str(a[0]), old, le.Old)
+				le.New = stdlib.ScriptPathOf(str(a[1]), newp, le.New)
 			}
 			return errVal(err), nil
 		}),
@@ -103,7 +102,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 				return nil, err
 			}
 			entries, err := os.ReadDir(p)
-			err = scriptPathErr(err, sp, p)
+			err = stdlib.ScriptPathErr(err, sp, p)
 			el := make([]runtime.Value, len(entries))
 			for i, en := range entries {
 				el[i] = &runtime.GoValue{V: en}
@@ -144,7 +143,7 @@ func (e *Engine) installOs(h *hostHelpers) {
 				return nil, err
 			}
 			f, err := os.OpenFile(p, intOf(a[1]), fs.FileMode(intOf(a[2])))
-			return retErr2(f, scriptPathErr(err, sp, p))
+			return retErr2(f, stdlib.ScriptPathErr(err, sp, p))
 		}),
 		"MkdirTemp": h.fn2("os.MkdirTemp", func(a []any) (any, error) {
 			dir, err := fsTempDir(h.env, str(a[0]))
@@ -217,8 +216,8 @@ func (e *Engine) installOs(h *hostHelpers) {
 				// the host error spells the resolved paths — rewrite
 				// both halves to the script's spelling like
 				// scriptPathErr does for *fs.PathError.
-				le.Old = scriptPathOf(so, old, le.Old)
-				le.New = scriptPathOf(sn, newp, le.New)
+				le.Old = stdlib.ScriptPathOf(so, old, le.Old)
+				le.New = stdlib.ScriptPathOf(sn, newp, le.New)
 			}
 			return errVal(lerr), nil
 		}),
@@ -320,7 +319,7 @@ func fsOp2[T any](env bind.Env, name string, a []any, op func(string) (T, error)
 		return nil, err
 	}
 	v, err := op(p)
-	return retErr2(v, scriptPathErr(err, sp, p))
+	return retErr2(v, stdlib.ScriptPathErr(err, sp, p))
 }
 
 func fsErrOp(env bind.Env, name string, a []any, op func(string) error) (any, error) {
@@ -329,92 +328,7 @@ func fsErrOp(env bind.Env, name string, a []any, op func(string) error) (any, er
 	if err != nil {
 		return nil, err
 	}
-	return errVal(scriptPathErr(op(p), sp, p)), nil
-}
-
-// scriptPathOf maps a host path back to the script's spelling: ap is
-// the engine's resolved form (fsPath) of the script path sp, so ap
-// itself reads back as sp verbatim and a descendant of ap joins onto sp
-// (filepath.Join cleans, like the host's own joins from sp would).
-// Other paths pass through.
-//
-// A proper ancestor of ap (MkdirAll failing on an intermediate
-// component) is sp with as many trailing elements dropped — gc slices
-// the spelled path — provided that prefix of sp still resolves to p.
-func scriptPathOf(sp, ap, p string) string {
-	if p == ap {
-		return sp
-	}
-	if rest, ok := cutPathPrefix(p, ap); ok {
-		return filepath.Join(sp, rest)
-	}
-	if rest, ok := cutPathPrefix(ap, p); ok {
-		t := sp
-		for range strings.Split(rest, string(filepath.Separator)) {
-			t = strings.TrimRight(t, string(filepath.Separator))
-			i := strings.LastIndexByte(t, filepath.Separator)
-			if i < 0 {
-				return p
-			}
-			t = t[:i]
-			if t == "" {
-				t = string(filepath.Separator)
-			}
-		}
-		if t = strings.TrimRight(t, string(filepath.Separator)); t == "" {
-			t = string(filepath.Separator)
-		}
-		if resolveLike(sp, ap, t) == p {
-			return t
-		}
-	}
-	return p
-}
-
-// cutPathPrefix reports p's remainder below the directory dir.
-func cutPathPrefix(p, dir string) (string, bool) {
-	rest, ok := strings.CutPrefix(p, dir)
-	if !ok || rest == "" {
-		return "", false
-	}
-	if strings.HasSuffix(dir, string(filepath.Separator)) {
-		return rest, true
-	}
-	return strings.CutPrefix(rest, string(filepath.Separator))
-}
-
-// resolveLike resolves the spelled path t the way fsPath resolved sp to
-// ap — against the same base directory — or "" when the base cannot be
-// recovered from the pair.
-func resolveLike(sp, ap, t string) string {
-	if filepath.IsAbs(t) {
-		return filepath.Clean(t)
-	}
-	csp := filepath.Clean(sp)
-	if csp == "." {
-		return filepath.Join(ap, t)
-	}
-	base, ok := strings.CutSuffix(ap, string(filepath.Separator)+csp)
-	if !ok || strings.HasPrefix(csp, "..") {
-		return ""
-	}
-	return filepath.Join(base, t)
-}
-
-// scriptPathErr rewrites the path an os/filepath error reports from the
-// host form the engine resolved (absolute, under the virtual cwd) back
-// to the script's spelling — gc says `open nope: ...` for
-// os.ReadFile("nope"). The host error is fresh, so it is rewritten in
-// place and keeps its identity.
-func scriptPathErr(err error, sp, ap string) error {
-	switch x := err.(type) {
-	case *fs.PathError:
-		x.Path = scriptPathOf(sp, ap, x.Path)
-	case *os.LinkError:
-		x.Old = scriptPathOf(sp, ap, x.Old)
-		x.New = scriptPathOf(sp, ap, x.New)
-	}
-	return err
+	return errVal(stdlib.ScriptPathErr(op(p), sp, p)), nil
 }
 
 // fsTempDir resolves the dir argument of MkdirTemp/CreateTemp: an empty
@@ -437,30 +351,4 @@ func (e *Engine) cwdAbs(p string) string {
 		return filepath.Clean(p)
 	}
 	return filepath.Join(e.cwd, p)
-}
-
-// walkRootEntry/walkRootInfo give the walk root gc's entry: gc lstats
-// the root as written, so its Name() is the base of the script's
-// spelling — the host walked the resolved absolute path, whose base is
-// the directory's own name. Re-lstatting the uncleaned host spelling
-// yields the same host types gc hands over (fs.FileInfoToDirEntry's
-// entry, *os.fileStat); on failure the host's own entry stands.
-func walkRootEntry(d fs.DirEntry, hp string) fs.DirEntry {
-	if filepath.Base(hp) == d.Name() {
-		return d
-	}
-	if fi, err := os.Lstat(hp); err == nil {
-		return fs.FileInfoToDirEntry(fi)
-	}
-	return d
-}
-
-func walkRootInfo(fi fs.FileInfo, hp string) fs.FileInfo {
-	if filepath.Base(hp) == fi.Name() {
-		return fi
-	}
-	if li, err := os.Lstat(hp); err == nil {
-		return li
-	}
-	return fi
 }
