@@ -198,7 +198,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 			// store shape as `x op= y`.
 			c.refTarget(xe, false)
 			c.emit(bytecode.OpDup, 0, 0, xe.Pos())
-			c.emit(bytecode.OpDeref, 0, 0, xe.Pos())
+			c.emitDerefSite(xe.Pos())
 			one()
 			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
 			c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())
