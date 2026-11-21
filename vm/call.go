@@ -782,6 +782,11 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 					// cell, while element writes reach the
 					// shared backing array as in Go.
 					rest = sp.S
+					if sp.Nil {
+						// a nil slice binds the parameter to
+						// nil, not to an empty slice.
+						rest = runtime.NIL
+					}
 				} else {
 					pack := &runtime.Slice{Elems: append([]runtime.Value{}, args[i:]...)}
 					fr.vpack = pack
@@ -931,7 +936,11 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 				f.trap("cannot use nil %s as spread argument", tdName(tn.Typ))
 			}
 			declared = tn.Typ
-			args = args[:argc-1] // nil slice spreads to zero args
+			// keep the spread marker: a nil slice expands to zero args
+			// but the call's arity rules still apply — `sum(5, xs...)`
+			// on a nil xs is gc's "too many arguments", and a
+			// non-variadic callee never accepts the spread at all.
+			args[argc-1] = &runtime.Spread{S: &runtime.Slice{Typ: declared}, Nil: true}
 			return args, v.elemTypedef(f, declared)
 		}
 		var namedTyp *runtime.TypeDef

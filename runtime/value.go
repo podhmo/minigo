@@ -1724,7 +1724,14 @@ func (s *Slice) Cap() int64 {
 // element. append and variadic-parameter binding expand it to the
 // logical length; every other callee fails on it rather than answering
 // wrong.
-type Spread struct{ S *Slice }
+type Spread struct {
+	S *Slice
+	// Nil marks a `xs...` over a nil slice: it still expands to zero
+	// arguments, but a script callee binds its variadic parameter to
+	// nil (gc hands the callee the caller's nil slice itself) and the
+	// arity rules for a spread call still apply.
+	Nil bool
+}
 
 // IsZeroSizeValue reports whether a value's type occupies no bytes — an
 // empty struct, a [0]T array, or a struct of only zero-size fields. Go
