@@ -1,0 +1,6 @@
+symlink: <nil>
+mode: true
+readlink: f.txt <nil>
+dup: symlink f.txt d/lnk: file exists
+bad: symlink no nodir/lnk: no such file or directory
+readlink-miss: readlink d/f.txt: invalid argument
