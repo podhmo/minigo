@@ -178,7 +178,7 @@ var FileBudgets = map[string]int{
 	"runtime/typedef.go":                             1879,
 	"runtime/typeid.go":                              20,
 	"runtime/unwrap.go":                              106,
-	"runtime/value.go":                               3786,
+	"runtime/value.go":                               3776,
 	"runtime/wrapops.go":                             110,
 	"runtime/hoststruct.go":                          132,
 	"runtime/walk.go":                                131,
