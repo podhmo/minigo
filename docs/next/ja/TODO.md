@@ -98,7 +98,7 @@
   - [x] **M4-1c 書き込みとアドレス取得**: M4-1b のあと、代入・複合代入・`&x.f` を同じパスに切り替える。書き込み先・アドレスの同一性・nil の診断を検証する。
   - [ ] **M4-1d FieldPath のキャッシュ**: M4-1b/c と M4-3a のあと、`(TypeID, name)` ごとにパスを再利用する。宣言が変われば古いパスを使わず、selector が同じパスを再探索しないことを確認する。
 - [ ] **M4-2 メソッドセットとインタフェース充足**: 型ごとに一度だけ計算する。`MethodSetOf`、`MethodFuncsOf`、充足判定、promote されたメンバの検索を、これに切り替える。完了条件: 「walks the method set twice」の TODO が解消する。
-  - [ ] **M4-2a メソッド集合の計算**: 値・ポインタレシーバ、深さ、曖昧な埋め込みを宣言情報から計算し、`MethodSetOf` / `MethodFuncsOf` が同じ結果を使うようにする。
+  - [x] **M4-2a メソッド集合の計算**: 値・ポインタレシーバ、深さ、曖昧な埋め込みを宣言情報から計算し、`MethodSetOf` / `MethodFuncsOf` が同じ結果を使うようにする。
   - [ ] **M4-2b インタフェース充足判定**: M4-2a の集合を型アサーションと充足判定から使う。値・ポインタの差、同名別パッケージ、シグネチャ不一致の診断を固定する。
   - [ ] **M4-2c promoted method の検索**: M4-2a の結果をメソッド値と呼び出しに使い、レシーバ調整と曖昧性を既存テストで照合する。重複探索がなくなったことを確認する。
 - [ ] **M4-3 TypeID と Session ごとの intern 表**: `execution` に `TypeID → *runtime.TypeDef` の表を置き、`hostTypedefOf`、`hostPkgElemTypedef`、`HostTypeOf`、インスタンス化によるコピーをすべてこの表経由にする。host 型のキーは表している型の (PkgPath, Name, 型引数) とする。完了条件: `atomic.Value` と `atomic.Pointer` が別の型として扱われる pin 済みケースがある。[references/typeid.md](./references/typeid.md)

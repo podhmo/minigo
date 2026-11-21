@@ -85,6 +85,11 @@ type Hooks struct {
 	// synthesized interface members; host reflect methods carry no
 	// decl signature, stay absent here and satisfy by name alone.
 	MethodFuncsOf func(v runtime.Value) (map[string]*runtime.Function, error)
+	// MethodInfoOf computes the whole method set of a dynamic value in
+	// one walk — names, signature-bearing funcs and the unsure flag —
+	// so a consumer needing several views does not walk per view. Nil
+	// falls back to MethodSetOf + MethodFuncsOf.
+	MethodInfoOf func(v runtime.Value) (*runtime.MethodSet, error)
 	// TypeMethodFuncs is MethodFuncsOf's typedef variant — the
 	// declared method set of a type rather than a value.
 	TypeMethodFuncs func(td *runtime.TypeDef) (map[string]*runtime.Function, error)

@@ -336,6 +336,7 @@ func (e *Engine) newVM() *vm.VM {
 		IfaceReqs:       e.ifaceReqs,
 		IfaceSigs:       e.ifaceSigReqs,
 		MethodFuncsOf:   e.methodFuncsOfValue,
+		MethodInfoOf:    e.methodInfoOfValue,
 		TypeMethodFuncs: e.methodSet,
 		SigMemo:         &e.sigMemo,
 
