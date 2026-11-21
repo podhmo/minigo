@@ -1113,6 +1113,16 @@ func TryOpaqueKey(v Value) (ck Value, ok bool) {
 	return OpaqueKey(v), true
 }
 
+// ScriptBacked marks a host adapter proxy that stands in for a script
+// value — the io.Reader/Writer callback adapters stdlib mints over
+// script methods. A host handing the proxy back (io.LimitedReader's R
+// field read) unwraps to the original value instead of boxing the
+// adapter, so a type assertion on the field sees the script's own
+// concrete type.
+type ScriptBacked interface {
+	ScriptValue() Value
+}
+
 // OpaqueKeyOrig returns the script value a key from [OpaqueKey] was made
 // from. ok is false when v is not such a key; that includes scalars,
 // which OpaqueKey passes through unchanged.

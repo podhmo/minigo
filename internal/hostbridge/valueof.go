@@ -396,6 +396,12 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 	if orig, ok := StructOrig(x); ok {
 		return orig
 	}
+	// a script-backed adapter proxy (io.Reader/Writer built over a
+	// script method) read back off a host field — io.LimitedReader.R —
+	// restores the script value it stands in for.
+	if sb, ok := x.(runtime.ScriptBacked); ok {
+		return sb.ScriptValue()
+	}
 	switch v := x.(type) {
 	case nil:
 		return runtime.NIL
