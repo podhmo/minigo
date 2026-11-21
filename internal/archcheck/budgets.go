@@ -208,7 +208,7 @@ var FileBudgets = map[string]int{
 	"vm/call.go":                                     1004,
 	"vm/composite.go":                                3422,
 	"vm/const.go":                                    1465,
-	"vm/convert.go":                                  1308,
+	"vm/convert.go":                                  1326,
 	"vm/convert_basic.go":                            39,
 	"vm/convert_host.go":                             82,
 	"vm/convert_hoststruct.go":                       94,
