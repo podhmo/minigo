@@ -113,6 +113,15 @@ type sessionState struct {
 	// parent's descriptor.
 	typeIntern *execution.Intern[runtime.TypeID, *runtime.TypeDef]
 
+	// bindSeq orders bound publishes: bindPublishLocked stamps each
+	// publish under e.mu, and bindInternTypedefs stores a typedef only
+	// while its publish is still the newest the table saw for that
+	// TypeID — a straggling older bind cannot roll the table back past
+	// a completed re-Bind.
+	bindSeq       uint64
+	bindInternMu  sync.Mutex
+	bindInternSeq map[runtime.TypeID]uint64
+
 	mu              sync.Mutex
 	pkgs            map[string]*runtime.Package // by import path
 	byDir           map[string]*runtime.Package // synthetic packages by dir
@@ -292,16 +301,17 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			specials: execution.NewRegistry[runtime.SymbolID, runtime.SpecialFunc](),
 		},
 		sessionState: sessionState{
-			pkgs:         map[string]*runtime.Package{},
-			byDir:        map[string]*runtime.Package{},
-			files:        map[string]*runtime.Package{},
-			filesLenient: map[string]*runtime.Package{},
-			names:        bind.NewNames(),
-			pending:      bind.NewPending(),
-			srcs:         map[string]*runtime.Package{},
-			pkgsLenient:  map[string]*runtime.Package{},
-			byDirLenient: map[string]*runtime.Package{},
-			typeIntern:   execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
+			pkgs:          map[string]*runtime.Package{},
+			byDir:         map[string]*runtime.Package{},
+			files:         map[string]*runtime.Package{},
+			filesLenient:  map[string]*runtime.Package{},
+			names:         bind.NewNames(),
+			pending:       bind.NewPending(),
+			srcs:          map[string]*runtime.Package{},
+			pkgsLenient:   map[string]*runtime.Package{},
+			byDirLenient:  map[string]*runtime.Package{},
+			typeIntern:    execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
+			bindInternSeq: map[runtime.TypeID]uint64{},
 		},
 	}
 	for _, o := range opts {
@@ -545,16 +555,17 @@ func (e *Engine) NewSession() *Engine {
 		// while the fset/cache/map members still share their contents.
 		sharedAssets: e.sharedAssets,
 		sessionState: sessionState{
-			pkgs:         map[string]*runtime.Package{},
-			byDir:        map[string]*runtime.Package{},
-			files:        map[string]*runtime.Package{},
-			names:        bind.NewNames(),
-			pending:      bind.NewPending(),
-			srcs:         map[string]*runtime.Package{},
-			pkgsLenient:  map[string]*runtime.Package{},
-			byDirLenient: map[string]*runtime.Package{},
-			filesLenient: map[string]*runtime.Package{},
-			typeIntern:   execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
+			pkgs:          map[string]*runtime.Package{},
+			byDir:         map[string]*runtime.Package{},
+			files:         map[string]*runtime.Package{},
+			names:         bind.NewNames(),
+			pending:       bind.NewPending(),
+			srcs:          map[string]*runtime.Package{},
+			pkgsLenient:   map[string]*runtime.Package{},
+			byDirLenient:  map[string]*runtime.Package{},
+			filesLenient:  map[string]*runtime.Package{},
+			typeIntern:    execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
+			bindInternSeq: map[runtime.TypeID]uint64{},
 		},
 	}
 	s.builtins = builtins(s)
@@ -892,9 +903,9 @@ func BindAs(name string) BindOption {
 func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts ...BindOption) {
 	p := e.bindTable(importPath, symbols, opts...)
 	e.mu.Lock()
-	tdKeys := e.bindPublishLocked(importPath, p)
+	tdKeys, seq := e.bindPublishLocked(importPath, p)
 	e.mu.Unlock()
-	e.bindInternTypedefs(p, tdKeys)
+	e.bindInternTypedefs(p, tdKeys, seq)
 }
 
 // bindTable builds the ready package a Bind publishes. The host policy
@@ -931,7 +942,7 @@ func (e *Engine) bindTable(importPath string, symbols map[string]runtime.Value, 
 // and typedefs adopt it as their owner. The engine lock is held;
 // adoption runs inside it so a skipped publish never re-points shared
 // symbols at an unbound package.
-func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) []string {
+func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) ([]string, uint64) {
 	var tdKeys []string
 	for _, k := range p.Globals.Names() {
 		v, _ := p.Globals.Get(k)
@@ -952,22 +963,42 @@ func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) []stri
 		e.pkgs[importPath] = p
 	}
 	e.names.Set(importPath, p)
-	return tdKeys
+	e.bindSeq++
+	return tdKeys, e.bindSeq
 }
 
 // bindInternTypedefs records each bound typedef as the canonical
 // descriptor for its TypeID (M4-3c) — a synthesized twin resolves to it,
 // and Store replaces so a re-Bind of the same type redefines it.
 // Interning runs outside the engine lock: spelling a TypeID can install
-// a lazily-bound package, which re-takes e.mu.
-func (e *Engine) bindInternTypedefs(p *runtime.Package, keys []string) {
+// a lazily-bound package, which re-takes e.mu. Two binds may therefore
+// interleave publish and intern: Store is ordered by the publish's seq
+// so a straggling older bind cannot roll a TypeID's descriptor back
+// past a completed re-Bind.
+func (e *Engine) bindInternTypedefs(p *runtime.Package, keys []string, seq uint64) {
+	type internEntry struct {
+		tid runtime.TypeID
+		td  *runtime.TypeDef
+	}
+	var pending []internEntry
 	for _, k := range keys {
 		if v, ok := p.Globals.Get(k); ok {
 			if td, ok := v.(*runtime.TypeDef); ok {
-				if tid := e.typeIDOf(td); tid != "" && tid != "?" && e.typeIntern != nil {
-					e.typeIntern.Store(tid, td)
+				if tid := e.typeIDOf(td); tid != "" && tid != "?" {
+					pending = append(pending, internEntry{tid, td})
 				}
 			}
+		}
+	}
+	if len(pending) == 0 || e.typeIntern == nil {
+		return
+	}
+	e.bindInternMu.Lock()
+	defer e.bindInternMu.Unlock()
+	for _, it := range pending {
+		if seq > e.bindInternSeq[it.tid] {
+			e.typeIntern.Store(it.tid, it.td)
+			e.bindInternSeq[it.tid] = seq
 		}
 	}
 }

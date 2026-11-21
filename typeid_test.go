@@ -224,3 +224,25 @@ func TestInternTypedefRebindRefreshes(t *testing.T) {
 		t.Error("re-Bound typedef did not become canonical")
 	}
 }
+
+// two publishes may interleave interning: bindPublishLocked runs under
+// e.mu but bindInternTypedefs spells TypeIDs outside it. An older
+// publish whose interning lands after a newer one must not roll the
+// TypeID back to its descriptor.
+func TestInternTypedefStragglerRebindKeepsNewest(t *testing.T) {
+	e := NewEngine(".")
+	first := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	second := hostType("example.com/x.Widget", func() any { return &strings.Reader{} })
+	p1 := e.bindTable("example.com/x", map[string]runtime.Value{"Widget": first})
+	p2 := e.bindTable("example.com/x", map[string]runtime.Value{"Widget": second})
+	e.mu.Lock()
+	keys1, seq1 := e.bindPublishLocked("example.com/x", p1)
+	keys2, seq2 := e.bindPublishLocked("example.com/x", p2)
+	e.mu.Unlock()
+	// the newer bind's interning reaches the table before the older's
+	e.bindInternTypedefs(p2, keys2, seq2)
+	e.bindInternTypedefs(p1, keys1, seq1)
+	if e.internTypedef(first) != second {
+		t.Error("straggling older bind rolled the interned typedef back")
+	}
+}
