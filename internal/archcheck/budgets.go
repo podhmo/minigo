@@ -45,7 +45,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           120,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           643,
-	"internal/archcheck/budgets.go":             372,
+	"internal/archcheck/budgets.go":             373,
 	"internal/archcheck/rules.go":               150,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
@@ -103,7 +103,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/strings/strings.go":        177,
 	"intrinsics.go":                             229,
 	"internal/stdlib/errors/errors.go":          130,
-	"internal/stdlib/atomic/atomic.go":          300,
+	"internal/stdlib/atomic/atomic.go":          307,
 	"internal/stdlib/goruntime/goruntime.go":    290,
 	"internal/stdlib/wraperr.go":                63,
 	"internal/stdlib/maps/maps.go":              95,
@@ -269,6 +269,7 @@ var FileBudgetExceptions = map[string]string{
 
 	"internal/stdlib/bufio/bufio.go": "NewReadWriter bind grows bufio.go past the base budget",
 
+	"internal/stdlib/atomic/atomic.go": "stores retag the value with the cell declared type",
 	// M4-6b: e.compileFunc gained the instM cache lookup/store and
 	// typeid.go gained the instKey TypeID keyer.
 	"internal/hostbridge/callhost.go":     "hostptrref: GoValue is a peel leaf — *p reads resolve the host pointer's pointee storage box",
