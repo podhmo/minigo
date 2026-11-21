@@ -1937,68 +1937,6 @@ type ptrTypID struct {
 	elem any
 }
 
-// selIsIface reports whether the name a qualified type expression picks
-// out of an imported package names an interface: a bound typedef's
-// KindInterface flag, or an InterfaceType spec in a source-indexed
-// package. Unknown references and unresolved names report false.
-func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
-	ts, td, ok := c.selMember(ref, name)
-	if !ok {
-		return false
-	}
-	if ts != nil {
-		_, isIface := ast.Unparen(ts.Type).(*ast.InterfaceType)
-		return isIface
-	}
-	return td != nil && td.Kind == runtime.KindInterface
-}
-
-// selMember resolves a package member name to what the compiler can
-// know about it: the declaring TypeSpec for a source-indexed type decl,
-// or the bound runtime typedef for a host-bound member. selIsType,
-// selIsIface, and selNilable all read the same walk.
-// semantics: fact — whether pkg.T names a type, and its spec/typedef;
-// selIsType, selIsIface and selNilable all answer through this.
-func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec, *runtime.TypeDef, bool) {
-	res := c.askIndexed(ref)
-	if res.Val == nil {
-		// Missing, Failed — and Deferred without a materialized
-		// package — all mean the oracle cannot answer here.
-		return nil, nil, false
-	}
-	p := res.Val
-	if p.Index != nil {
-		if tdi := p.Index.Types[name]; tdi != nil {
-			if tdi.Decl != nil {
-				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
-					return ts, nil, true
-				}
-			}
-			// a synthetic entry (a method receiver whose declaration
-			// lives outside this index) still names a type — keep the
-			// old ix.Types[name] != nil verdict even with no spec to
-			// hand back; the globals lookup may still find its
-			// materialized typedef.
-			if p.Globals != nil {
-				if v, ok := p.Globals.Get(name); ok {
-					if td, ok := v.(*runtime.TypeDef); ok && td != nil {
-						return nil, td, true
-					}
-				}
-			}
-			return nil, nil, true
-		}
-	}
-	if p.Globals != nil {
-		if v, ok := p.Globals.Get(name); ok {
-			if td, ok := v.(*runtime.TypeDef); ok && td != nil {
-				return nil, td, true
-			}
-		}
-	}
-	return nil, nil, false
-}
-
 // nilableTypExpr reports whether a resolved type expression denotes a
 // type a `nil` comparison can lawfully answer — pointer, slice, map,
 // channel, func, or interface — through named-type specs.
@@ -2025,63 +1963,6 @@ func (c *compiler) nilableTypExpr(te ast.Expr) (nilable, resolved bool) {
 			}
 		}
 		return true, false
-	}
-	return false, true
-}
-
-// semantics: fact — decides whether `x == nil` on pkg.T traps the way
-// gc rejects it (interfaces/pointers/slices/maps/chans/funcs are
-// nilable; structs and basic types are not).
-//
-// selNilable reports whether the type a qualified name picks out of an
-// imported package can be nil: interfaces, pointers, slices, maps,
-// chans and funcs can; structs and basic types cannot. ok=false when
-// the member can't be resolved at all.
-func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
-	res := c.askIndexed(ref)
-	if res.Kind != semantics.Found {
-		return false, false
-	}
-	p := res.Val
-	ts, td, ok := c.selMember(ref, name)
-	if !ok {
-		return false, false
-	}
-	if ts != nil {
-		// the spec's inner names resolve in ITS package's file scope —
-		// `type T = otherpkg.Nilable` must read otherpkg through the
-		// spec's own imports, never the caller's, or a same-named
-		// import there would flip the verdict.
-		n, _ := c.nilableTypExpr(c.unfoldSpecType(p, ts, 4))
-		return n, true
-	}
-	if td == nil {
-		// a type name with no spec or typedef in view (synthetic
-		// index entry): unknown shape, so conservatively non-nilable.
-		return false, true
-	}
-	switch td.Kind {
-	case runtime.KindInterface, runtime.KindPointer, runtime.KindSlice,
-		runtime.KindMap, runtime.KindChan, runtime.KindFunc:
-		return true, true
-	}
-	if td.HostNew != nil {
-		// a bound host type (hostType) is classed a struct whatever
-		// its shape; its zero's own kind tells a named slice or map
-		// (net.IP, net.HardwareAddr) that answers `== nil`. A struct
-		// binds a pointer zero, which is no evidence of nilability.
-		switch td.HostType().Kind() {
-		case reflect.Slice, reflect.Map, reflect.Chan, reflect.Func:
-			return true, true
-		}
-	}
-	// a declared type's spec still spells its shape — `type List []T`
-	// materializes with the declared kind, not the slice's, and the
-	// Kind switch above reports it non-nilable. Read the spec expr,
-	// unfolded under the decl's own file scope.
-	if td.Anon != nil {
-		n, _ := c.nilableTypExpr(c.unfoldScopedTypExpr(td.Anon, td.File, 4))
-		return n, true
 	}
 	return false, true
 }
@@ -2282,16 +2163,6 @@ func (c *compiler) selTypRef(e ast.Expr) (*runtime.ImportRef, string, bool) {
 		return nil, "", false
 	}
 	return ref, sel.Sel.Name, true
-}
-
-// selIsType reports whether the name a qualified expression picks out
-// of an imported package names a type: a bound typedef in the
-// package's globals, or a type declaration in its source index.
-// Functions, variables, constants and unresolved references report
-// false — `pkg.fn(x)` then keeps its meaning as a real call.
-func (c *compiler) selIsType(ref *runtime.ImportRef, name string) bool {
-	_, _, ok := c.selMember(ref, name)
-	return ok
 }
 
 // isTypeName reports whether name resolves to a type: a type parameter, a
