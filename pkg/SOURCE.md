@@ -16,6 +16,7 @@ repository has no module dependency on go-scan.
 | --- | --- | --- |
 | `pkg/locator/` | `locator/` (locator.go, locator_test.go) | `scanner.Overlay` (`map[string][]byte`) replaced by the local `Overlay` type defined in `locator.go`; that was the only go-scan symbol the package used. External dep on `golang.org/x/mod` kept. Local divergence: `FindPackageDirFrom` resolves imports by longest-prefix module claim (`resolveImport`) instead of upstream's replaces-first ordering — a replace can no longer shadow the main module's own subtree. |
 | `pkg/gentest/` | `scantest/` + `writer.go` | Design port, not a file copy: the `Run` action is engine-agnostic (`func(ctx) error`, no `scan.Scanner`); `Result` adds `Deleted`; an empty diff returns an empty non-nil `Result`; `FileWriter`/`MemoryFileWriter`/`WriteFile` keep the go-scan shape (`ctx`-keyed seam, `os.WriteFile` default). |
+| `pkg/modulewalk/` | `modulewalker.go` + `tools/find-orphans` (`discoverModules`) | Design port: `ModuleWalker`→`Walker`, `ScanPackageFromFilePathImports`→`Imports`/`ScanDir` (on `syntax.ParseImports`, not a truncated AST); repo-wide queries (`WalkRepo`, `FindImporters`, `ReverseDependencyMap`) ride `resolve.ScanRepo`, so nested go.mod trees report their own module path — go-scan assumed one module per root. `./...` expansion skips nested module roots like the go tool. `FindImportersAggressively` (`git grep` shortcut) not ported. |
 
 To follow upstream changes, diff `pkg/locator/` against `locator/` in
 go-scan at the commit above, then re-apply the `scanner.Overlay` →
