@@ -1486,6 +1486,72 @@ func Probe() string {
 	}
 }
 
+func TestSymlinkAllowedRoots(t *testing.T) {
+	// an in-root link must not point outside the roots: a later read
+	// would follow it past the policy. The target checks the way a
+	// reader resolves it — absolute verbatim, relative to the link dir.
+	root := t.TempDir()
+	outside := t.TempDir()
+	script := `package main
+
+import "os"
+
+func LinkInside() error {
+	if err := os.Mkdir("d", 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile("d/f.txt", []byte("x"), 0644); err != nil {
+		return err
+	}
+	return os.Symlink("f.txt", "d/lnk")
+}
+
+func LinkAbs(path string) error {
+	return os.Symlink(path, "abs")
+}
+
+func LinkRel() error {
+	return os.Symlink("../../../../..", "rel")
+}
+
+func ReadIt() string {
+	b, err := os.ReadFile("abs")
+	if err != nil {
+		return "v:" + err.Error()
+	}
+	return string(b)
+}
+`
+	fname := filepath.Join(root, "taskfile.go")
+	if err := os.WriteFile(fname, []byte(script), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e := minigo.NewEngine(root, minigo.WithAllowedRoots(root))
+	for _, tc := range []struct {
+		fn   string
+		args []runtime.Value
+	}{
+		{"LinkAbs", []runtime.Value{filepath.Join(outside, "secret.txt")}},
+		{"LinkRel", nil},
+	} {
+		if _, err := e.RunFile(context.Background(), fname, tc.fn, tc.args...); err == nil ||
+			!strings.Contains(err.Error(), "outside the allowed roots") {
+			t.Fatalf("%s: expected outside-root rejection, got %v", tc.fn, err)
+		}
+	}
+	// the in-root link still works and reads through
+	if _, err := e.RunFile(context.Background(), fname, "LinkInside"); err != nil {
+		t.Fatalf("LinkInside: %v", err)
+	}
+	t2, err := os.Readlink(filepath.Join(root, "d", "lnk"))
+	if err != nil {
+		t.Fatalf("Readlink: %v", err)
+	}
+	if diff := cmp.Diff("f.txt", t2); diff != "" {
+		t.Fatalf("link target (-want +got): %s", diff)
+	}
+}
+
 func TestHostStubPackage(t *testing.T) {
 	e := newEngine(t)
 	// the in-repo stub path resolves to intrinsics, never the stub bodies
