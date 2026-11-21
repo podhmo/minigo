@@ -292,7 +292,7 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 	// asserting to a non-empty interface names the missing method:
 	// "main.T is not io.Writer: missing method Write".
 	if td.Kind == runtime.KindInterface {
-		if miss := v.missingIfaceMethod(td, x); miss != "" {
+		if miss := v.ifaceFailReason(td, x); miss != "" {
 			panic(&runtime.Panic{Value: &runtime.GoValue{V: &runtime.TypeAssertionError{Msg: fmt.Sprintf("interface conversion: %s is not %s: missing method %s", typeNameOf(x), spelledTyp(td), miss)}}})
 		}
 	}
@@ -324,15 +324,25 @@ func (v *VM) typeAssert(f *frame, x, tdv, static runtime.Value, pos token.Pos) r
 	panic(&runtime.Panic{Value: &runtime.GoValue{V: &runtime.TypeAssertionError{Msg: fmt.Sprintf("interface conversion: %s is %s, not %s%s", staticName, got, want, suffix)}}})
 }
 
-// missingIfaceMethod names the first required method x lacks — Go's
-// "missing method Write" detail when an interface assertion fails on the
-// method set. Empty when the check can't name one (hooks missing, or the
-// failure came from something else).
-func (v *VM) missingIfaceMethod(td *runtime.TypeDef, x runtime.Value) string {
+// ifaceFailReason names the required method x fails on — Go's
+// "missing method Write" detail when an interface assertion fails on
+// the method set. The runtime itab comparison reports both an absent
+// method and a same-named method with a different signature as
+// "missing method M" (verified against gc: `func (T) M() int` does
+// not satisfy `I{ M() string }` and panics "missing method M"), so
+// this returns the first failing requirement in either category,
+// sorted for determinism. Empty when the check can't name one (hooks
+// missing, or the failure came from something else).
+func (v *VM) ifaceFailReason(td *runtime.TypeDef, x runtime.Value) string {
+	if x == nil || x == runtime.NIL || runtime.IfaceTaggedNil(x) != nil {
+		// no dynamic type — the generic "interface {} is nil, not T"
+		// panic stands; there is no missing method to name.
+		return ""
+	}
 	if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 {
 		return ""
 	}
-	if v.H.IfaceReqs == nil || v.H.MethodsOf == nil {
+	if v.H.IfaceReqs == nil {
 		return ""
 	}
 	reqs, err := v.H.IfaceReqs(td)
@@ -341,18 +351,64 @@ func (v *VM) missingIfaceMethod(td *runtime.TypeDef, x runtime.Value) string {
 	}
 	var have map[string]bool
 	var unsure bool
-	if v.H.MethodSetOf != nil {
-		have, unsure, err = v.H.MethodSetOf(x)
+	var dynFns map[string]*runtime.Function
+	if tn, ok := asTypedNil(x); ok {
+		// a typed nil asserts on its declared typedef's method set —
+		// the same typedef-level check typeMatchesTD runs.
+		if v.H.TypeMethods == nil {
+			return ""
+		}
+		if have, err = v.H.TypeMethods(tn.Typ); err != nil {
+			return ""
+		}
+		if v.H.TypeMethodFuncs != nil {
+			if dynFns, err = v.H.TypeMethodFuncs(tn.Typ); err != nil {
+				dynFns = nil
+			}
+		}
+	} else if v.H.MethodInfoOf != nil {
+		// one walk: names, unsure and signature-bearing funcs come from
+		// the same method set. A nil set is a legitimately empty one —
+		// a basic type's dynamic value has no declared methods — so
+		// every requirement is missing and names a method.
+		ms, err := v.H.MethodInfoOf(x)
+		if err != nil {
+			return ""
+		}
+		if ms != nil {
+			have, unsure, dynFns = ms.Names, ms.Unsure, ms.Funcs
+		}
 	} else {
-		have, err = v.H.MethodsOf(x)
-	}
-	if err != nil {
-		return ""
+		if v.H.MethodSetOf != nil {
+			have, unsure, err = v.H.MethodSetOf(x)
+		} else if v.H.MethodsOf != nil {
+			have, err = v.H.MethodsOf(x)
+		} else {
+			return "" // no method-set hook answered — leave the generic panic
+		}
+		if err != nil {
+			return ""
+		}
+		if v.H.MethodFuncsOf != nil {
+			dynFns, _ = v.H.MethodFuncsOf(x)
+		}
 	}
 	missing := make([]string, 0, len(reqs))
 	for m := range reqs {
 		if !have[m] && !unsure {
 			missing = append(missing, m)
+		}
+	}
+	if v.H.IfaceSigs != nil {
+		if reqFns, err := v.H.IfaceSigs(td); err == nil {
+			for m, reqFn := range reqFns {
+				if !have[m] && !unsure {
+					continue // already counted above
+				}
+				if dynFn, ok := dynFns[m]; ok && !v.memberSigEq(reqFn, dynFn) {
+					missing = append(missing, m)
+				}
+			}
 		}
 	}
 	sort.Strings(missing)
