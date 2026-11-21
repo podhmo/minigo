@@ -389,7 +389,7 @@ func InitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) 
 		c.file = d.File
 		fv := &runtime.Function{Pkg: pkg, File: d.File, Decl: d.Func, Name: "init"}
 		c.emit(bytecode.OpConst, c.constIdx(fv), 0, d.Pos)
-		c.emit(bytecode.OpCall, 0, 0, d.Pos)
+		c.emit3(bytecode.OpCall, 0, 0, c.callSiteArgs(nil, d.Pos), d.Pos)
 		c.emit(bytecode.OpPop, 0, 0, d.Pos)
 	}
 	c.emit(bytecode.OpReturn, 0, 0, 0)

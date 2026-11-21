@@ -1,5 +1,5 @@
 chunk Special (params=0 locals=0 results=0)
-  0000  OpSpecialCall k0 k1
+  0000  OpSpecialCall csite0
   0001  OpPop
   0002  OpReturn
 consts:

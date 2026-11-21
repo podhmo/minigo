@@ -4,14 +4,13 @@ chunk Variadic (params=1 locals=1 results=1 vararg)
   0002  OpCoerce slot0
   0003  OpGlobal k1 site0
   0004  OpLocal slot0
-  0005  OpLenCallFold ->8
-  0006  OpLocalTyp slot0
-  0007  OpCall 1
-  0008  OpGlobal k2 site1
-  0009  OpLocalType
-  0010  OpCoerceTop
+  0005  OpLenCallFold ->7
+  0006  OpCall 1 csite0
+  0007  OpGlobal k2 site1
+  0008  OpLocalType
+  0009  OpCoerceTop
+  0010  OpReturn 1
   0011  OpReturn 1
-  0012  OpReturn 1
 consts:
   k0: <*runtime.TypeDef>
   k1: "len" (string)

@@ -389,7 +389,50 @@ type CallSite struct {
 	Depth int
 	Key   bool
 	After int
+	// Args carries a call site's per-argument static-typedef recipes —
+	// what argStatics used to emit as operand ops (P4-4a). nil for a
+	// pure deferred-fact site.
+	Args []ArgHint
+	// Sym and Quote index [Chunk.Consts] for a special-form call site:
+	// the *runtime.SymbolID and the *runtime.QuotedCall. -1 when the
+	// site is not a special form.
+	Sym   int
+	Quote int
 	// Cache stores the resolution result, written once and read by
 	// every goroutine running the chunk.
 	Cache atomic.Value
+}
+
+// ArgHintKind is one static-typedef recipe's source — the compile-time
+// answer an argStatics push used to evaluate per call.
+type ArgHintKind byte
+
+const (
+	// HintNil: no static type (the old OpNil push).
+	HintNil ArgHintKind = iota
+	// HintTyp: a typedef constant — A indexes Chunk.Consts (*TypeDef).
+	HintTyp
+	// HintLocalTyp: the caller local slot's declared typedef — A is the
+	// slot (the old OpLocalTyp).
+	HintLocalTyp
+	// HintUpvalTyp: the caller upval cell's stamp — A is the index (the
+	// old OpUpvalTyp).
+	HintUpvalTyp
+	// HintGlobalTyp: the package global cell's stamp — A indexes
+	// Chunk.Consts for the name (the old OpGlobalTyp).
+	HintGlobalTyp
+	// HintDeferredTyp: a deferred type-expression site — A indexes
+	// Chunk.CallSites (the old OpDeferredTyp/typeExpr run).
+	HintDeferredTyp
+	// HintDeferredValueTyp: a deferred value-typedef site — A indexes
+	// Chunk.CallSites (the old OpDeferredValueTyp).
+	HintDeferredValueTyp
+)
+
+// ArgHint is one argument's static-typedef recipe at a call site. The VM
+// resolves it against the *calling* frame — locals, upvals and globals
+// read the caller's cells, deferred sites resolve and cache once.
+type ArgHint struct {
+	Kind ArgHintKind
+	A    int32
 }

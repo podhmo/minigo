@@ -2215,6 +2215,55 @@ func (c *compiler) staticTyp(e ast.Expr) {
 	}
 }
 
+// argHint returns one argument's static-typedef recipe — the CallSite
+// form of staticTyp (P4-4a): the VM resolves it against the calling
+// frame when generic inference actually asks, instead of evaluating
+// operand ops per call.
+func (c *compiler) argHint(e ast.Expr) bytecode.ArgHint {
+	switch x := e.(type) {
+	case *ast.ParenExpr:
+		return c.argHint(x.X)
+	case *ast.CallExpr:
+		switch {
+		case c.conversionCall(x):
+			// T(v) — the static type is the conversion's target,
+			// spelled as a deferred type site (covers every typeExpr
+			// shape, not just single-const ones).
+			return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(x.Fun, e.Pos()))}
+		default:
+			if lit, ok := x.Fun.(*ast.FuncLit); ok {
+				rs := lit.Type.Results
+				if rs != nil && len(rs.List) == 1 && len(rs.List[0].Names) <= 1 {
+					return bytecode.ArgHint{Kind: bytecode.HintDeferredTyp, A: int32(c.exprSite(rs.List[0].Type, e.Pos()))}
+				}
+			}
+		}
+		return bytecode.ArgHint{Kind: bytecode.HintNil}
+	}
+	id, ok := e.(*ast.Ident)
+	if !ok {
+		return bytecode.ArgHint{Kind: bytecode.HintNil}
+	}
+	isUp, idx, found := c.fs.find(id.Name)
+	switch {
+	case !found:
+		if _, bound := c.binds[id.Name]; bound {
+			return bytecode.ArgHint{Kind: bytecode.HintNil}
+		}
+		return bytecode.ArgHint{Kind: bytecode.HintGlobalTyp, A: int32(c.nameIdx(id.Name))}
+	default:
+		if b := c.fs.lookupBinding(id.Name); b != nil && b.declDefer != nil && b.declTyp == nil {
+			// a deferred bind site stamps no cell typedef — resolve
+			// the marker expr at run time instead of answering NIL.
+			return bytecode.ArgHint{Kind: bytecode.HintDeferredValueTyp, A: int32(c.exprSite(b.declDefer, id.Pos()))}
+		}
+		if !isUp {
+			return bytecode.ArgHint{Kind: bytecode.HintLocalTyp, A: int32(idx)}
+		}
+		return bytecode.ArgHint{Kind: bytecode.HintUpvalTyp, A: int32(idx)}
+	}
+}
+
 // selTypRef resolves a `pkg.Name` expression to its import reference
 // and member name — ok=false when e isn't a package-qualified
 // selector (a nested selector or a non-package qualifier can't name a

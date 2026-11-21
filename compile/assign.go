@@ -134,10 +134,8 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		for _, pat := range pats {
 			c.emit(bytecode.OpConst, c.constIdx(pat), 0, vs.Pos())
 		}
-		for range len(pats) + 1 {
-			c.emit(bytecode.OpNil, 0, 0, vs.Pos()) // no static arg types
-		}
-		c.emit(bytecode.OpCall, len(pats)+1, 0, vs.Pos())
+		hints := make([]bytecode.ArgHint, len(pats)+1) // no static arg types
+		c.emit3(bytecode.OpCall, len(pats)+1, 0, c.callSiteArgs(hints, vs.Pos()), vs.Pos())
 		bind(vs.Names[0])
 		coerceVar(vs.Names[0])
 	case len(vals) == 0:

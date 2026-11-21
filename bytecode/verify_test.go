@@ -169,11 +169,10 @@ func TestVerifyKindsReject(t *testing.T) {
 		{
 			name: "call on a typedef tier",
 			code: []Instruction{
-				// OpCall A=1 wants [callable, arg, staticTd] —
-				// a TypeDef where the callee should be conflicts.
+				// OpCall A=1 wants [callable, arg] — a TypeDef
+				// where the callee should be conflicts.
 				Instruction{Op: OpDeferredTyp},
 				Instruction{Op: OpLocal},
-				Instruction{Op: OpDeferredTyp},
 				Instruction{Op: OpCall, A: 1},
 			},
 			want: "holds type, want callable",
@@ -210,12 +209,11 @@ func TestVerifyKindsReject(t *testing.T) {
 }
 
 func TestVerifyKindsPositive(t *testing.T) {
-	// a call with its full static typedef tier verifies:
-	// [callable, arg, staticTd] -> [result]
+	// a call verifies: [callable, arg] -> [result] — the arg
+	// statics moved to the call site's ArgHint record (P4-4a).
 	c := chunk(
 		Instruction{Op: OpMakeClosure},
 		Instruction{Op: OpLocal},
-		Instruction{Op: OpDeferredTyp},
 		Instruction{Op: OpCall, A: 1},
 		Instruction{Op: OpReturn, A: 1},
 	)

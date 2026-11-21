@@ -81,6 +81,9 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 	for name, i := range c.fs.upmap {
 		q.Upvals[name] = i
 	}
-	c.emit3(bytecode.OpSpecialCall, c.constIdx(sym), c.constIdx(q), 0, x.Pos())
+	c.ch.CallSites = append(c.ch.CallSites, &bytecode.CallSite{
+		Pos: x.Pos(), Sym: c.constIdx(sym), Quote: c.constIdx(q),
+	})
+	c.emit3(bytecode.OpSpecialCall, 0, 0, len(c.ch.CallSites)-1, x.Pos())
 	return true
 }

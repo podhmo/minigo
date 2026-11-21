@@ -23,6 +23,7 @@ import (
 	"go/token"
 	"reflect"
 
+	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -217,7 +218,14 @@ func (v *VM) callEntered(callee runtime.Value, args []runtime.Value, statics []*
 // spreadTd carries the element typedef a trailing `xs...` slice supplied
 // at the call site; nil when the call had no spread.
 func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
-	return v.callWindow(nil, callee, args, -1, statics, spreadTd)
+	return v.callWindow(nil, callee, args, -1, nil, statics, spreadTd)
+}
+
+// callHints is call for the OpCall site path (P4-4a): the per-arg
+// static-typedef recipes ride along unresolved — generic inference
+// asks for them lazily against the calling frame.
+func (v *VM) callHints(f *frame, callee runtime.Value, args []runtime.Value, hints []bytecode.ArgHint, spreadTd *runtime.TypeDef) (runtime.Value, error) {
+	return v.callWindow(f, callee, args, -1, hints, nil, spreadTd)
 }
 
 // callInPlace is call for an OpCall whose args stay on the operand
@@ -226,13 +234,13 @@ func (v *VM) call(callee runtime.Value, args []runtime.Value, statics []*runtime
 // calling frame — its argbuf backs any materialized args slice. The
 // dispatch paths that need a real slice (linkname receiver prepend,
 // builtin, conversion, host func) materialize it via inPlaceArgs.
-func (v *VM) callInPlace(f *frame, callee runtime.Value, argc int, statics []*runtime.TypeDef) (runtime.Value, error) {
-	return v.callWindow(f, callee, nil, argc, statics, nil)
+func (v *VM) callInPlace(f *frame, callee runtime.Value, argc int, hints []bytecode.ArgHint) (runtime.Value, error) {
+	return v.callWindow(f, callee, nil, argc, hints, nil, nil)
 }
 
 // inPlaceArgs materializes argc operands off the arena tail — the
 // in-place call's args — when a dispatch arm needs a slice. The caller
-// frame's argbuf backs it (same reuse popArgsCall had); builtins that
+// frame's argbuf backs it; builtins that
 // keep their args take a private copy in callBuiltin like before.
 func (v *VM) inPlaceArgs(f *frame, argc int, args []runtime.Value) []runtime.Value {
 	if argc < 0 || args != nil {
@@ -255,7 +263,57 @@ func (v *VM) inPlaceArgs(f *frame, argc int, args []runtime.Value) []runtime.Val
 	return buf
 }
 
-func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, winArgs int, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
+// resolveArgHints turns a call site's per-arg recipes into the
+// static-typedef tier generic inference consumes — the lazy form of
+// the operand ops argStatics used to emit (P4-4a). cf is the CALLING
+// frame: locals, upvals and package globals read its cells.
+func (v *VM) resolveArgHints(cf *frame, hints []bytecode.ArgHint) []*runtime.TypeDef {
+	consts := cf.ch.Consts
+	statics := make([]*runtime.TypeDef, len(hints))
+	for i, h := range hints {
+		switch h.Kind {
+		case bytecode.HintTyp:
+			if td, ok := consts[h.A].(*runtime.TypeDef); ok {
+				statics[i] = td
+			}
+		case bytecode.HintLocalTyp:
+			statics[i] = cf.localTyp(int(h.A))
+		case bytecode.HintUpvalTyp:
+			if h.A >= 0 && int(h.A) < len(cf.upvals) {
+				statics[i] = cf.upvals[h.A].Typ
+			}
+		case bytecode.HintGlobalTyp:
+			if old, ok := cf.fn.Pkg.Globals.Get(consts[h.A].(string)); ok {
+				if c, isCell := old.(*runtime.Cell); isCell {
+					statics[i] = c.Typ
+				}
+			}
+		case bytecode.HintDeferredTyp:
+			site := cf.ch.CallSites[h.A]
+			td, err := v.deferredType(cf, site)
+			if err != nil {
+				panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
+			}
+			// the operand path ran OpLocalType after every compiled
+			// type expression — a resolved local decl needs the same
+			// outer-args wrap or its identity loses the instantiation.
+			if td != nil {
+				td = v.outerTypedef(cf, td)
+			}
+			statics[i] = td
+		case bytecode.HintDeferredValueTyp:
+			site := cf.ch.CallSites[h.A]
+			td, _, err := v.deferredValueTyp(cf, site)
+			if err != nil {
+				panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
+			}
+			statics[i] = td
+		}
+	}
+	return statics
+}
+
+func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, winArgs int, hints []bytecode.ArgHint, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef) (runtime.Value, error) {
 	if p := v.proc.Load(); p != nil {
 		select {
 		case <-p.Done():
@@ -322,7 +380,7 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 		}
 		break
 	}
-	fr, err := v.prepFrameSeen(callee, args, winArgs, statics, spreadTd, seen)
+	fr, err := v.prepFrameSeen(f, callee, args, winArgs, hints, statics, spreadTd, seen)
 	if err != nil {
 		return nil, err
 	}
@@ -428,7 +486,7 @@ func relinkCallee(callee, tv runtime.Value, args []runtime.Value) (runtime.Value
 // prepFrameSeen is prepFrame carrying the linkname resolutions already
 // followed for this call — a pull decl whose pushed symbol resolves to
 // itself (or a longer cycle) would otherwise re-dispatch forever.
-func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, winArgs int, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, seen map[*runtime.Function]bool) (*frame, error) {
+func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value, winArgs int, hints []bytecode.ArgHint, statics []*runtime.TypeDef, spreadTd *runtime.TypeDef, seen map[*runtime.Function]bool) (*frame, error) {
 	// an in-place call reads its args off the arena tail — the view is
 	// aliased, never written, so inference and the BoundMethod arm see
 	// them without a copy.
@@ -492,7 +550,7 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, winArgs i
 					seen = map[*runtime.Function]bool{}
 				}
 				seen[fn] = true
-				return v.prepFrameSeen(tv, args, winArgs, statics, spreadTd, seen)
+				return v.prepFrameSeen(cf, tv, args, winArgs, hints, statics, spreadTd, seen)
 			}
 		}
 		// An unresolved bodiless decl compiles to a zero-return shim,
@@ -518,6 +576,12 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, winArgs i
 	// an instantiated generic type arrives partly bound — the receiver's
 	// own type binds stay, only the method's own type params infer.
 	if fn != nil && len(fn.TParams) > 0 && hasUnbound(fn.TParams, fn.Binds) {
+		if statics == nil && len(hints) > 0 {
+			// P4-4a: resolve the arg-hint recipes only now that
+			// inference actually asks — against the CALLING frame's
+			// locals, upvals and globals.
+			statics = v.resolveArgHints(cf, hints)
+		}
 		inferred, err := v.inferCached(fn, expandSpread(args), statics, spreadTd)
 		if err != nil {
 			return nil, err
@@ -722,42 +786,40 @@ func (v *VM) popArgs(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Val
 	return v.popArgsBuf(f, argc, mode, pos, make([]runtime.Value, argc), make([]*runtime.TypeDef, argc))
 }
 
-// popArgsCall is popArgs reusing the frame's arg scratch — valid only on
-// the synchronous OpCall path, where the popped slices are dead by the
-// time the frame runs again. OpDefer and OpGo retain theirs past the
-// call boundary and must use popArgs.
-func (v *VM) popArgsCall(f *frame, argc int, mode int, pos token.Pos) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
-	argbuf, statbuf := f.argbuf, f.statbuf
+// popArgsCallSite is the OpCall site path0027s popper (P4-4a):
+// no static-typedef operands exist — the site's ArgHint record
+// supplies them lazily — and the returned hint slice drops the
+// spread source's static like popArgsBuf dropped its statics tail.
+func (v *VM) popArgsCallSite(f *frame, argc int, mode int, pos token.Pos, site *bytecode.CallSite) ([]runtime.Value, []bytecode.ArgHint, *runtime.TypeDef) {
+	argbuf := f.argbuf
 	if cap(argbuf) < argc {
 		argbuf = make([]runtime.Value, argc)
 	} else {
-		// nil only the delta — len(argbuf) is the previous call's
-		// count, so [argc, len) is exactly where stale args sit.
 		stale := len(argbuf)
 		argbuf = argbuf[:argc]
 		if argc < stale {
 			clear(f.argbuf[argc:stale])
 		}
 	}
-	if cap(statbuf) < argc {
-		statbuf = make([]*runtime.TypeDef, argc)
-	} else {
-		statbuf = statbuf[:argc]
-		for i := range statbuf {
-			statbuf[i] = nil
-		}
+	args, _, spreadTd := v.popArgsBuf(f, argc, mode, pos, argbuf, nil)
+	f.argbuf = argbuf
+	hints := site.Args
+	if mode == 1 && len(hints) >= argc {
+		hints = hints[:argc-1]
 	}
-	args, statics, spreadTd := v.popArgsBuf(f, argc, mode, pos, argbuf, statbuf)
-	f.argbuf, f.statbuf = argbuf, statbuf
-	return args, statics, spreadTd
+	return args, hints, spreadTd
 }
 
 // popArgsBuf pops into caller-provided buffers (sized at least argc):
-// the spread modes may still reassign args to a longer or foreign slice.
+// the spread modes may still reassign args to a longer or foreign
+// slice. A nil statics skips the static-typedef tier pop — the OpCall
+// site path carries those as ArgHint recipes instead.
 func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runtime.Value, statics []*runtime.TypeDef) ([]runtime.Value, []*runtime.TypeDef, *runtime.TypeDef) {
-	for i := argc - 1; i >= 0; i-- {
-		if td, ok := f.pop().(*runtime.TypeDef); ok {
-			statics[i] = td
+	if statics != nil {
+		for i := argc - 1; i >= 0; i-- {
+			if td, ok := f.pop().(*runtime.TypeDef); ok {
+				statics[i] = td
+			}
 		}
 	}
 	for i := argc - 1; i >= 0; i-- {
@@ -785,7 +847,9 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 		// the last static belongs to the spread source — the slice type,
 		// not the element — so positional arg slots stay aligned only up
 		// to it.
-		statics = statics[:argc-1]
+		if statics != nil {
+			statics = statics[:argc-1]
+		}
 		last := args[argc-1]
 		var declared *runtime.TypeDef
 		if dv, ok := runtime.Deref(last); ok {

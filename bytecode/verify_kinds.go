@@ -246,18 +246,15 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		}
 		return one(push(pop(1), KindAny))
 	case OpCall:
-		// [callee, arg1..argA, static1..staticA] -> result: the A
-		// topmost slots are the static typedef tier.
-		exp := make([]SlotKind, 0, 2*int(ins.A)+1)
+		// [callee, arg1..argA] -> result: the static-typedef tier
+		// moved to the call site's ArgHint record (P4-4a).
+		exp := make([]SlotKind, 0, int(ins.A)+1)
 		exp = append(exp, KindCallable)
 		for i := 0; i < int(ins.A); i++ {
 			exp = append(exp, KindAny)
 		}
-		for i := 0; i < int(ins.A); i++ {
-			exp = append(exp, KindType)
-		}
 		expect(exp...)
-		return one(push(pop(2*int(ins.A)+1), KindAny))
+		return one(push(pop(int(ins.A)+1), KindAny))
 	case OpDefer, OpGo:
 		return one(pop(2*int(ins.A) + 1))
 	case OpPack:
