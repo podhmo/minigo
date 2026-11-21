@@ -208,7 +208,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 			// `(*T).M` — a pointer method expression sees the full
 			// method set (value and pointer receivers alike).
 			if et := v.elemTypedef(f, b); et != nil {
-				if m, ok := et.Methods[name]; ok {
+				if m, ok := et.Methods[name]; ok && selVisible(selPkg(f), et.Pkg, name) {
 					if m.PtrRecv {
 						return m // receiver param *T binds the Cell argument
 					}
@@ -235,7 +235,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 			}
 			f.trap("type %s has no method %s", tdName(b), name)
 		}
-		if m, ok := b.Methods[name]; ok {
+		if m, ok := b.Methods[name]; ok && selVisible(selPkg(f), b.Pkg, name) {
 			if m.PtrRecv {
 				f.trap("invalid method expression %s.%s (needs pointer receiver)", tdName(b), name)
 			}
@@ -445,14 +445,17 @@ func (v *VM) promotedViaMethodSet(f *frame, s *runtime.Struct, name string, fiel
 	if fieldFound {
 		fieldDepth = len(fieldPath) - 1
 	}
-	if ad, contested := ms.Ambiguous[name]; contested {
+	// an unexported selector names (call package, name): the set's
+	// pkg-qualified keys — reqKey's — answer it (M4-2b).
+	key := selKey(selPkg(f), name)
+	if ad, contested := selGet(ms.Ambiguous, key); contested {
 		if fieldDepth < 0 || ad <= fieldDepth {
 			f.trap("ambiguous selector %s", name)
 		}
 		return nil, nil, false // the shallower declared field wins
 	}
-	pm := ms.Members[name]
-	if pm == nil {
+	pm, found := selGet(ms.Members, key)
+	if !found {
 		return nil, nil, false
 	}
 	if fieldDepth >= 0 {
@@ -482,8 +485,8 @@ func (v *VM) promotedViaMethodSet(f *frame, s *runtime.Struct, name string, fiel
 		res.via = 2
 		return v.selectMember(f, runtime.Unwrap(slot), name), res, true
 	}
-	fn := ms.Funcs[name]
-	if fn == nil {
+	fn, ok := selGet(ms.Funcs, key)
+	if !ok {
 		return nil, nil, false
 	}
 	res.m = fn
@@ -784,14 +787,16 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 	// an anonymous *Declared typedef exposes the pointee's method set —
 	// `(*T)(p)` keeps T's methods callable on the conversion result.
 	td := n.Typ
-	for td != nil && td.Kind == runtime.KindPointer && td.Spec == nil && td.Methods[name] == nil {
+	sp := selPkg(f)
+	for td != nil && td.Kind == runtime.KindPointer && td.Spec == nil &&
+		(td.Methods[name] == nil || !selVisible(sp, td.Pkg, name)) {
 		et, err := v.H.ElemOf(td)
 		if err != nil || et == nil {
 			break
 		}
 		td = et
 	}
-	if m, ok := td.Methods[name]; ok {
+	if m, ok := td.Methods[name]; ok && selVisible(sp, td.Pkg, name) {
 		if err := m.EnsureCompiled(); err != nil {
 			f.trap("%s", err)
 		}
@@ -874,7 +879,7 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 	}
 	if s, isStruct := sv.(*runtime.Struct); isStruct {
 		for i, fn := range s.Def.Fields {
-			if fn == name {
+			if fn == name && selVisible(sp, s.Def.Pkg, fn) {
 				return s.Fields[i]
 			}
 		}
@@ -936,7 +941,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 	switch b := base.(type) {
 	case *runtime.Struct:
 		for i, fn := range b.Def.Fields {
-			if fn == name {
+			if fn == name && selVisible(selPkg(f), b.Def.Pkg, fn) {
 				// the field's declared type constrains the write —
 				// `s.f = nil` on a *T field stores a typed nil.
 				var ft *runtime.TypeDef
@@ -1372,6 +1377,12 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 	if v.H.ResolveType == nil || v.H.IfaceReqs == nil {
 		return nil, false
 	}
+	// an unexported selector names (call package, name): members of
+	// the same name declared in another package do not answer, and
+	// requirement/method sets are probed by the pkg-qualified key
+	// reqKey writes (M4-2b).
+	sp := selPkg(f)
+	key := selKey(sp, name)
 	var hostHits []hostHit
 	level := []*runtime.Struct{s}
 	// nilDepth/nilPaths track resolutions that exist only through a nil
@@ -1420,7 +1431,7 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 					// same depth as fields and declared methods, and
 					// dispatches dynamically on the concrete value.
 					if idx < len(st.Fields) {
-						if reqs, err := v.H.IfaceReqs(embTd); err == nil && reqs[name] {
+						if reqs, err := v.H.IfaceReqs(embTd); err == nil && selHas(reqs, key) {
 							ifaceCands = append(ifaceCands, st.Fields[idx])
 						}
 					}
@@ -1469,7 +1480,7 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 				if raw.Kind == runtime.KindAlias {
 					mtd = embTd
 				}
-				if m, ok := mtd.Methods[name]; ok && idx < len(st.Fields) {
+				if m, ok := mtd.Methods[name]; ok && idx < len(st.Fields) && selVisible(sp, mtd.Pkg, name) {
 					methCands = append(methCands, methCand{m, st, idx})
 				}
 				if len(embTd.Fields) == 0 {
@@ -1480,7 +1491,7 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 				j := -1
 				if scanFields {
 					for fi, fn := range embTd.Fields {
-						if fn == name {
+						if fn == name && selVisible(sp, embTd.Pkg, fn) {
 							j = fi
 							break
 						}
@@ -1500,7 +1511,7 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 						// is still open: a decided field path's own
 						// nil links panic in fieldAtPath instead.
 						if scanFields {
-							if d, c := v.embedTypeDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+							if d, c := v.embedTypeDepth(embTd, name, sp, map[*runtime.TypeDef]bool{}); d > 0 {
 								abs := depth + 1 + d
 								if nilDepth == 0 || abs < nilDepth {
 									nilDepth, nilPaths = abs, c
@@ -1509,7 +1520,7 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 								}
 							}
 						}
-						if d, c := v.embedTypeMethodDepth(embTd, name, map[*runtime.TypeDef]bool{}); d > 0 {
+						if d, c := v.embedTypeMethodDepth(embTd, name, sp, map[*runtime.TypeDef]bool{}); d > 0 {
 							abs := depth + 1 + d
 							if nilDepth == 0 || abs < nilDepth {
 								nilDepth, nilPaths = abs, c
@@ -1675,7 +1686,7 @@ type hostHit struct {
 // embedded fields, the shallowest relative depth at which it resolves
 // (1 = a direct field of a type embedded in td), and how many distinct
 // paths reach it at that depth. Depth 0 means unreachable.
-func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, selPkg *runtime.Package, seen map[*runtime.TypeDef]bool) (int, int) {
 	if td == nil || seen[td] || v.H.ResolveType == nil {
 		return 0, 0
 	}
@@ -1709,13 +1720,13 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 			}
 		} else {
 			for _, fn := range et.Fields {
-				if fn == name {
+				if fn == name && selVisible(selPkg, et.Pkg, fn) {
 					d = 1
 					break
 				}
 			}
 			if d == 0 {
-				if sd, sc := v.embedTypeDepth(et, name, seen); sd > 0 {
+				if sd, sc := v.embedTypeDepth(et, name, selPkg, seen); sd > 0 {
 					d, c = 1+sd, sc
 				}
 			}
@@ -1740,10 +1751,11 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 // type-level walk — reaching its receiver dereferences the nil, so the
 // hit is never bindable: it counts for depth and ambiguity and panics
 // on use. Depth 0 means unreachable.
-func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) (int, int) {
+func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, selPkg *runtime.Package, seen map[*runtime.TypeDef]bool) (int, int) {
 	if td == nil || seen[td] || v.H.ResolveType == nil || v.H.IfaceReqs == nil {
 		return 0, 0
 	}
+	key := selKey(selPkg, name)
 	seen[td] = true
 	defer delete(seen, td)
 	best, cnt := 0, 0
@@ -1769,7 +1781,7 @@ func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*ru
 		case et.Kind == runtime.KindInterface:
 			// an embedded interface promises name through the
 			// stored value — it exists at this depth.
-			if reqs, err := v.H.IfaceReqs(et); err == nil && reqs[name] {
+			if reqs, err := v.H.IfaceReqs(et); err == nil && selHas(reqs, key) {
 				d = 1
 			}
 		case et.HostNew != nil:
@@ -1784,12 +1796,12 @@ func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*ru
 			if raw.Kind == runtime.KindAlias {
 				mtd = et
 			}
-			if _, ok := mtd.Methods[name]; ok {
+			if _, ok := mtd.Methods[name]; ok && selVisible(selPkg, mtd.Pkg, name) {
 				d = 1
 			}
 		}
 		if d == 0 {
-			if sd, sc := v.embedTypeMethodDepth(et, name, seen); sd > 0 {
+			if sd, sc := v.embedTypeMethodDepth(et, name, selPkg, seen); sd > 0 {
 				d, c = 1+sd, sc
 			}
 		}
@@ -2771,7 +2783,7 @@ func (v *VM) setLitField(f *frame, s *runtime.Struct, def *runtime.TypeDef, fts 
 		if fn == "_" {
 			continue // Go reports `_: v` as "unknown field _"
 		}
-		if fn == name {
+		if fn == name && selVisible(selPkg(f), def.Pkg, fn) {
 			var ft *runtime.TypeDef
 			if fi < len(fts) {
 				ft = fts[fi]

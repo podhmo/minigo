@@ -3666,3 +3666,150 @@ func TestScriptFSIntoHost(t *testing.T) {
 		t.Errorf("script fs into host (-want +got):\n%s", diff)
 	}
 }
+
+// M4-2b: an unexported interface method belongs to its declaring
+// package — a.T's m() satisfies a.I but must never satisfy b.I.
+func TestIfaceUnexportedMethodPkg(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "go.mod"), "module example.com/m\n\ngo 1.26\n")
+	write(filepath.Join(root, "a", "a.go"), `package a
+
+type I interface{ m() }
+
+type T struct{}
+
+func (T) m() {}
+
+func Use(x I) { x.m() }
+
+func Do() { Use(T{}) }
+`)
+	write(filepath.Join(root, "b", "b.go"), `package b
+
+type I interface{ m() }
+
+func Use(x I) {}
+`)
+	write(filepath.Join(root, "a", "sigs.go"), `package a
+
+type JI = interface{ m() int }
+type JS = interface{ m() string }
+
+func (T) F(x interface{ m() int }) { x.m() }
+`)
+	write(filepath.Join(root, "shadow", "main.go"), `package main
+
+import "example.com/m/a"
+
+type I = interface{ m() }
+
+func Use(x I) {}
+
+// a field m declared in main does NOT shadow the promoted a.m:
+// S still satisfies a.I.
+type S struct {
+	a.T
+	m int
+}
+
+// a method m declared in main coexists with the promoted a.m:
+// S2 satisfies both main's I and a's I.
+type S2 struct{ a.T }
+
+func (S2) m() {}
+
+func main() {
+	a.Use(S{})
+	a.Use(S2{})
+	Use(S2{})
+}
+`)
+	write(filepath.Join(root, "badshadow", "main.go"), `package main
+
+type I = interface{ m() }
+
+func Use(x I) {}
+
+// a field m declared in main DOES shadow a same-package promoted m:
+// S4 lacks the method and fails main's I.
+type T4 struct{}
+
+func (T4) m() {}
+
+type S4 struct {
+	T4
+	m int
+}
+
+func main() { Use(S4{}) }
+`)
+	write(filepath.Join(root, "sig", "main.go"), `package main
+
+import "example.com/m/a"
+
+func main() {
+	var x any = a.T{}
+	if _, ok := x.(interface{ F(a.JI) }); !ok {
+		panic("same signature should match")
+	}
+	if _, ok := x.(interface{ F(a.JS) }); ok {
+		panic("different unexported signatures must not match")
+	}
+}
+`)
+	write(filepath.Join(root, "local", "main.go"), `package main
+
+import "example.com/m/a"
+
+func main() {
+	type S struct{ a.I }
+	s := S{I: a.T{}}
+	s.m()
+}
+`)
+	write(filepath.Join(root, "ok", "main.go"), `package main
+
+import "example.com/m/a"
+
+func main() { a.Do() }
+`)
+	write(filepath.Join(root, "bad", "main.go"), `package main
+
+import (
+	"example.com/m/a"
+	"example.com/m/b"
+)
+
+func main() { b.Use(a.T{}) }
+`)
+	e := minigo.NewEngine(root)
+	if _, err := e.Run(context.Background(), filepath.Join(root, "ok"), "main"); err != nil {
+		t.Fatalf("same-package unexported method must satisfy: %v", err)
+	}
+	_, err := e.Run(context.Background(), filepath.Join(root, "bad"), "main")
+	if err == nil || !strings.Contains(err.Error(), "cannot use a.T as I") {
+		t.Fatalf("cross-package unexported method must not satisfy, got %v", err)
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "shadow"), "main"); err != nil {
+		t.Fatalf("cross-package shadowing must not drop the promoted method: %v", err)
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "badshadow"), "main"); err == nil {
+		t.Fatalf("a same-package declared field must shadow the promoted method")
+	}
+	if _, err := e.Run(context.Background(), filepath.Join(root, "sig"), "main"); err != nil {
+		t.Fatalf("signature comparison under qualified requirement keys: %v", err)
+	}
+	_, err = e.Run(context.Background(), filepath.Join(root, "local"), "main")
+	if err == nil {
+		t.Fatalf("main cannot select a's unexported m (gc: undefined) — must error")
+	}
+}

@@ -5,6 +5,8 @@ package vm
 // the per-value part on each hit.
 
 import (
+	"go/ast"
+
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -123,12 +125,16 @@ func (v *VM) applySelectSlot(f *frame, s *runtime.Struct, name string, recv runt
 // from a value-level walk no cache can replay.
 func (v *VM) structMemberRes(f *frame, s *runtime.Struct, name string, recv runtime.Value) (runtime.Value, *selRes) {
 	def := s.Def
+	// an unexported selector names (its package, name): a member of
+	// the same name declared in another package is a different
+	// identifier and does not answer (M4-2b).
+	sp := selPkg(f)
 	for i, fn := range def.Fields {
-		if fn == name {
+		if fn == name && selVisible(sp, def.Pkg, fn) {
 			return s.Fields[i], &selRes{kind: selField, idx: i}
 		}
 	}
-	if m, ok := def.Methods[name]; ok {
+	if m, ok := def.Methods[name]; ok && selVisible(sp, def.Pkg, name) {
 		if err := m.EnsureCompiled(); err != nil {
 			f.trap("%s", err)
 		}
@@ -150,7 +156,11 @@ func (v *VM) structMemberRes(f *frame, s *runtime.Struct, name string, recv runt
 	// answers the field side first when the hook can: a unique field
 	// path then only competes against non-field members at a
 	// shallower-or-equal depth — the bounded member search owns those.
-	if v.H.FieldPath != nil && len(s.Def.LocalTypes) == 0 {
+	// the declaration path has no package notion — skip it for a
+	// cross-package unexported select rather than answer with an
+	// invisible field.
+	pkgOK := ast.IsExported(name) || sp == nil || def.Pkg == nil || sp == def.Pkg || sp.Path == def.Pkg.Path
+	if pkgOK && v.H.FieldPath != nil && len(s.Def.LocalTypes) == 0 {
 		if idx, found, decided := v.H.FieldPath(s.Def, name); decided {
 			// the method set answers the non-field members — methods,
 			// interface-dispatched and host members all locate their

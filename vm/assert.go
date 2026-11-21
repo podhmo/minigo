@@ -995,7 +995,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 // methods added in Go 1.27. `what` names the container for the trap.
 func (v *VM) typedMember(f *frame, td *runtime.TypeDef, name string, recv runtime.Value, what string) runtime.Value {
 	if td != nil {
-		if m, ok := td.Methods[name]; ok {
+		if m, ok := td.Methods[name]; ok && selVisible(selPkg(f), td.Pkg, name) {
 			if err := m.EnsureCompiled(); err != nil {
 				f.trap("%s", err)
 			}
@@ -1045,7 +1045,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 				panic(runtime.NilDerefPanic())
 			}
 		}
-		if m, ok := td.Methods[name]; ok {
+		if m, ok := td.Methods[name]; ok && selVisible(selPkg(f), td.Pkg, name) {
 			// A value receiver dereferences a peeled pointer chain at
 			// dispatch — panic on nil like Go. A nil carrying a nilable
 			// typedef (declared pointer/slice/map/chan/func values can
