@@ -210,8 +210,23 @@ func recordHostEmbed(record func(string, int, promMember), d int, it promEmbed) 
 			if !f.IsExported() {
 				continue
 			}
-			v := fv.FieldByIndex(f.Index)
-			if !v.CanInterface() {
+			// walk the index path a link at a time: an anonymous field
+			// the host type itself embeds can be a nil pointer
+			// (template.Template's unparsed *Tree), where FieldByIndex
+			// panics — the member reads missing, like the script
+			// side's nil-link residual.
+			v, ok := fv, true
+			for _, ix := range f.Index {
+				if v.Kind() == reflect.Pointer {
+					if v.IsNil() {
+						ok = false
+						break
+					}
+					v = v.Elem()
+				}
+				v = v.Field(ix)
+			}
+			if !ok || !v.CanInterface() {
 				continue
 			}
 			record(f.Name, d+len(f.Index)-1, promMember{hv: v})
@@ -297,8 +312,18 @@ func (h *HostMarshal) projHostMethod(fv reflect.Value, mv reflect.Value) {
 		return
 	}
 	h.Budget--
-	res := mv.Call(nil)
-	if nout == 2 && !res[1].IsNil() {
+	res := func() (out []reflect.Value) {
+		// a panicking host method reads like the script side's failed
+		// call — the field stays nil, printing <no value>, instead of
+		// aborting the marshal (and the whole template execution).
+		defer func() {
+			if recover() != nil {
+				out = nil
+			}
+		}()
+		return mv.Call(nil)
+	}()
+	if res == nil || (nout == 2 && !res[1].IsNil()) {
 		return
 	}
 	fv.Set(res[0])
