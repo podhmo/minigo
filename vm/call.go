@@ -487,30 +487,56 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 	} else {
 		fr.stack = fr.stack[:0]
 	}
-	// the local cells come out of one block — a cell per local was the
+	// locals is a value array: only slots the compiler marked boxed
+	// (P4-2a) — or every slot on an unclassified chunk — get a cell;
+	// plain slots hold their value in place and allocate nothing.
+	// Boxed cells come out of one block — a cell per local was the
 	// interpreter's largest allocation source (a frame per call,
 	// NLocals+2 objects each); addressability is unchanged since
 	// locals[i] may still be replaced or captured. A chunk that cannot
 	// leak its cells recycles the block the pooled frame carries; a
 	// chunk that can allocates fresh cells every call.
-	var cells []runtime.Cell
-	if chunkCellsEscape(ch) {
-		cells = make([]runtime.Cell, ch.NLocals)
-		fr.locals = make([]*runtime.Cell, ch.NLocals)
-	} else {
-		if cap(fr.cells) < ch.NLocals {
-			fr.cells = make([]runtime.Cell, ch.NLocals)
-		}
-		cells = fr.cells[:ch.NLocals]
-		if cap(fr.locals) < ch.NLocals {
-			fr.locals = make([]*runtime.Cell, ch.NLocals)
-		} else {
-			fr.locals = fr.locals[:ch.NLocals]
+	nCells := 0
+	for i := 0; i < ch.NLocals; i++ {
+		if ch.Boxed == nil || (i < len(ch.Boxed) && ch.Boxed[i]) {
+			nCells++
 		}
 	}
-	for i := range cells {
-		cells[i] = runtime.Cell{Elem: runtime.NIL}
-		fr.locals[i] = &cells[i]
+	var cells []runtime.Cell
+	if nCells > 0 {
+		if chunkCellsEscape(ch) {
+			cells = make([]runtime.Cell, nCells)
+		} else {
+			if cap(fr.cells) < nCells {
+				fr.cells = make([]runtime.Cell, nCells)
+			}
+			cells = fr.cells[:nCells]
+		}
+	}
+	if cap(fr.locals) < ch.NLocals {
+		fr.locals = make([]runtime.Value, ch.NLocals)
+	} else {
+		fr.locals = fr.locals[:ch.NLocals]
+	}
+	if cap(fr.ltyps) < ch.NLocals {
+		fr.ltyps = make([]*runtime.TypeDef, ch.NLocals)
+	} else {
+		fr.ltyps = fr.ltyps[:ch.NLocals]
+	}
+	if cap(fr.slotRefs) < nCells {
+		fr.slotRefs = make([]localCell, nCells)
+	}
+	refs := fr.slotRefs[:nCells]
+	ci := 0
+	for i := 0; i < ch.NLocals; i++ {
+		if ch.Boxed == nil || (i < len(ch.Boxed) && ch.Boxed[i]) {
+			cells[ci].Elem = runtime.NIL
+			refs[ci].c = &cells[ci]
+			fr.locals[i] = &refs[ci]
+			ci++
+		} else {
+			fr.locals[i] = runtime.NIL
+		}
 	}
 	// bind params; arity mismatches are compile errors in Go, so trap
 	n := ch.NParams
@@ -566,10 +592,10 @@ func (v *VM) prepFrameSeen(callee runtime.Value, args []runtime.Value, statics [
 					rest = pack
 				}
 			}
-			cells[i].Elem = rest
+			fr.putLocal(i, rest)
 			break
 		}
-		cells[i].Elem = valueCopy(a)
+		fr.putLocal(i, valueCopy(a))
 	}
 	return fr, nil
 }

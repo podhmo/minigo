@@ -63,3 +63,31 @@
 推論で解けない operand や promoted member はすべて Boxed になる。
 10% への絞り込みはレシーバ解決の精度（declTyp の伝播）がボトルネックであり、
 P4-2c で扱う。
+
+## P4-2b の表現（`frame.locals []runtime.Value`）
+
+`locals` はスロット配列で、boxed スロットには非公開ラッパー
+`*localCell`、plain スロットには生の値が入る。`*runtime.Cell` を
+直接要素にせずラッパーを噛ませるのは必須で、plain スロットの値が
+`&x` の ref（それ自体が `*runtime.Cell`）になり得るため、要素の型では
+スロット種別を判定できない。ラッパーはフレーム外に出ないので
+`f.slotRefs` ブロックとして常にリサイクルする。
+
+- boxed スロットの cell は従来どおり 1 ブロック確保するが、
+  「escape しない chunk」= boxed が無い chunk は cell をゼロ確保
+  する（元の最適化の完全版）。escape する chunk は boxed 数だけの
+  新規ブロックを確保する。
+- plain スロットの宣言型は `f.ltyps[i]` に置く（`OpCoerce` が書き、
+  `OpLocalTyp`/代入 coerce が読む）。box 化は `ReadOnly`（const）と
+  `localCell` による on-demand 昇格（compiler が見落とした ref/
+  capture 用）だけが要求する。
+- `OpNewLocal`/`OpRenewVar` は boxed スロットに従来どおり新しい
+  cell を入れる（capture の detach を維持）。plain スロットは
+  `valueCopy` の直接書き込みか no-op。
+- `assignLocal` は `assignCell` と同じ store 規則を plain スロットの
+  値と `ltyps` に対して評価する（`retypeStore` に抽出）。配列の
+  in-place overwrite（`overwriteArrayIn`）は slice view のために
+  保持する。
+- `specialCtx.Eval` の shared-locals コピーは同じ配列型をコピー
+  するだけで、参照可能なローカルは全部 boxed なので共有 cell
+  ポインタとして届く。

@@ -272,55 +272,82 @@ func (v *VM) assignCell(f *frame, c *runtime.Cell, val runtime.Value) {
 	if c.ReadOnly {
 		f.trap("cannot assign to constant")
 	}
-	if c.Typ != nil {
-		val = v.coerce(f, val, c.Typ)
-	} else {
-		// an unstamped cell's declared type is the tag its initial value
-		// carried — `x := int8(1)` leaves Named{int8} in the cell, and a
-		// later `x = v` enforces the same assignability. Bare values
-		// answer through their dynamic type.
-		var ct *runtime.TypeDef
-		if en, ok := c.Elem.(*runtime.Named); ok && en.Typ != nil {
-			ct = en.Typ
-		} else {
-			ct = v.typeOfValue(c.Elem)
-		}
-		if vn, ok := val.(*runtime.Named); ok && vn.Typ != nil && ct != nil &&
-			vn.Typ.Name != "" && ct.Name != "" && ct.Kind != runtime.KindInterface &&
-			!sameTypeDef(vn.Typ, ct) {
-			f.trap("cannot use value (type %s) as %s in assignment", spelledTyp(vn.Typ), spelledTyp(ct))
-		}
-		if u, isConst := constPayload(val); isConst {
-			// a constant bound into a variable takes the variable's
-			// type — `d := Second; d = 5` stays a Duration.
-			if ct != nil {
-				val = v.materializeConst(f, u, ct)
-			} else {
-				val = v.materialize(f, val)
-			}
-		} else if sameBareScalar(c.Elem, val) {
-			// a bare scalar into a cell holding the same bare kind: ct is
-			// that kind's builtin type, so re-typing is the identity —
-			// skip the UConst round trip on the hot `x = x + 1` path.
-		} else if u2, isScalar := bareScalarConst(val); isScalar && ct != nil {
-			// `x = 300` re-types into the cell's tag — an out-of-range
-			// literal traps like gc's compile-time overflow error.
-			val = v.materializeConst(f, u2, ct)
-		} else if _, isNil := val.(runtime.Nil); isNil {
-			// `p = nil` keeps the variable's inferred type — a *T var
-			// holds a nil *T, not an untyped nil (Go's zero is typed).
-			// The nil keeps the tag so member selects and comparisons
-			// still resolve on it.
-			if pt := v.pointeeTag(c.Elem); pt != nil {
-				val = &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt}}
-			} else if tag := containerTyp(c.Elem); tag != nil && v.nilableTypedef(tag) {
-				val = &runtime.TypedNil{Typ: tag}
-			}
-		}
-	}
+	val = v.retypeStore(f, c.Elem, c.Typ, val)
 	if !overwriteArray(c, val) {
 		c.Elem = valueCopy(val)
 	}
+}
+
+// assignLocal stores into local slot i: a boxed slot goes through
+// assignCell; a plain slot applies the same store rules against the
+// slot's own value and declared typedef (ltyps), with the array
+// in-place overwrite preserved so slice views of `x` keep reading the
+// updated backing.
+func (v *VM) assignLocal(f *frame, i int, val runtime.Value) {
+	if c, ok := f.boxedCell(i); ok {
+		v.assignCell(f, c, val)
+		return
+	}
+	val = v.retypeStore(f, f.locals[i], f.localTyp(i), val)
+	if !overwriteArrayIn(f.locals[i], val) {
+		f.locals[i] = valueCopy(val)
+	}
+}
+
+// retypeStore computes the value a store into a slot currently holding
+// oldElem with declared typedef typ should record — assignCell's
+// assignability rules, shared by the boxed and plain-slot paths.
+func (v *VM) retypeStore(f *frame, oldElem runtime.Value, typ *runtime.TypeDef, val runtime.Value) runtime.Value {
+	if typ != nil {
+		return v.coerce(f, val, typ)
+	}
+	// an unstamped slot's declared type is the tag its initial value
+	// carried — `x := int8(1)` leaves Named{int8} in the slot, and a
+	// later `x = v` enforces the same assignability. Bare values
+	// answer through their dynamic type.
+	var ct *runtime.TypeDef
+	if en, ok := oldElem.(*runtime.Named); ok && en.Typ != nil {
+		ct = en.Typ
+	} else {
+		ct = v.typeOfValue(oldElem)
+	}
+	if vn, ok := val.(*runtime.Named); ok && vn.Typ != nil && ct != nil &&
+		vn.Typ.Name != "" && ct.Name != "" && ct.Kind != runtime.KindInterface &&
+		!sameTypeDef(vn.Typ, ct) {
+		f.trap("cannot use value (type %s) as %s in assignment", spelledTyp(vn.Typ), spelledTyp(ct))
+	}
+	if u, isConst := constPayload(val); isConst {
+		// a constant bound into a variable takes the variable's
+		// type — `d := Second; d = 5` stays a Duration.
+		if ct != nil {
+			return v.materializeConst(f, u, ct)
+		}
+		return v.materialize(f, val)
+	}
+	if sameBareScalar(oldElem, val) {
+		// a bare scalar into a slot holding the same bare kind: ct is
+		// that kind's builtin type, so re-typing is the identity —
+		// skip the UConst round trip on the hot `x = x + 1` path.
+		return val
+	}
+	if u2, isScalar := bareScalarConst(val); isScalar && ct != nil {
+		// `x = 300` re-types into the slot's tag — an out-of-range
+		// literal traps like gc's compile-time overflow error.
+		return v.materializeConst(f, u2, ct)
+	}
+	if _, isNil := val.(runtime.Nil); isNil {
+		// `p = nil` keeps the variable's inferred type — a *T var
+		// holds a nil *T, not an untyped nil (Go's zero is typed).
+		// The nil keeps the tag so member selects and comparisons
+		// still resolve on it.
+		if pt := v.pointeeTag(oldElem); pt != nil {
+			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindPointer, Elem: pt}}
+		}
+		if tag := containerTyp(oldElem); tag != nil && v.nilableTypedef(tag) {
+			return &runtime.TypedNil{Typ: tag}
+		}
+	}
+	return val
 }
 
 // checkAddrBase panics like Go when the address-of target's base is a

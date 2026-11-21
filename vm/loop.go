@@ -176,21 +176,35 @@ func (v *VM) loop(f *frame) {
 				// keep it lazy — an unused `const B = 1<<100` is legal.
 				x = v.materialize(f, x)
 			}
-			f.locals[ins.A] = &runtime.Cell{Elem: valueCopy(x), ReadOnly: ins.B != 0}
+			if ins.B != 0 {
+				// a const binding always needs the ReadOnly flag — it
+				// keeps a cell even on a plain slot.
+				f.setLocalCell(int(ins.A), &runtime.Cell{Elem: valueCopy(x), ReadOnly: true})
+			} else if _, boxed := f.boxedCell(int(ins.A)); boxed {
+				// a fresh cell per bind: an earlier captured ref keeps
+				// pointing at the previous value, as Go's variable
+				// identity requires.
+				f.setLocalCell(int(ins.A), &runtime.Cell{Elem: valueCopy(x)})
+			} else {
+				f.locals[ins.A] = valueCopy(x)
+			}
 		case bytecode.OpRenewVar:
-			f.locals[ins.A] = &runtime.Cell{Elem: f.locals[ins.A].Elem}
+			if c, boxed := f.boxedCell(int(ins.A)); boxed {
+				f.setLocalCell(int(ins.A), &runtime.Cell{Elem: c.Elem})
+			}
+			f.ltyps[ins.A] = nil
 		case bytecode.OpLocal:
-			f.push(f.locals[ins.A].Elem)
+			f.push(f.localVal(int(ins.A)))
 		case bytecode.OpLocalTyp:
-			if td := f.locals[ins.A].Typ; td != nil {
+			if td := f.localTyp(int(ins.A)); td != nil {
 				f.push(td)
 			} else {
 				f.push(runtime.NIL)
 			}
 		case bytecode.OpSetLocal:
-			v.assignCell(f, f.locals[ins.A], f.pop())
+			v.assignLocal(f, int(ins.A), f.pop())
 		case bytecode.OpLocalRef:
-			f.push(f.locals[ins.A])
+			f.push(f.localCell(int(ins.A)))
 		case bytecode.OpUpval:
 			f.push(f.upvals[ins.A].Elem)
 		case bytecode.OpUpvalTyp:
@@ -529,13 +543,17 @@ func (v *VM) loop(f *frame) {
 			if td == nil {
 				f.trap("declared type is not a type")
 			}
-			c := f.locals[ins.A]
-			if f.vpack != nil && c.Elem == runtime.Value(f.vpack) {
+			if f.vpack != nil && f.localVal(int(ins.A)) == runtime.Value(f.vpack) {
 				v.coerceVarPack(f, f.vpack, td)
 				f.vpack = nil
 			}
-			c.Elem = v.coerce(f, c.Elem, td)
-			c.Typ = td // future stores into this cell coerce the same way
+			if c, boxed := f.boxedCell(int(ins.A)); boxed {
+				c.Elem = v.coerce(f, c.Elem, td)
+				c.Typ = td // future stores into this cell coerce the same way
+			} else {
+				f.locals[ins.A] = v.coerce(f, f.locals[ins.A], td)
+				f.ltyps[ins.A] = td
+			}
 		case bytecode.OpCoerceTop:
 			td := typedefOf(f.pop())
 			if td == nil {
@@ -749,7 +767,7 @@ func (v *VM) loop(f *frame) {
 				if d.FromParentUpval {
 					cl.Upvals = append(cl.Upvals, f.upvals[d.Index])
 				} else {
-					cl.Upvals = append(cl.Upvals, f.locals[d.Index])
+					cl.Upvals = append(cl.Upvals, f.localCell(int(d.Index)))
 				}
 			}
 			f.push(cl)
@@ -846,7 +864,7 @@ func (v *VM) loop(f *frame) {
 			}
 			f.push(v.newIterator(f, coll))
 		case bytecode.OpRangeNext:
-			it := f.locals[ins.B].Elem.(*runtime.Iterator)
+			it := f.localVal(int(ins.B)).(*runtime.Iterator)
 			if it.Kind == 'f' {
 				// Range over a function inverts control: the producer calls
 				// yield, and each yield runs the loop body bounded to this
@@ -984,7 +1002,7 @@ func (v *VM) loop(f *frame) {
 				// explicit return stores into the named result slots first,
 				// so deferred calls can still mutate them before teardown
 				for i := n - 1; i >= 0; i-- {
-					f.locals[f.ch.NamedSlots[i]].Elem = f.pop()
+					f.putLocal(int(f.ch.NamedSlots[i]), f.pop())
 				}
 				f.retNamed = true
 			default:

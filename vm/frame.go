@@ -48,12 +48,25 @@ type deferredCall struct {
 }
 
 type frame struct {
-	fn     *runtime.Function
-	ch     *bytecode.Chunk
-	locals []*runtime.Cell
-	upvals []*runtime.Cell
-	stack  []runtime.Value
-	ip     int
+	fn *runtime.Function
+	ch *bytecode.Chunk
+	// locals is the slot array: a *localCell wrapper for every slot the
+	// compiler marked boxed (P4-2 — refs, captures, ptr receivers,
+	// special-form visibility) or that promoted itself at run time, and
+	// the slot's raw value for plain slots, which never need a cell
+	// object. The wrapper is required: a plain slot's value may itself
+	// be a *runtime.Cell (a ref from &x), so the slot kind cannot ride
+	// on the element's type. ltyps carries a plain slot's declared
+	// typedef (OpCoerce stamps it); boxed slots keep Typ on the cell.
+	locals []runtime.Value
+	ltyps  []*runtime.TypeDef
+	// slotRefs is the frame-recyclable block localCell wrappers come
+	// from — wrappers never leave the frame (captures take the *Cell
+	// they hold), so the block recycles even when cells must not.
+	slotRefs []localCell
+	upvals   []*runtime.Cell
+	stack    []runtime.Value
+	ip       int
 
 	defers   []deferredCall // LIFO
 	sentinel bool           // placeholder frame for a deferred builtin — a
@@ -114,6 +127,14 @@ func freeFrame(f *frame) {
 		f.locals[i] = nil
 	}
 	f.locals = f.locals[:0]
+	for i := range f.ltyps {
+		f.ltyps[i] = nil
+	}
+	f.ltyps = f.ltyps[:0]
+	// keep the len so the clear drops every wrapper's cell pointer —
+	// truncating first would pin the cells a recycled frame still
+	// references through the stale tail.
+	clear(f.slotRefs)
 	clear(f.stack)
 	f.stack = f.stack[:0]
 	f.ip = 0
@@ -187,6 +208,68 @@ func chunkCellsEscape(ch *bytecode.Chunk) bool {
 		ch.Escapes.Store(1)
 	}
 	return esc
+}
+
+// localCell marks a boxed slot inside frame.locals — an unexported
+// wrapper a script value can never impersonate, which is what tells a
+// boxed slot apart from a plain slot storing a *runtime.Cell value.
+type localCell struct{ c *runtime.Cell }
+
+// boxedCell returns the cell backing slot i when the slot is boxed.
+func (f *frame) boxedCell(i int) (*runtime.Cell, bool) {
+	if lc, ok := f.locals[i].(*localCell); ok {
+		return lc.c, true
+	}
+	return nil, false
+}
+
+// setLocalCell marks slot i boxed, pointing it at c.
+func (f *frame) setLocalCell(i int, c *runtime.Cell) { f.locals[i] = &localCell{c} }
+
+// localVal reads slot i's value — a boxed slot's cell element or a
+// plain slot's stored value.
+func (f *frame) localVal(i int) runtime.Value {
+	if c, ok := f.boxedCell(i); ok {
+		return c.Elem
+	}
+	return f.locals[i]
+}
+
+// localCell returns the cell backing slot i, promoting a plain slot's
+// value into a fresh cell in place when a real ref or capture demands
+// addressability the compiler's classification missed.
+func (f *frame) localCell(i int) *runtime.Cell {
+	if c, ok := f.boxedCell(i); ok {
+		return c
+	}
+	c := &runtime.Cell{Elem: f.locals[i]}
+	if i < len(f.ltyps) {
+		c.Typ = f.ltyps[i]
+	}
+	f.setLocalCell(i, c)
+	return c
+}
+
+// localTyp returns slot i's declared typedef — the cell's stamp for a
+// boxed slot, the ltyps entry for a plain one.
+func (f *frame) localTyp(i int) *runtime.TypeDef {
+	if c, ok := f.boxedCell(i); ok {
+		return c.Typ
+	}
+	if i < len(f.ltyps) {
+		return f.ltyps[i]
+	}
+	return nil
+}
+
+// putLocal stores into slot i without coercion — the named-result
+// writeback and parameter binding write the value as is.
+func (f *frame) putLocal(i int, x runtime.Value) {
+	if c, ok := f.boxedCell(i); ok {
+		c.Elem = x
+	} else {
+		f.locals[i] = x
+	}
 }
 
 func (f *frame) push(v runtime.Value) { f.stack = append(f.stack, v) }

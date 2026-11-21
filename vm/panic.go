@@ -332,7 +332,7 @@ func (v *VM) finalResult(f *frame) runtime.Value {
 	if len(f.ch.NamedSlots) > 0 {
 		results = make([]runtime.Value, len(f.ch.NamedSlots))
 		for i, s := range f.ch.NamedSlots {
-			results[i] = f.locals[s].Elem
+			results[i] = f.localVal(s)
 		}
 	}
 	if len(results) == 0 && f.ch.NResults > 0 {
