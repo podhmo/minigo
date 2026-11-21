@@ -59,6 +59,9 @@ var Rules = map[string][]string{
 // package dir under the module root.
 var BannedCalls = map[string][]string{
 	"compile": {"Materialize", "EnsureReady", "EnsureReadyRun"},
+	// the source adapter loads to Indexed only — a call that runs
+	// package initialization would make a type query start user code
+	"internal/source": {"EnsureReady", "EnsureReadyRun", "EnsureConstsRun", "EnsureCompiled"},
 }
 
 // BannedImports lists import paths a package directory must never

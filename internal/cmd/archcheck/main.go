@@ -40,12 +40,12 @@ func main() {
 		return
 	}
 
-	g, err := archcheck.Build(*root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "archcheck:", err)
-		os.Exit(2)
-	}
 	if *printGraph {
+		g, err := archcheck.Build(*root)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "archcheck:", err)
+			os.Exit(2)
+		}
 		var pkgs []string
 		for pkg := range g {
 			pkgs = append(pkgs, pkg)
@@ -56,26 +56,13 @@ func main() {
 		}
 		return
 	}
-	violations := archcheck.Check(g, archcheck.Rules)
-
-	// M1-3: execution state must not leak into shared engine assets.
-	sv, err := archcheck.CheckSharedFields(*root, ".", "sharedAssets", archcheck.SharedStateTypes, archcheck.SharedFuncExempt)
+	// CheckAll shares the check list with the real-repo tests (M2-2):
+	// graph, shared fields, budgets, banned calls and imports.
+	violations, err := archcheck.CheckAll(*root)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "archcheck:", err)
 		os.Exit(2)
 	}
-	violations = append(violations, sv...)
-
-	// M1-4: files may only shrink.
-	sizes, err := archcheck.Sizes(*root)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "archcheck:", err)
-		os.Exit(2)
-	}
-	violations = append(violations, archcheck.CheckSizes(sizes, archcheck.FileBudgets)...)
-
-	// P2-7: banned imports (reflect outside internal/hostbridge).
-	violations = append(violations, archcheck.CheckBannedImports(*root, archcheck.BannedImports)...)
 
 	if len(violations) > 0 {
 		for _, v := range violations {
