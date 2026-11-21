@@ -43,6 +43,21 @@ func ScriptPathOf(sp, ap, p string) string {
 			return t
 		}
 	}
+	// a relative sp resolves against the engine cwd — under a symlinked
+	// cwd the host reports the resolved absolute path (e.g. EvalSymlinks
+	// inside /tmp on macOS); map it back through the spelled base.
+	if csp := filepath.Clean(sp); !filepath.IsAbs(sp) && csp != "." {
+		if base, ok := strings.CutSuffix(ap, string(filepath.Separator)+csp); ok {
+			if rap, err := filepath.EvalSymlinks(base); err == nil && rap != base {
+				if rest, ok := cutPathPrefix(p, rap); ok {
+					return filepath.Join(filepath.Dir(sp), rest)
+				}
+				if p == rap {
+					return filepath.Dir(sp)
+				}
+			}
+		}
+	}
 	return p
 }
 

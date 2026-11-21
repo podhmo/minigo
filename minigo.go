@@ -304,10 +304,20 @@ func (e *Engine) WorkingDir() string { return e.cwd }
 // AllowedRoots (per-call — the restricted-mode policy lives here, not in
 // symbol gating, so file APIs are available but confined).
 func (e *Engine) fsPath(p string) (string, error) {
+	// "" and a trailing separator are meaningful to the os calls below:
+	// os.Stat("") must fail ENOENT, and lstat("d/f/") must fail ENOTDIR
+	// — resolving them through filepath.Join would drop both signals.
+	if p == "" {
+		return "", nil
+	}
+	trail := strings.HasSuffix(p, string(filepath.Separator))
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(e.cwd, p)
 	}
 	p = filepath.Clean(p)
+	if trail && p != string(filepath.Separator) {
+		p += string(filepath.Separator)
+	}
 	if err := e.cfg.CheckPath(p); err != nil {
 		return "", err
 	}
