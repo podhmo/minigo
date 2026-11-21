@@ -1475,10 +1475,24 @@ func arrayTypedef(td *TypeDef) bool {
 	return ok && at.Len != nil
 }
 
+// typeTagOf memoizes its spelling on the typedef itself (td.typeTag):
+// a struct or array map key asks for the tag twice per CanonicalKey —
+// once into the repr, once for mapKey.typ — and the tag is a pure
+// spelling of the declaration. Caching on td keeps the entry scoped to
+// the typedef's lifetime rather than a process-global table.
 func typeTagOf(td *TypeDef) string {
 	if td == nil {
 		return "?"
 	}
+	if s, ok := td.typeTag.Load().(string); ok {
+		return s
+	}
+	s := typeTagOfInner(td)
+	td.typeTag.Store(s)
+	return s
+}
+
+func typeTagOfInner(td *TypeDef) string {
 	if td.Name != "" {
 		name := td.Name
 		if td.Pkg != nil && td.Pkg.Path != "" {
@@ -2222,6 +2236,9 @@ type TypeDef struct {
 	// conversion paths recompute it — and its zero-value allocation —
 	// once per comparison otherwise.
 	hostType atomic.Value
+	// typeTag caches typeTagOf's spelling (a string): map keys ask for
+	// it on every access, and it depends only on td's declaration.
+	typeTag atomic.Value
 }
 
 // CloneUncached copies td's descriptive fields and drops the cached
@@ -2372,6 +2389,7 @@ func (td *TypeDef) ResetCaches() {
 	td.ifaceReqs = atomic.Value{}
 	td.ifaceSigs = atomic.Value{}
 	td.hostType = atomic.Value{}
+	td.typeTag = atomic.Value{}
 }
 
 // TypeKind classifies a [TypeDef] by its underlying type. Predeclared
