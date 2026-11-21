@@ -64,11 +64,13 @@ func (e *Engine) bindBound(importPath string, symbols map[string]runtime.Value) 
 	}
 	p := e.bindTable(importPath, symbols)
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.names.Bound(importPath) {
+		e.mu.Unlock()
 		return
 	}
-	e.bindPublishLocked(importPath, p)
+	tdKeys, seq := e.bindPublishLocked(importPath, p)
+	e.mu.Unlock()
+	e.bindInternTypedefs(p, tdKeys, seq)
 }
 
 // registered reports whether path is bound — installed already or

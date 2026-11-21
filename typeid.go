@@ -3,6 +3,7 @@ package minigo
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -86,6 +87,17 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	// underlying spelling (func signatures, anonymous structs).
 	if td.Elem != nil {
 		return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, e.typeIDOf(td.Elem), args))
+	}
+	if td.Name != "" && td.Pkg != nil && td.Pkg.Path != "" {
+		// a declared name bound under a package: identity is the owning
+		// package's path plus the name — two packages can share a
+		// package-name and a type-name, and the underlying spelling
+		// only describes shape.
+		short := td.Name
+		if i := strings.LastIndex(short, "."); i >= 0 {
+			short = short[i+1:]
+		}
+		return runtime.TypeID(fmt.Sprintf("host:%s:%s%s", td.Pkg.Path, short, args))
 	}
 	s := runtime.TypUnderlyingSpelling(td)
 	if s == "" {

@@ -3,6 +3,7 @@ package minigo
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,5 +179,70 @@ func TestInternTypedef(t *testing.T) {
 	// ...and interning there does not rewrite the parent's winner.
 	if e.internTypedef(a) != a {
 		t.Error("session interning rewrote the parent's table")
+	}
+}
+
+// M4-3c: a bound typedef is the canonical descriptor for its TypeID —
+// a synthesized twin (hostTypedefOf-shaped) resolves to it through
+// internTypedef, so the bind entry and the synth entry meet.
+func TestInternTypedefBoundConverges(t *testing.T) {
+	e := NewEngine(".")
+	bound := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	e.Bind("example.com/x", map[string]runtime.Value{"Widget": bound})
+
+	twin := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	if got := e.internTypedef(twin); got != bound {
+		t.Errorf("synthesized twin did not converge on the bound typedef: %p vs %p", got, bound)
+	}
+}
+
+// two packages can share a package-name and a type-name: identity is
+// the owning package's PATH, not the name's spelling.
+func TestInternTypedefSameNamedPackagesStayDistinct(t *testing.T) {
+	e := NewEngine(".")
+	a := &runtime.TypeDef{Name: "dup.T", Kind: runtime.KindStruct,
+		Pkg: &runtime.Package{Path: "example.com/a/dup", Name: "dup"}}
+	b := &runtime.TypeDef{Name: "dup.T", Kind: runtime.KindStruct,
+		Pkg: &runtime.Package{Path: "example.com/b/dup", Name: "dup"}}
+	if e.typeIDOf(a) == e.typeIDOf(b) {
+		t.Fatalf("same-named types of different packages share a key: %q", e.typeIDOf(a))
+	}
+	if e.internTypedef(a) == e.internTypedef(b) {
+		t.Error("different packages' same-named typedefs interned together")
+	}
+}
+
+// a re-Bind of the same type re-registers the descriptor: the newer
+// typedef becomes canonical and the package sees it.
+func TestInternTypedefRebindRefreshes(t *testing.T) {
+	e := NewEngine(".")
+	first := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	second := hostType("example.com/x.Widget", func() any { return &strings.Reader{} })
+	e.Bind("example.com/x", map[string]runtime.Value{"Widget": first})
+	e.Bind("example.com/x", map[string]runtime.Value{"Widget": second})
+	if e.internTypedef(first) != second {
+		t.Error("re-Bound typedef did not become canonical")
+	}
+}
+
+// two publishes may interleave interning: bindPublishLocked runs under
+// e.mu but bindInternTypedefs spells TypeIDs outside it. An older
+// publish whose interning lands after a newer one must not roll the
+// TypeID back to its descriptor.
+func TestInternTypedefStragglerRebindKeepsNewest(t *testing.T) {
+	e := NewEngine(".")
+	first := hostType("example.com/x.Widget", func() any { return &strings.Builder{} })
+	second := hostType("example.com/x.Widget", func() any { return &strings.Reader{} })
+	p1 := e.bindTable("example.com/x", map[string]runtime.Value{"Widget": first})
+	p2 := e.bindTable("example.com/x", map[string]runtime.Value{"Widget": second})
+	e.mu.Lock()
+	keys1, seq1 := e.bindPublishLocked("example.com/x", p1)
+	keys2, seq2 := e.bindPublishLocked("example.com/x", p2)
+	e.mu.Unlock()
+	// the newer bind's interning reaches the table before the older's
+	e.bindInternTypedefs(p2, keys2, seq2)
+	e.bindInternTypedefs(p1, keys1, seq1)
+	if diff := cmp.Diff(true, e.internTypedef(first) == second); diff != "" {
+		t.Errorf("straggling older bind rolled the interned typedef back (-want +got):\n%s", diff)
 	}
 }
