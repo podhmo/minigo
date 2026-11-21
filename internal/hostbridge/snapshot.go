@@ -121,7 +121,25 @@ func snapshotValue(x any, visiting map[uintptr]struct{}) runtime.Value {
 			return &runtime.Slice{Elems: el, Typ: td}
 		}
 	}
-	return GoValueOf(rv)
+	return detachSliceHost(GoValueOf(rv))
+}
+
+// detachSliceHost clears the write-through link the unbox arms set on
+// a fresh *runtime.Slice: an Engine.Call arg is a snapshot — a script
+// write through the alias must not reach the caller's array. Nested
+// containers get the same strip because they arrive through the
+// recursive snapshotValue calls above.
+func detachSliceHost(v runtime.Value) runtime.Value {
+	// copy the header, don't clear in place: when the caller's
+	// *runtime.Slice itself reaches an arg (GoValueOf returns it
+	// unchanged), mutating it would kill its write-through for every
+	// later script write.
+	if s, ok := v.(*runtime.Slice); ok && s.Host.IsValid() {
+		d := *s
+		d.Host = reflect.Value{}
+		return &d
+	}
+	return v
 }
 
 // argBack pairs an argument with the host value it marshaled to so a

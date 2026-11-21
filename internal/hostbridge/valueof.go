@@ -451,7 +451,7 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 		for i, b := range v {
 			el[i] = runtime.ByteValue(b)
 		}
-		return &runtime.Slice{Elems: el, Typ: AnonSliceTyp("byte")}
+		return &runtime.Slice{Elems: el, Typ: AnonSliceTyp("byte"), Host: reflect.ValueOf(v)}
 	case []string:
 		if v == nil {
 			return &runtime.TypedNil{Typ: AnonSliceTyp("string")}
@@ -460,7 +460,7 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 		for i, s := range v {
 			el[i] = s
 		}
-		return &runtime.Slice{Elems: el, Typ: AnonSliceTyp("string")}
+		return &runtime.Slice{Elems: el, Typ: AnonSliceTyp("string"), Host: reflect.ValueOf(v)}
 	case []any:
 		// a `chan any` send deep-hosts script containers (see deepHost);
 		// the receive rehydrates the flat slice shape so indexing works.
@@ -471,7 +471,7 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 		for i, e := range v {
 			el[i] = GoValueOf(reflect.ValueOf(e))
 		}
-		return &runtime.Slice{Elems: el, Typ: AnonSliceTyp("any")}
+		return &runtime.Slice{Elems: el, Typ: AnonSliceTyp("any"), Host: reflect.ValueOf(v)}
 	case map[any]any:
 		if v == nil {
 			return &runtime.TypedNil{Typ: &runtime.TypeDef{Kind: runtime.KindMap,
@@ -525,7 +525,11 @@ func GoValueOf(rv reflect.Value) runtime.Value {
 				for i := range el {
 					el[i] = GoValueOf(rv.Index(i))
 				}
-				return &runtime.Slice{Elems: el, Typ: td}
+				// snapshot the header value, not the field: when rv is
+				// a struct's slice field, reassigning that field must
+				// not redirect this alias (gc's `s := st.f` keeps the
+				// backing the header held at read time).
+				return &runtime.Slice{Elems: el, Typ: td, Host: reflect.ValueOf(rv.Interface())}
 			}
 		case reflect.Map:
 			if rv.IsNil() && rv.Type().Name() != "" {
