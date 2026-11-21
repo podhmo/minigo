@@ -21,6 +21,7 @@ import (
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
 	stdlibnet "github.com/podhmo/minigo/internal/stdlib/net"
 	stdlibnetip "github.com/podhmo/minigo/internal/stdlib/netip"
+	stdlibos "github.com/podhmo/minigo/internal/stdlib/os"
 	stdlibosexec "github.com/podhmo/minigo/internal/stdlib/osexec"
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
 	stdlibrace "github.com/podhmo/minigo/internal/stdlib/race"
@@ -66,7 +67,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("sort", func() { e.installSort(h) })
 	e.pending.Register("slices", func() { e.installSlices(h) })
 	e.pending.Register("maps", func() { e.installMaps(h) })
-	e.pending.Register("os", func() { e.installOs(h) })
+	e.pending.Register("os", func() { stdlibos.Install(e.bindBound, h, h.env) })
 	e.pending.Register("path/filepath", func() { stdlibfilepath.Install(e.bindBound, h, h.env) })
 	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })
 	e.pending.Register("minigo.dev/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
