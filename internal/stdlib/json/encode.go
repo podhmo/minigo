@@ -3,6 +3,8 @@ package stdjson
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/token"
 	"reflect"
 
 	"github.com/podhmo/minigo/internal/stdlib"
@@ -88,6 +90,11 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 	}
 	switch x := v.(type) {
 	case *runtime.Named:
+		// gc encodes a 32-bit float at its own precision — re-tag the
+		// payload as float32 instead of widening to float64.
+		if f, ok := x.V.(float64); ok && jsonUnderlyingName(x.Typ) == "float32" {
+			return float32(f)
+		}
 		// unsigned basics store int64 internally; a decode that fit a
 		// uint64 through ParseUint (>MaxInt64) reads back negative —
 		// re-read the payload through the unsigned tag before emitting.
@@ -178,6 +185,18 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 			return jsonCycle{via: typeStrOf(x)}
 		}
 		defer delete(seen, x)
+		// a []byte marshals as a base64 string — named element types
+		// count too ([]MyByte), while an [N]byte array stays
+		// element-wise. An element type implementing a marshaler
+		// demotes the slice to the element-wise path like gc.
+		if x.Typ != nil && !stdlib.IsArrayTyp(x.Typ) && jsonSliceIsByte(c, x.Typ) && !jsonElemMarshals(c, x.Elems) {
+			out := make([]byte, len(x.Elems))
+			for i, e := range x.Elems {
+				u, _ := runtime.Unwrap(e).(int64)
+				out[i] = byte(u)
+			}
+			return out
+		}
 		out := make([]any, len(x.Elems))
 		// slice elements marshal through their backing array, which
 		// gc always treats as addressable; array elements keep the
@@ -250,4 +269,159 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool, addr bool
 	default:
 		return v
 	}
+}
+
+// jsonSliceIsByte reports whether td's element type is byte/uint8 —
+// a named byte typedef counts too, matching gc's `[]MyByte` base64
+// rule. The AST `byte`/`uint8` spelling alone is not enough: a
+// scope may shadow `byte` (`type byte string`), so the element
+// resolves to its typedef and the UNDERLYING name decides.
+func jsonSliceIsByte(c runtime.MemberShapeCaller, td *runtime.TypeDef) bool {
+	et := td.Elem
+	if et == nil && c != nil {
+		// a named element type resolves through the caller —
+		// `[]MyByte` spells its elem "main.MyByte", not "uint8".
+		if r, err := c.ElemOf(td); err == nil {
+			et = r
+		}
+	}
+	if et == nil {
+		return false
+	}
+	un := jsonUnderlyingName(et)
+	return un == "byte" || un == "uint8"
+}
+
+// jsonElemMarshals reports whether the slice's element type carries
+// MarshalJSON/MarshalText — gc skips the []byte base64 shortcut
+// then. Every element shares one static type, so one probe decides;
+// slice elements are addressable, so pointer receivers count too.
+func jsonElemMarshals(c runtime.MemberShapeCaller, elems []runtime.Value) bool {
+	if len(elems) == 0 {
+		return false
+	}
+	pv := jsonMarshalProbe(elems[0], true)
+	if m, ok := runtime.IfaceMember(c, pv, "MarshalJSON"); ok && jsonMarshalerMember(m) {
+		return true
+	}
+	m, ok := runtime.IfaceMember(c, pv, "MarshalText")
+	return ok && jsonMarshalerMember(m)
+}
+
+// jsonMarshalerMember reports whether the member m is a method
+// callable as `func() ([]byte, error)` — gc's signature for both
+// json.Marshaler and encoding.TextMarshaler. A same-named method
+// with another signature does not satisfy the interface, so the
+// base64 shortcut stays on (a `MarshalJSON() string` changes
+// nothing under gc).
+func jsonMarshalerMember(m runtime.Value) bool {
+	switch fn := m.(type) {
+	case *runtime.BoundMethod:
+		if fn.Fn == nil || fn.Fn.Decl == nil {
+			return false
+		}
+		return jsonMarshalerFuncType(fn.Fn, fn.Fn.Decl.Type)
+	case *runtime.BuiltinFunc:
+		// the reflected method's signature carries its receiver as
+		// In(0); the bound call must return ([]byte, error).
+		if fn.Method == nil {
+			return false
+		}
+		mt := fn.Method.Type
+		return mt.NumIn() == 1 && mt.NumOut() == 2 &&
+			mt.Out(0) == reflect.TypeOf([]byte(nil)) &&
+			mt.Out(1) == reflect.TypeOf((*error)(nil)).Elem()
+	}
+	return false
+}
+
+// jsonMarshalerFuncType reports whether the declared method type of
+// fn spells `func() ([]byte, error)`: no parameters (the
+// BoundMethod's decl carries no receiver) and exactly two results
+// resolving — through package-scope `type X = Y` aliases — to
+// `[]byte` and `error`.
+func jsonMarshalerFuncType(fn *runtime.Function, ft *ast.FuncType) bool {
+	if ft == nil {
+		return false
+	}
+	if ft.Params != nil && len(ft.Params.List) > 0 {
+		return false
+	}
+	if ft.Results == nil || len(ft.Results.List) != 2 {
+		return false
+	}
+	// each result must be a single name or unnamed — `([]byte, b)`
+	// shapes cannot spell the marshaler signature.
+	for _, r := range ft.Results.List {
+		if len(r.Names) > 1 {
+			return false
+		}
+	}
+	r0 := jsonResolveAlias(ft.Results.List[0].Type, fn, nil)
+	at, ok := r0.(*ast.ArrayType)
+	if !ok || at.Len != nil || !jsonByteExpr(at.Elt, fn) {
+		return false
+	}
+	r1 := jsonResolveAlias(ft.Results.List[1].Type, fn, nil)
+	id, ok := r1.(*ast.Ident)
+	return ok && id.Name == "error" && jsonPkgTypeSpec(fn, "error") == nil
+}
+
+// jsonResolveAlias follows package-scope `type X = Y` aliases out
+// of an ident, returning the final type expression. A defined
+// (non-alias) type stops the walk — `type B []byte` is never
+// identical to []byte under gc's signature identity. `seen` guards
+// alias cycles the parser would still have accepted.
+func jsonResolveAlias(e ast.Expr, fn *runtime.Function, seen map[string]bool) ast.Expr {
+	id, ok := e.(*ast.Ident)
+	if !ok || seen[id.Name] {
+		return e
+	}
+	spec := jsonPkgTypeSpec(fn, id.Name)
+	if spec == nil || !spec.Assign.IsValid() {
+		return e
+	}
+	if seen == nil {
+		seen = map[string]bool{}
+	}
+	seen[id.Name] = true
+	return jsonResolveAlias(spec.Type, fn, seen)
+}
+
+// jsonPkgTypeSpec finds the TypeSpec declaring name in fn's package
+// files, or nil when the name is not declared at package scope.
+func jsonPkgTypeSpec(fn *runtime.Function, name string) *ast.TypeSpec {
+	if fn == nil || fn.Pkg == nil {
+		return nil
+	}
+	for _, file := range fn.Pkg.Files {
+		if file == nil || file.AST == nil {
+			continue
+		}
+		for _, decl := range file.AST.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if ok && ts.Name.Name == name {
+					return ts
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// jsonByteExpr reports whether e resolves to the predeclared byte or
+// uint8 element of a `[]byte` result — a package-scope defined
+// `type byte …` shadow turns the spelling off.
+func jsonByteExpr(e ast.Expr, fn *runtime.Function) bool {
+	e = jsonResolveAlias(e, fn, nil)
+	id, ok := e.(*ast.Ident)
+	if !ok || (id.Name != "byte" && id.Name != "uint8") {
+		return false
+	}
+	return jsonPkgTypeSpec(fn, id.Name) == nil
 }
