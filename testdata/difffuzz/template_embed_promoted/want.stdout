@@ -9,4 +9,6 @@ ptremb: true PLBL t
 ambig: ambig: {{.D.Hidden}} {{.D.Moderation.Hidden}} => ERROR: template: t:1:11: executing "t" at <.D.Hidden>: can't evaluate field Hidden in type interface {}
 hostemb: 5
 defined: true 1
+hostmeth: 2020 7
+nilhost: 3
 alias: true 9

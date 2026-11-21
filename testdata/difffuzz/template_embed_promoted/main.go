@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 	"text/template"
+	"time"
 )
 
 type Moderation struct {
@@ -12,7 +13,7 @@ type Moderation struct {
 	HiddenReason string
 }
 
-func (m Moderation) Label() string  { return "LBL" }
+func (m Moderation) Label() string   { return "LBL" }
 func (m *Moderation) PLabel() string { return "PLBL" }
 
 type Inner struct{ Deep string }
@@ -46,6 +47,16 @@ type M2 struct {
 
 type HostEmbed struct {
 	sync.Mutex
+	N int
+}
+
+type HostTime struct {
+	time.Time
+	N int
+}
+
+type HostTpl struct {
+	template.Template
 	N int
 }
 
@@ -99,6 +110,15 @@ func main() {
 
 	vd := &ViaDefined{Defined: Defined{Hidden: true, HiddenReason: "vd"}, X: 1}
 	run("defined: {{.V.Hidden}} {{.V.X}}", dict("V", vd))
+
+	ht := &HostTime{Time: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), N: 7}
+	run("hostmeth: {{.S.Year}} {{.S.N}}", dict("S", ht))
+
+	// a zero template.Template's *Tree is nil — a promoted field read
+	// through it must not abort the marshal (gc skips the member).
+	var zt template.Template
+	tz := &HostTpl{Template: zt, N: 3}
+	run("nilhost: {{.S.N}}", dict("S", tz))
 
 	a := &struct {
 		Alias
