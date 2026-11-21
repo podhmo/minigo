@@ -45,8 +45,9 @@ var FileBudgets = map[string]int{
 	"installbound.go":                           120,
 	"internal/archcheck/all.go":                 57,
 	"internal/archcheck/archcheck.go":           643,
-	"internal/archcheck/budgets.go": 387,
-	"internal/archcheck/rules.go":               151,
+	"internal/archcheck/budgets.go": 389,
+	"internal/archcheck/rules.go": 152,
+	"internal/cmd/simcheck/main.go":             359,
 	"internal/assetaudit/assetaudit.go":         112,
 	"internal/bind/env.go":                      48,
 	"internal/bind/install.go":                  102,
@@ -271,6 +272,7 @@ var FileBudgets = map[string]int{
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
 var FileBudgetExceptions = map[string]string{
+	"internal/cmd/simcheck/main.go":              "simcheck-ratchet: comment-only window skip + same-file dup counting + receiver-qualified pair ids (TODO #238)",
 	"index/index.go":                             "gosimilarity R1 residue: Index.TypeSpec shared by compile + inspect",
 	"internal/hostbridge/argas.go":   "funcmap-typedef-slice: Lift lifts a host-projected slice's elements (Slice.Host set) and unboxes a host-map GoValue pair-wise so []Level / map[Level]T FuncMap params get tagged elements (TODO #187); named host maps keep their box, NaN keys read through MapRange",
 	"internal/hostbridge/adapt.go":  "funcmap-hostiface: projected-arg resolution + script->host resync (TODO #275); panicstruct: funcMapPanicValue derefs a struct projection to the struct value the script panicked with",
