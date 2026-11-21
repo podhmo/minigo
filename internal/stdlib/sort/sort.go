@@ -19,6 +19,14 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		// a host gsort.Interface (a GoValue gsort.Interface passes through).
 		"Sort":  &runtime.BuiltinFunc{Name: "sort.Sort", Fn: stdlib.SortInterface},
 		"Slice": &runtime.BuiltinFunc{Name: "sort.Slice", Fn: stdlib.SortSlice},
+		// the typed search/sorted wrappers marshal through WrapBind like
+		// any other bound func.
+		"SearchInts":        stdlib.WrapBind("sort.SearchInts", gsort.SearchInts),
+		"SearchFloat64s":    stdlib.WrapBind("sort.SearchFloat64s", gsort.SearchFloat64s),
+		"SearchStrings":     stdlib.WrapBind("sort.SearchStrings", gsort.SearchStrings),
+		"IntsAreSorted":     stdlib.WrapBind("sort.IntsAreSorted", gsort.IntsAreSorted),
+		"Float64sAreSorted": stdlib.WrapBind("sort.Float64sAreSorted", gsort.Float64sAreSorted),
+		"StringsAreSorted":  stdlib.WrapBind("sort.StringsAreSorted", gsort.StringsAreSorted),
 		"SliceIsSorted": &runtime.BuiltinFunc{Name: "sort.SliceIsSorted", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if _, rv, isHost := vm.HostSliceOf(args[0]); isHost {
 				// a boxed host slice: the less function reads it live
