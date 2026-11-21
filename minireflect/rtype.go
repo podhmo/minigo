@@ -857,6 +857,14 @@ func (t *RType) Len() int {
 			return int(n)
 		}
 	}
+	// a named type declared over an array gets its length through the
+	// underlying typedef — `type B [2]int` carries the ident "A", not
+	// an ArrayType, in td.Anon.
+	if t.e.h.Underlying != nil && t.td != nil {
+		if u, err := t.e.h.Underlying(t.td); err == nil && u != nil && u != t.td {
+			return t.e.rtypeOf(u).Len()
+		}
+	}
 	trap("Len of non-array type %s", t.String())
 	return 0
 }
@@ -1837,6 +1845,26 @@ func SizeOf(h Hooks, td *runtime.TypeDef) uintptr {
 	return e.rtypeOf(td).sizeOf()
 }
 
+// HasPointers reports whether a value of td contains pointers — the
+// scan/noscan split gc's growslice applies for the malloc header.
+func HasPointers(h Hooks, td *runtime.TypeDef) bool {
+	e := &Env{h: h}
+	return e.rtypeOf(td).hasPointers()
+}
+
+// CallerHooks builds the hooks a VMCaller already answers — ElemOf,
+// FieldTypes and ResolveType — so intrinsics in packages that cannot
+// reach the engine (builtin, internal/stdlib) can still size and scan
+// declared types.
+func CallerHooks(v runtime.VMCaller) Hooks {
+	return Hooks{
+		ElemOf:      v.ElemOf,
+		FieldTypes:  v.FieldTypes,
+		ResolveType: v.ResolveType,
+		Underlying:  v.Underlying,
+	}
+}
+
 // AlignOf reports the alignment of td as laid out on amd64, the layout
 // [OffsetOf] uses.
 func AlignOf(h Hooks, td *runtime.TypeDef) uintptr {
@@ -1909,6 +1937,13 @@ func (t *RType) sizeOf() uintptr {
 		for i := 0; i < t.NumField(); i++ {
 			ft := t.Field(i).Type
 			off = roundUp(off, uintptr(ft.alignOf())) + ft.sizeOf()
+		}
+		// gc pads a struct whose LAST field is zero-size so the
+		// field's address stays in bounds — only when a preceding field
+		// occupied space: struct{i int64; s struct{}} is 16, while
+		// struct{s struct{}} stays 0.
+		if n := t.NumField(); off > 0 && n > 0 && t.Field(n-1).Type.sizeOf() == 0 {
+			off++
 		}
 		return roundUp(off, uintptr(t.alignOf()))
 	}
