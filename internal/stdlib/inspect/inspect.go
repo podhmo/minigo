@@ -1,7 +1,6 @@
-package minigo
-
-// inspect.go — the intrinsic table behind the "minigo.dev/inspect" stub
-// package (docs/sketch/plan-package-introspection.md). Views are boxed
+// Package stdinspect is the lazy installer for the bound
+// "minigo.dev/inspect" stub package (P2-12): the intrinsic table behind
+// the package (docs/sketch/plan-package-introspection.md). Views are boxed
 // as *runtime.GoValue carrying inspect.Decl/File/Import/Field/TypeExpr
 // pointers, so scripts read fields through reflective member dispatch;
 // unexported fields on those views hold the AST context.
@@ -9,6 +8,8 @@ package minigo
 // Locators take strings (PackageOf/DirOf/FileOf); symbol access takes
 // values (OwnerOf/SymbolOf); *runtime.ImportRef is accepted anywhere a
 // package is expected.
+
+package stdinspect
 
 import (
 	"context"
@@ -22,11 +23,12 @@ import (
 
 	"github.com/podhmo/minigo/index"
 	xinspect "github.com/podhmo/minigo/inspect"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installInspect() {
+func Install(bind stdlib.Bind, h Hooks) {
 	bf := func(name string, fn func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error)) *runtime.BuiltinFunc {
 		return &runtime.BuiltinFunc{Name: "inspect." + name, Fn: fn}
 	}
@@ -51,7 +53,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("NoDeclPath", "one path string")
 			}
-			return xinspect.NoDeclPath(str(runtime.Unwrap(args[0]))), nil
+			return xinspect.NoDeclPath(stdlib.Str(runtime.Unwrap(args[0]))), nil
 		}),
 		// ---- view types: the typedef entries let scripts spell
 		// *inspect.Field in signatures and type asserts. HostNew boxes
@@ -59,19 +61,19 @@ func (e *Engine) installInspect() {
 		// matches the *xinspect.Field a GoValue carries — no host
 		// construction surface is intended, the typedef only names the
 		// identity.
-		"Decl":     hostType("inspect.Decl", func() any { return &xinspect.Decl{} }),
-		"Field":    hostType("inspect.Field", func() any { return &xinspect.Field{} }),
-		"File":     hostType("inspect.File", func() any { return &xinspect.File{} }),
-		"TypeExpr": hostType("inspect.TypeExpr", func() any { return &xinspect.TypeExpr{} }),
-		"Node":     hostType("inspect.Node", func() any { return &xinspect.Node{} }),
-		"Sig":      hostType("inspect.Sig", func() any { return &xinspect.Sig{} }),
-		"Position": hostType("inspect.Position", func() any { return &xinspect.Position{} }),
-		"Method":   hostType("inspect.Method", func() any { return &xinspect.Method{} }),
-		"Import":   hostType("inspect.Import", func() any { return &xinspect.Import{} }),
-		"Comment":  hostType("inspect.Comment", func() any { return &xinspect.Comment{} }),
+		"Decl":     stdlib.HostType("inspect.Decl", func() any { return &xinspect.Decl{} }),
+		"Field":    stdlib.HostType("inspect.Field", func() any { return &xinspect.Field{} }),
+		"File":     stdlib.HostType("inspect.File", func() any { return &xinspect.File{} }),
+		"TypeExpr": stdlib.HostType("inspect.TypeExpr", func() any { return &xinspect.TypeExpr{} }),
+		"Node":     stdlib.HostType("inspect.Node", func() any { return &xinspect.Node{} }),
+		"Sig":      stdlib.HostType("inspect.Sig", func() any { return &xinspect.Sig{} }),
+		"Position": stdlib.HostType("inspect.Position", func() any { return &xinspect.Position{} }),
+		"Method":   stdlib.HostType("inspect.Method", func() any { return &xinspect.Method{} }),
+		"Import":   stdlib.HostType("inspect.Import", func() any { return &xinspect.Import{} }),
+		"Comment":  stdlib.HostType("inspect.Comment", func() any { return &xinspect.Comment{} }),
 		// Packages' element view — a resolve.RepoPackage descriptor, not
 		// a parsed package: loaders (DirOf/FileOf) do the loading.
-		"RepoPackage": hostType("inspect.RepoPackage", func() any { return &xinspect.RepoPackage{} }),
+		"RepoPackage": stdlib.HostType("inspect.RepoPackage", func() any { return &xinspect.RepoPackage{} }),
 		// ---- locators ----
 		"PackageOf": bf("PackageOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
@@ -79,19 +81,19 @@ func (e *Engine) installInspect() {
 			}
 			// like DirOf's lenient view: PackageOf must answer for a path
 			// whose source would not compile, so misses build leniently.
-			return e.loadPathLenient(context.Background(), str(runtime.Unwrap(args[0])))
+			return h.LoadPathLenient(context.Background(), stdlib.Str(runtime.Unwrap(args[0])))
 		}),
 		"SourceOf": bf("SourceOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("SourceOf", "one path string")
 			}
-			return e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
+			return h.SourceOf(context.Background(), stdlib.Str(runtime.Unwrap(args[0])))
 		}),
 		"LookupSourceOf": bf("LookupSourceOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupSourceOf", "one path string")
 			}
-			p, err := e.SourceOf(context.Background(), str(runtime.Unwrap(args[0])))
+			p, err := h.SourceOf(context.Background(), stdlib.Str(runtime.Unwrap(args[0])))
 			if err != nil {
 				if lookupMiss(err) {
 					return runtime.NIL, nil
@@ -104,7 +106,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("BoundOf", "one path string")
 			}
-			p := e.BoundOf(str(runtime.Unwrap(args[0])))
+			p := h.BoundOf(stdlib.Str(runtime.Unwrap(args[0])))
 			if p == nil {
 				return runtime.NIL, nil
 			}
@@ -114,13 +116,13 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("DirOf", "one dir string")
 			}
-			return e.loadDirLenient(context.Background(), str(runtime.Unwrap(args[0])))
+			return h.LoadDirLenient(context.Background(), stdlib.Str(runtime.Unwrap(args[0])))
 		}),
 		"LookupDirOf": bf("LookupDirOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupDirOf", "one dir string")
 			}
-			p, err := e.loadDirLenient(context.Background(), str(runtime.Unwrap(args[0])))
+			p, err := h.LoadDirLenient(context.Background(), stdlib.Str(runtime.Unwrap(args[0])))
 			if err != nil {
 				if lookupMiss(err) {
 					return runtime.NIL, nil
@@ -133,7 +135,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("LookupPackageOf", "one path string")
 			}
-			p, err := e.loadPathLenient(context.Background(), str(runtime.Unwrap(args[0])))
+			p, err := h.LoadPathLenient(context.Background(), stdlib.Str(runtime.Unwrap(args[0])))
 			if err != nil {
 				if lookupMiss(err) {
 					return runtime.NIL, nil
@@ -146,13 +148,13 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("FileOf", "one file string")
 			}
-			return e.fileView(str(runtime.Unwrap(args[0])))
+			return h.fileView(stdlib.Str(runtime.Unwrap(args[0])))
 		}),
 		"LookupFileOf": bf("LookupFileOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("LookupFileOf", "one file string")
 			}
-			fv, err := e.fileView(str(runtime.Unwrap(args[0])))
+			fv, err := h.fileView(stdlib.Str(runtime.Unwrap(args[0])))
 			if err != nil {
 				if lookupMiss(err) {
 					return runtime.NIL, nil
@@ -168,7 +170,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("Packages", "one root dir string")
 			}
-			root, err := e.fsPath(str(runtime.Unwrap(args[0])))
+			root, err := h.FSPath(stdlib.Str(runtime.Unwrap(args[0])))
 			if err != nil {
 				return nil, err
 			}
@@ -190,13 +192,13 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("OwnerOf", "one value")
 			}
-			return e.ownerOf(runtime.Unwrap(args[0]))
+			return h.ownerOf(runtime.Unwrap(args[0]))
 		}),
 		"PathOf": bf("PathOf", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, argerr("PathOf", "one value")
 			}
-			p, err := e.ownerOf(runtime.Unwrap(args[0]))
+			p, err := h.ownerOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -209,7 +211,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("SymbolIDOf", "one value")
 			}
-			d, err := e.symbolOf(runtime.Unwrap(args[0]))
+			d, err := h.symbolOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -226,7 +228,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("SymbolOf", "one value")
 			}
-			d, err := e.symbolOf(runtime.Unwrap(args[0]))
+			d, err := h.symbolOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -240,27 +242,27 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("Decls", "a package or file view")
 			}
-			return e.declsOf(runtime.Unwrap(args[0]))
+			return h.declsOf(runtime.Unwrap(args[0]))
 		}),
 		"Symbol": bf("Symbol", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("Symbol", "a package and a name")
 			}
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
-			return e.lookupSymbol(p, str(runtime.Unwrap(args[1])))
+			return h.lookupSymbol(p, stdlib.Str(runtime.Unwrap(args[1])))
 		}),
 		"LookupSymbol": bf("LookupSymbol", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
 				return nil, argerr("LookupSymbol", "a package and a name")
 			}
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
-			s, err := e.findSymbol(p, str(runtime.Unwrap(args[1])))
+			s, err := h.findSymbol(p, stdlib.Str(runtime.Unwrap(args[1])))
 			if err != nil {
 				return nil, err
 			}
@@ -273,7 +275,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 1 {
 				return nil, argerr("Files", "a package")
 			}
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -355,28 +357,28 @@ func (e *Engine) installInspect() {
 			}
 		}),
 		"Path": bf("Path", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return p.Path, nil
 		}),
 		"Dir": bf("Dir", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return filepath.ToSlash(p.Dir), nil
 		}),
 		"State": bf("State", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
 			return stateName(p.State()), nil
 		}),
 		"Standard": bf("Standard", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -435,7 +437,7 @@ func (e *Engine) installInspect() {
 			}
 			switch u := runtime.Unwrap(args[0]).(type) {
 			case *runtime.Package, *runtime.ImportRef:
-				p, err := e.pkgOf(u)
+				p, err := h.pkgOf(u)
 				if err != nil {
 					return nil, err
 				}
@@ -453,7 +455,7 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			ms, err := xinspect.MethodSetOf(s, e.resolverForInspect())
+			ms, err := xinspect.MethodSetOf(s, h.resolverForInspect())
 			if err != nil {
 				return nil, err
 			}
@@ -463,7 +465,7 @@ func (e *Engine) installInspect() {
 			if len(args) != 2 {
 				return nil, argerr("Implementers", "a package and an interface decl")
 			}
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
@@ -471,7 +473,7 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			ds, err := xinspect.ImplementersOf(p, s, e.resolverForInspect())
+			ds, err := xinspect.ImplementersOf(p, s, h.resolverForInspect())
 			if err != nil {
 				return nil, err
 			}
@@ -648,7 +650,7 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return &runtime.GoValue{V: te.Unwrap(e.resolverForInspect())}, nil
+			return &runtime.GoValue{V: te.Unwrap(h.resolverForInspect())}, nil
 		}),
 		"UnRef": bf("UnRef", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			te, err := typeExprOf(args[0])
@@ -662,13 +664,13 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return &runtime.GoValue{V: te.Origin(e.resolverForInspect())}, nil
+			return &runtime.GoValue{V: te.Origin(h.resolverForInspect())}, nil
 		}),
 		"Resolve": bf("Resolve", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return e.resolveDecl(args, false)
+			return h.resolveDecl(args, false)
 		}),
 		"LookupResolve": bf("LookupResolve", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			return e.resolveDecl(args, true)
+			return h.resolveDecl(args, true)
 		}),
 		"SameType": bf("SameType", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 2 {
@@ -682,7 +684,7 @@ func (e *Engine) installInspect() {
 			if err != nil {
 				return nil, err
 			}
-			return a.SameType(b, e.resolverForInspect()), nil
+			return a.SameType(b, h.resolverForInspect()), nil
 		}),
 		"UsedSymbols": bf("UsedSymbols", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			f, err := fileViewOf(args[0])
@@ -702,11 +704,11 @@ func (e *Engine) installInspect() {
 			if len(args) != 2 {
 				return nil, argerr("Value", "a package and a name")
 			}
-			p, err := e.pkgOf(runtime.Unwrap(args[0]))
+			p, err := h.pkgOf(runtime.Unwrap(args[0]))
 			if err != nil {
 				return nil, err
 			}
-			m, err := p.Member(str(runtime.Unwrap(args[1])), e.materialize)
+			m, err := p.Member(stdlib.Str(runtime.Unwrap(args[1])), h.Materialize)
 			if err != nil {
 				return nil, err
 			}
@@ -733,11 +735,11 @@ func (e *Engine) installInspect() {
 			if d.Kind != index.TypeDecl {
 				return nil, fmt.Errorf("inspect.TypeOf: %s is a %s, not a type", s.Name, s.Kind)
 			}
-			return e.materialize(s.Package, d)
+			return h.Materialize(s.Package, d)
 		}),
 	}
 	for _, path := range []string{"minigo.dev/inspect", "github.com/podhmo/minigo/inspect"} {
-		e.bindBound(path, pkg)
+		bind(path, pkg)
 	}
 }
 
@@ -774,8 +776,8 @@ func lookupMiss(err error) bool {
 
 // fileView loads a single file as a one-file package and answers its
 // file view — FileOf's and LookupFileOf's shared body.
-func (e *Engine) fileView(name string) (runtime.Value, error) {
-	p, err := e.loadFileLenient(context.Background(), name)
+func (h Hooks) fileView(name string) (runtime.Value, error) {
+	p, err := h.LoadFileLenient(context.Background(), name)
 	if err != nil {
 		return nil, err
 	}
@@ -844,7 +846,7 @@ func typeExprOf(v runtime.Value) (*xinspect.TypeExpr, error) {
 
 // pkgOf normalizes package-ish values: *runtime.Package or
 // *runtime.ImportRef (materialized lazily, no init).
-func (e *Engine) pkgOf(v runtime.Value) (*runtime.Package, error) {
+func (h Hooks) pkgOf(v runtime.Value) (*runtime.Package, error) {
 	switch x := v.(type) {
 	case *runtime.Package:
 		return x, nil
@@ -856,13 +858,13 @@ func (e *Engine) pkgOf(v runtime.Value) (*runtime.Package, error) {
 
 // resolverForInspect binds the SymbolID -> decl view resolver used by
 // UnWrap/Origin/Resolve/SameType.
-func (e *Engine) resolverForInspect() xinspect.Resolver {
+func (h Hooks) resolverForInspect() xinspect.Resolver {
 	return func(sid runtime.SymbolID) (*xinspect.Decl, error) {
-		p, err := e.loadPath(context.Background(), sid.PackagePath)
+		p, err := h.LoadPath(context.Background(), sid.PackagePath)
 		if err != nil {
 			return nil, err
 		}
-		d, err := e.lookupDeclIn(p, sid.Name)
+		d, err := LookupDeclIn(p, sid.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -872,7 +874,7 @@ func (e *Engine) resolverForInspect() xinspect.Resolver {
 		if p.Index == nil {
 			// A host-bound package has no index: report its member as
 			// the Kind:"host" pseudo-decl Symbol gives.
-			if v, err := e.findSymbol(p, sid.Name); err != nil {
+			if v, err := h.findSymbol(p, sid.Name); err != nil {
 				return nil, err
 			} else if v != nil {
 				return v.(*runtime.GoValue).V.(*xinspect.Decl), nil
@@ -885,7 +887,7 @@ func (e *Engine) resolverForInspect() xinspect.Resolver {
 // resolveDecl is the body Resolve and LookupResolve share; lookup turns
 // a name that resolves to nothing — a package path that locates no
 // directory, or a package without the name — into nil.
-func (e *Engine) resolveDecl(args []runtime.Value, lookup bool) (runtime.Value, error) {
+func (h Hooks) resolveDecl(args []runtime.Value, lookup bool) (runtime.Value, error) {
 	te, err := typeExprOf(args[0])
 	if err != nil {
 		return nil, err
@@ -894,7 +896,7 @@ func (e *Engine) resolveDecl(args []runtime.Value, lookup bool) (runtime.Value, 
 	if !ok || xinspect.NoDeclPath(sid.PackagePath) {
 		return runtime.NIL, nil
 	}
-	d, err := e.resolverForInspect()(sid)
+	d, err := h.resolverForInspect()(sid)
 	if err != nil {
 		var miss *noDeclError
 		if lookup && (errors.As(err, &miss) || lookupMiss(err)) {
@@ -914,7 +916,7 @@ func (e *noDeclError) Error() string {
 }
 
 // lookupDeclIn finds a top-level decl by name in an indexed package.
-func (e *Engine) lookupDeclIn(p *runtime.Package, name string) (*index.Decl, error) {
+func LookupDeclIn(p *runtime.Package, name string) (*index.Decl, error) {
 	if p == nil {
 		return nil, nil
 	}
@@ -924,8 +926,8 @@ func (e *Engine) lookupDeclIn(p *runtime.Package, name string) (*index.Decl, err
 
 // lookupSymbol implements inspect.Symbol(pkg, name): the findSymbol
 // search, with a miss reported as an error.
-func (e *Engine) lookupSymbol(p *runtime.Package, name string) (runtime.Value, error) {
-	v, err := e.findSymbol(p, name)
+func (h Hooks) lookupSymbol(p *runtime.Package, name string) (runtime.Value, error) {
+	v, err := h.findSymbol(p, name)
 	if err != nil {
 		return nil, err
 	}
@@ -937,12 +939,12 @@ func (e *Engine) lookupSymbol(p *runtime.Package, name string) (runtime.Value, e
 
 // findSymbol is the search Symbol and LookupSymbol share: an index hit,
 // else a bound-package global as a host pseudo-decl, else nil.
-func (e *Engine) findSymbol(p *runtime.Package, name string) (runtime.Value, error) {
+func (h Hooks) findSymbol(p *runtime.Package, name string) (runtime.Value, error) {
 	if p == nil {
 		return nil, fmt.Errorf("inspect.Symbol: nil package")
 	}
 	if p.Index != nil {
-		if d, err := e.lookupDeclIn(p, name); err != nil {
+		if d, err := LookupDeclIn(p, name); err != nil {
 			return nil, err
 		} else if d != nil {
 			return &runtime.GoValue{V: xinspect.NewDecl(p, d)}, nil
@@ -950,7 +952,7 @@ func (e *Engine) findSymbol(p *runtime.Package, name string) (runtime.Value, err
 	}
 	if v, ok := p.Globals.Get(name); ok {
 		if bf, ok := v.(*runtime.BuiltinFunc); ok {
-			return &runtime.GoValue{V: e.hostDecl(p, name, bf)}, nil
+			return &runtime.GoValue{V: h.hostDecl(p, name, bf)}, nil
 		}
 		if td, ok := v.(*runtime.TypeDef); ok {
 			return &runtime.GoValue{V: xinspect.NewHostTypeDecl(p, name, td)}, nil
@@ -964,12 +966,12 @@ func (e *Engine) findSymbol(p *runtime.Package, name string) (runtime.Value, err
 // recovering a real signature from BuiltinFunc.Target when present, and
 // the owner/signature/position from BuiltinFunc.Method for host-value
 // method builtins.
-func (e *Engine) hostDecl(p *runtime.Package, name string, bf *runtime.BuiltinFunc) *xinspect.Decl {
+func (h Hooks) hostDecl(p *runtime.Package, name string, bf *runtime.BuiltinFunc) *xinspect.Decl {
 	var sig *xinspect.Sig
 	var target reflect.Type
 	if bf != nil && bf.Method != nil {
 		if p == nil {
-			p = e.hostMethodPkg(bf.Method)
+			p = h.hostMethodPkg(bf.Method)
 		}
 		mt := bf.Method.Type
 		if mt.Kind() == reflect.Func && mt.NumIn() > 0 {
@@ -1012,7 +1014,7 @@ func hostFields(n int, at func(i int) reflect.Type) *runtime.Slice {
 
 // hostMethodPkg recovers the package a host method was declared in from
 // its receiver type's PkgPath (peeling pointer receivers).
-func (e *Engine) hostMethodPkg(m *reflect.Method) *runtime.Package {
+func (h Hooks) hostMethodPkg(m *reflect.Method) *runtime.Package {
 	rt := m.Type
 	if rt.NumIn() == 0 {
 		return nil
@@ -1024,7 +1026,7 @@ func (e *Engine) hostMethodPkg(m *reflect.Method) *runtime.Package {
 	if recv.PkgPath() == "" {
 		return nil
 	}
-	p, err := e.loadPath(context.Background(), recv.PkgPath())
+	p, err := h.LoadPath(context.Background(), recv.PkgPath())
 	if err != nil {
 		return nil
 	}
@@ -1051,7 +1053,7 @@ func hostMethodPos(m *reflect.Method) *xinspect.Position {
 // declsOf implements inspect.Decls(x): a package's top-level decls from
 // the index, filtered to one file when given a File view; bound packages
 // fall back to Globals names as Kind:"host" pseudo-decls.
-func (e *Engine) declsOf(v runtime.Value) (runtime.Value, error) {
+func (h Hooks) declsOf(v runtime.Value) (runtime.Value, error) {
 	if f, err := fileViewOf(v); err == nil {
 		p := f.Pkg()
 		var xs []runtime.Value
@@ -1065,7 +1067,7 @@ func (e *Engine) declsOf(v runtime.Value) (runtime.Value, error) {
 		}
 		return &runtime.Slice{Elems: xs}, nil
 	}
-	p, err := e.pkgOf(runtime.Unwrap(v))
+	p, err := h.pkgOf(runtime.Unwrap(v))
 	if err != nil {
 		return nil, err
 	}
@@ -1078,7 +1080,7 @@ func (e *Engine) declsOf(v runtime.Value) (runtime.Value, error) {
 		for _, name := range p.Globals.Names() {
 			gv, _ := p.Globals.Get(name)
 			if bf, ok := gv.(*runtime.BuiltinFunc); ok {
-				xs = append(xs, &runtime.GoValue{V: e.hostDecl(p, name, bf)})
+				xs = append(xs, &runtime.GoValue{V: h.hostDecl(p, name, bf)})
 			} else if td, ok := gv.(*runtime.TypeDef); ok {
 				xs = append(xs, &runtime.GoValue{V: xinspect.NewHostTypeDecl(p, name, td)})
 			} else {
@@ -1090,7 +1092,7 @@ func (e *Engine) declsOf(v runtime.Value) (runtime.Value, error) {
 }
 
 // ownerOf implements inspect.OwnerOf: value -> its declaring package.
-func (e *Engine) ownerOf(v runtime.Value) (*runtime.Package, error) {
+func (h Hooks) ownerOf(v runtime.Value) (*runtime.Package, error) {
 	switch x := v.(type) {
 	case *runtime.Package:
 		return x, nil
@@ -1111,7 +1113,7 @@ func (e *Engine) ownerOf(v runtime.Value) (*runtime.Package, error) {
 			return x.Pkg, nil
 		}
 		if x.Method != nil {
-			return e.hostMethodPkg(x.Method), nil
+			return h.hostMethodPkg(x.Method), nil
 		}
 		return nil, nil
 	case *runtime.GoValue:
@@ -1128,7 +1130,7 @@ func (e *Engine) ownerOf(v runtime.Value) (*runtime.Package, error) {
 				}
 			}
 			if t != nil {
-				return e.loadPath(context.Background(), t.PkgPath())
+				return h.LoadPath(context.Background(), t.PkgPath())
 			}
 		}
 		return nil, nil
@@ -1137,14 +1139,14 @@ func (e *Engine) ownerOf(v runtime.Value) (*runtime.Package, error) {
 }
 
 // symbolOf implements inspect.SymbolOf: value -> decl view.
-func (e *Engine) symbolOf(v runtime.Value) (*xinspect.Decl, error) {
+func (h Hooks) symbolOf(v runtime.Value) (*xinspect.Decl, error) {
 	switch x := v.(type) {
 	case *runtime.Function:
-		return e.symbolOfFunc(x)
+		return h.symbolOfFunc(x)
 	case *runtime.Closure:
-		return e.symbolOfFunc(x.Fn)
+		return h.symbolOfFunc(x.Fn)
 	case *runtime.BoundMethod:
-		return e.symbolOfFunc(x.Fn)
+		return h.symbolOfFunc(x.Fn)
 	case *runtime.TypeDef:
 		if x.Pkg != nil && x.Pkg.Index != nil {
 			if td, ok := x.Pkg.Index.Types[x.Name]; ok && td.Decl != nil {
@@ -1156,20 +1158,20 @@ func (e *Engine) symbolOf(v runtime.Value) (*xinspect.Decl, error) {
 		if x.Def == nil {
 			return nil, nil
 		}
-		return e.symbolOf(x.Def)
+		return h.symbolOf(x.Def)
 	case *runtime.BuiltinFunc:
 		name := x.Name
 		if x.Pkg != nil && strings.HasPrefix(name, x.Pkg.Path+".") {
 			name = name[len(x.Pkg.Path)+1:]
 		}
-		return e.hostDecl(x.Pkg, name, x), nil
+		return h.hostDecl(x.Pkg, name, x), nil
 	case *runtime.Package:
 		return nil, fmt.Errorf("inspect.SymbolOf: %s is a package, not a symbol", x.Path)
 	}
 	return nil, fmt.Errorf("inspect.SymbolOf: no symbol for %T", v)
 }
 
-func (e *Engine) symbolOfFunc(fn *runtime.Function) (*xinspect.Decl, error) {
+func (h Hooks) symbolOfFunc(fn *runtime.Function) (*xinspect.Decl, error) {
 	if fn.Pkg == nil || fn.Pkg.Index == nil {
 		return nil, nil
 	}
