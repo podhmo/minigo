@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"reflect"
 	"syscall"
 
@@ -131,6 +132,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			}
 			if !st.IsDir() {
 				return stdlib.ErrVal(&fs.PathError{Op: "chdir", Path: sp, Err: syscall.ENOTDIR}), nil
+			}
+			// the kernel's cwd is the RESOLVED directory — Getwd reads
+			// it back without the spelled symlink or trailing slash.
+			if rp, err := filepath.EvalSymlinks(p); err == nil {
+				p = rp
 			}
 			env.SetCwd(p)
 			return runtime.NIL, nil
