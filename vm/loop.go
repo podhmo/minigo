@@ -276,10 +276,10 @@ func (v *VM) loop(f *frame) {
 			f.trap("cannot take address of %s", name)
 		case bytecode.OpSelect:
 			base := f.pop()
-			f.push(v.selectMember(f, base, consts[ins.A].(string)))
+			f.push(v.selectMember(f, base, consts[ins.A].(string), v.selSite(f, ins)))
 		case bytecode.OpSelectCall:
 			base := f.pop()
-			res := v.selectMember(f, base, consts[ins.A].(string))
+			res := v.selectMember(f, base, consts[ins.A].(string), v.selSite(f, ins))
 			if bm, ok := res.(*runtime.BoundMethod); ok {
 				bm.Direct = true
 			}
