@@ -1,7 +1,6 @@
 package minigo
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -1270,45 +1269,12 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		if !ok || from.Pkg == nil {
 			return nil, fmt.Errorf("cannot resolve embedded type")
 		}
-		var scope map[string]*runtime.ImportRef
-		if from.File != nil {
-			scope = from.Pkg.Scopes[from.File]
-		}
-		ref, ok := scope[id.Name]
-		if !ok && from.File != nil {
-			// an unaliased import whose package clause differs from the
-			// path's last element (gopkg.in/yaml.v3 declares yaml):
-			// Scopes keys on the basename, so learn the real name by
-			// materializing like the VM's resolveGlobal does.
-			for _, r := range from.Pkg.Imports[from.File] {
-				if r.Alias != "" {
-					continue
-				}
-				if p, err := r.Materialize(); err == nil && p != nil && p.Name == id.Name {
-					ref, ok = r, true
-					break
-				}
-			}
-		}
-		if !ok {
-			// minireflect's exprOf qualifies a named typedef by package
-			// PATH (e.g. <dir>/prog/x.T, reflect.Value) — the selector's
-			// qualifier is a path, not a file-scope import alias. The
-			// local package resolves through its own index; anything
-			// else loads by path.
-			if from.Pkg.Path == id.Name {
-				return e.resolveTypeRef(from, ast.NewIdent(t.Sel.Name))
-			}
-			ref = &runtime.ImportRef{
-				Path: id.Name,
-				Load: func(path string) (*runtime.Package, error) {
-					return e.loadPath(context.Background(), path)
-				},
-			}
-		}
-		p, err := ref.Materialize()
+		p, err := e.importPackageAt(from, id.Name)
 		if err != nil {
 			return nil, err
+		}
+		if p == from.Pkg {
+			return e.resolveTypeRef(from, ast.NewIdent(t.Sel.Name))
 		}
 		m, err := p.Member(t.Sel.Name, e.materialize)
 		if err != nil {

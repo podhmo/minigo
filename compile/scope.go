@@ -45,6 +45,11 @@ type binding struct {
 	// re-derived from a package decl — its names resolve in that
 	// package scope, not the use site's.
 	declTypFile *syntax.File
+	// declDefer holds the initializer value expression whose member
+	// type is a deferred fact (`var y = p.C` when the index couldn't
+	// answer p.C): reads of the name report deferred so OpTypGate
+	// asks the question at run time.
+	declDefer ast.Expr
 	// untypedConst marks a `const` bound without a declared type: the
 	// operand adopts the other side's type, like a literal does.
 	untypedConst bool
@@ -168,6 +173,31 @@ func (s *fscope) noteUntypedConst(name string, dte ast.Expr) {
 		b.untypedConst = true
 		b.dte = dte
 	}
+}
+
+// localConsts maps every in-scope local declaration to whether it is
+// const-bound — true for a `const` name, false for vars, params and
+// type decls (a shadowing non-const must still answer for its name so
+// a package const of the same name does not leak through). Package
+// members never appear here.
+func (s *fscope) localConsts() map[string]bool {
+	seen := map[string]bool{}
+	var out map[string]bool
+	for cur := s; cur != nil; cur = cur.parent {
+		for i := len(cur.blocks) - 1; i >= 0; i-- {
+			for name, b := range cur.blocks[i] {
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+				if out == nil {
+					out = map[string]bool{}
+				}
+				out[name] = b.constDecl
+			}
+		}
+	}
+	return out
 }
 
 // lookupBinding walks the scope chain for the innermost declaration of

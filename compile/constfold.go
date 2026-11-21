@@ -183,6 +183,9 @@ func (c *compiler) isConstExprDepth(e ast.Expr, depth int) bool {
 			return false
 		}
 		res := askIndexed(ref)
+		if res.Kind == semantics.Deferred {
+			c.sawDeferred = true
+		}
 		if res.Kind != semantics.Found {
 			return false
 		}
@@ -308,6 +311,9 @@ func (c *compiler) certainlyNonConstDepth(e ast.Expr, depth int) bool {
 		if id, ok := x.X.(*ast.Ident); ok && c.fs.lookupBinding(id.Name) == nil {
 			if ref, isPkg := c.importRef(id.Name); isPkg {
 				res := askIndexed(ref)
+				if res.Kind == semantics.Deferred {
+					c.sawDeferred = true
+				}
 				return res.Kind == semantics.Found && res.Val.Index != nil && res.Val.Index.Vars[x.Sel.Name] != nil
 			}
 		}

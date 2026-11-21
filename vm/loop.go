@@ -657,6 +657,22 @@ func (v *VM) loop(f *frame) {
 				f.push(consts[ins.C])
 				f.ip = int(ins.A)
 			}
+		case bytecode.OpConstExpr:
+			// a deferred const-expr verdict: the site's expression
+			// constant → the constant-emission variant follows; not
+			// constant → jump to the non-constant variant.
+			cnst, err := v.deferredConst(f, f.ch.CallSites[ins.B])
+			if err != nil {
+				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+			}
+			if !cnst {
+				f.ip = int(ins.A)
+			}
+		case bytecode.OpTypGate:
+			// a deferred compare gate: the two sites resolve the
+			// operands' typedefs; two distinct named types trap gc's
+			// mismatched-types wording, anything else runs on.
+			v.typGate(f, f.ch.CallSites[ins.A], f.ch.CallSites[ins.B], int(ins.C))
 		case bytecode.OpPack:
 			n := int(ins.A)
 			el := make([]runtime.Value, n)

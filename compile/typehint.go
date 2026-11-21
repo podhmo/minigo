@@ -40,6 +40,17 @@ func (s *fscope) noteDeclTyp(name string, te ast.Expr, file *syntax.File) {
 	}
 }
 
+// noteDeferTyp records that a name's declared type is a deferred fact —
+// the value expression to ask about at run time.
+func (s *fscope) noteDeferTyp(name string, x ast.Expr) {
+	if len(s.blocks) == 0 || x == nil {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		b.declDefer = x
+	}
+}
+
 // isIfaceTypeExpr reports whether e syntactically names an interface
 // type: `interface{...}`, `any`, `error`, a local `type I interface{}`
 // decl, or a package typedef whose spec is an interface. Used to pick
@@ -156,6 +167,15 @@ type opTyp struct {
 	// type (`x := 1 + 2` is int, `x := 'a'` is rune) rather than
 	// staying adoption-shaped forever.
 	dte ast.Expr
+	// deferred marks an operand whose static type is a deferred fact
+	// (a package member the index couldn't answer): callers emit an
+	// OpTypGate CallSite that resolves it at run time instead of
+	// guessing unknown and dropping the fact. dexpr is the value
+	// expression the deferred question asks about — the operand
+	// itself, or the initializer a binding inherited the deferral
+	// from (`var y = p.C` asks about p.C, not y).
+	deferred bool
+	dexpr    ast.Expr
 	// elLit is a `[...]T` composite literal whose length the compile
 	// time fold could not resolve — callers that must not evaluate the
 	// operand (unsafe.Sizeof/Alignof) emit the key positions for a
@@ -403,6 +423,9 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 		if b.untypedConst {
 			return opTyp{untyped: true, dte: b.dte}
 		}
+		if b.declDefer != nil {
+			return opTyp{deferred: true, dexpr: b.declDefer}
+		}
 		return opTyp{te: b.declTyp, teFile: b.declTypFile}
 	}
 	if _, bound := c.binds[id.Name]; bound {
@@ -538,76 +561,6 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 		return opTyp{iface: true}
 	}
 	return opTyp{te: te}
-}
-
-// selPkgMemberOpTyp resolves a package-qualified operand `pkg.Name`:
-// a bound const/var tagged with a typedef contributes that type —
-// `time.January` is time.Month, so `d == time.January` mismatches like
-// gc. An untyped bound const stays untyped with its kind's default.
-// A source-indexed package's Globals stay empty at compile time, so the
-// member's static type comes from its declaration spec instead — read
-// in the declaring package's own scope, never the caller's. Types used
-// as values and unknown members report unknown.
-// semantics: fact — decides the static operand type of pkg.Name, which
-// drives `==` lowering and gc-parity rejections. The typed-const
-// defaulting path alone would be a hint; the rest is not.
-func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
-	res := askIndexed(ref)
-	if res.Kind != semantics.Found {
-		return opTyp{}
-	}
-	p := res.Val
-	if p.Globals != nil {
-		if v, ok := p.Globals.Get(x.Sel.Name); ok {
-			// an initialized source package binds members into
-			// Cells; bound packages keep the value directly.
-			if cell, isCell := v.(*runtime.Cell); isCell && cell != nil {
-				v = cell.Elem
-			}
-			if n, ok := v.(*runtime.Named); ok && n.Typ != nil {
-				if sel := qualTypSel(p, n.Typ); sel != "" {
-					return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
-				}
-			}
-			// a bound typed const may hold the raw host scalar rather
-			// than a Named — `time.Second` binds a bare time.Duration.
-			// Its tag comes from matching the host type back to the
-			// package's own typedefs.
-			if td := hostScalarTypeDefOf(p, v); td != nil {
-				if sel := qualTypSel(p, td); sel != "" {
-					return opTyp{te: &ast.SelectorExpr{X: x.X, Sel: ast.NewIdent(sel)}}
-				}
-			}
-			if uc, ok := v.(*runtime.UConst); ok && uc.V != nil {
-				return opTyp{untyped: true, dte: constKindDte(uc)}
-			}
-		}
-	}
-	if p.Index != nil {
-		return c.srcMemberOpTyp(p, x.Sel.Name)
-	}
-	return opTyp{}
-}
-
-// srcMemberOpTyp resolves a source-indexed package member's static type
-// from its declaration — the package never ran, so Globals has nothing.
-// A declared type (`const C T`, `var V T`) scopes into the caller's
-// view like scopeSpecType does for type specs; an inferred one takes
-// the value expression's static shape once its names are re-scoped.
-// Functions answer their signature, types used as values stay opaque.
-func (c *compiler) srcMemberOpTyp(p *runtime.Package, name string) opTyp {
-	if d := p.Index.Consts[name]; d != nil {
-		return c.valueSpecMemberOpTyp(p, d, true)
-	}
-	if d := p.Index.Vars[name]; d != nil {
-		return c.valueSpecMemberOpTyp(p, d, false)
-	}
-	if d := p.Index.Funcs[name]; d != nil && d.Func != nil && d.Func.Type != nil {
-		if te := c.scopeSpecType(p, d.File, d.Func.Type); te != nil {
-			return opTyp{te: te}
-		}
-	}
-	return opTyp{}
 }
 
 // valueSpecMemberOpTyp types one name of a foreign package's var/const
@@ -919,6 +872,19 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				return c.staticOpTyp(x.Args[0])
 			case "recover":
 				return opTyp{iface: true}
+			case "real", "imag":
+				// constant args keep the result an untyped
+				// constant; a typed complex arg's component type
+				// is left undecided here.
+				if !c.argsAllUntyped(x.Args) {
+					return opTyp{}
+				}
+				return opTyp{untyped: true, dte: &ast.Ident{Name: "float64"}}
+			case "complex":
+				if !c.argsAllUntyped(x.Args) {
+					return opTyp{}
+				}
+				return opTyp{untyped: true, dte: &ast.Ident{Name: "complex128"}}
 			}
 		}
 		return opTyp{}
@@ -938,6 +904,22 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		return opTyp{}
 	}
 	return opTyp{}
+}
+
+// argsAllUntyped reports whether every argument reads as an untyped
+// constant — the case where real/imag/complex keep their result
+// untyped.
+func (c *compiler) argsAllUntyped(args []ast.Expr) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, a := range args {
+		if ot := c.staticOpTyp(a); ot.untyped {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // funcTypeResultOpTyp resolves a signature to its single result type —
@@ -1762,28 +1744,29 @@ func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec
 // nilableTypExpr reports whether a resolved type expression denotes a
 // type a `nil` comparison can lawfully answer — pointer, slice, map,
 // channel, func, or interface — through named-type specs.
-func (c *compiler) nilableTypExpr(te ast.Expr) bool {
+func (c *compiler) nilableTypExpr(te ast.Expr) (nilable, resolved bool) {
 	switch t := c.unfoldTypExpr(te, 4).(type) {
 	case *ast.StarExpr, *ast.MapType, *ast.ChanType, *ast.FuncType, *ast.InterfaceType:
-		return true
+		return true, true
 	case *ast.ArrayType:
-		return t.Len == nil // a slice
+		return t.Len == nil, true // a slice
 	case *ast.Ident:
-		return t.Name == "error" || t.Name == "any"
+		return t.Name == "error" || t.Name == "any", true
 	case *ast.SelectorExpr:
 		// a qualified name resolves when the member is knowable —
 		// `time.Duration` proves non-nilable so `d == nil` traps like
 		// gc's reject, while an interface (`io.Reader`) keeps the
-		// lawful dynamic compare. An unresolved name stays
-		// maybe-nilable: silence over inventing an error.
+		// lawful dynamic compare. An unresolved name reports
+		// unresolved: the caller defers the nil check to run time
+		// instead of guessing nilable.
 		if ref, name, ok := c.selTypRef(t); ok {
 			if n, ok := c.selNilable(ref, name); ok {
-				return n
+				return n, true
 			}
 		}
-		return true
+		return true, false
 	}
-	return false
+	return false, true
 }
 
 // semantics: fact — decides whether `x == nil` on pkg.T traps the way
@@ -1809,7 +1792,8 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 		// `type T = otherpkg.Nilable` must read otherpkg through the
 		// spec's own imports, never the caller's, or a same-named
 		// import there would flip the verdict.
-		return c.nilableTypExpr(c.unfoldSpecType(p, ts, 4)), true
+		n, _ := c.nilableTypExpr(c.unfoldSpecType(p, ts, 4))
+		return n, true
 	}
 	if td == nil {
 		// a type name with no spec or typedef in view (synthetic
@@ -1862,6 +1846,16 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 				// the decl, like gc — `x := 1 + 2` is int, `y :=
 				// c` follows c's kind (opTyp.dte).
 				te = t.dte
+			}
+			if te == nil && t.deferred {
+				// `var y = p.C` inherits the deferral: reads of y
+				// report the same question, asked about p.C.
+				dx := t.dexpr
+				if dx == nil {
+					dx = rhs
+				}
+				c.fs.noteDeferTyp(name, dx)
+				return
 			}
 			if te == nil {
 				// an interface-typed initializer spells no operand

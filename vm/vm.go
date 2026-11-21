@@ -140,6 +140,17 @@ type Hooks struct {
 	// is the site's pinned context or the running frame's
 	// (package/file/binds). Nil falls back to ResolveType.
 	DeferredType func(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error)
+	// DeferredConst answers whether a deferred fact's expression is a
+	// constant expression (M4-7c) — the compile side emitted OpConstExpr
+	// because a qualified package member's constness needed AllowIndex.
+	// ctx is the site's pinned context or the running frame's. Nil makes
+	// OpConstExpr answer false.
+	DeferredConst func(site *bytecode.CallSite, ctx *runtime.TypeDef) (bool, error)
+	// DeferredValueTyp resolves the typedef of a deferred fact's VALUE
+	// expression (M4-7c) — `pkg.C` answers the member's declared or
+	// inferred type, which a compare gate reads for gc's
+	// mismatched-types rejection. Nil makes OpTypGate run on unchecked.
+	DeferredValueTyp func(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error)
 	// HostTwin returns the engine's own typedef for the named host type
 	// rt — the source declaration when rt's package is interpreted from
 	// source (go/ast), the bound typedef when it is host-bound — or nil
