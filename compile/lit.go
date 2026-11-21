@@ -20,6 +20,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -505,6 +506,8 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 	ic.emit(bytecode.OpReturn, ic.ch.NResults, 0, x.End())
 	ic.ch.NLocals = ic.fs.nlocals
 	ic.ch.Upvals = ic.fs.upvals
+	ic.ch.Boxed = ic.fs.boxedSlice()
+	spike.NoteChunkClassified(ic.ch.Boxed)
 	inner.Chunk = ic.ch
 
 	c.emit(bytecode.OpMakeClosure, c.constIdx(inner), 0, x.Pos())

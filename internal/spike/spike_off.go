@@ -27,6 +27,10 @@ func NoteBuildDuringCompile() {}
 // NoteChunkEscape records one freshly classified chunk's escape verdict.
 func NoteChunkEscape(escapes bool) {}
 
+// NoteChunkClassified records one chunk's compile-time slot
+// classification (boxed flags).
+func NoteChunkClassified(boxed []bool) {}
+
 // CompileBuilds reports how many buildPackage calls happened during
 // compilation.
 func CompileBuilds() int64 { return 0 }
@@ -39,6 +43,13 @@ func ChunksScanned() int64 { return 0 }
 
 // ChunksEscaped reports how many classified chunks escape their cells.
 func ChunksEscaped() int64 { return 0 }
+
+// ChunksClassified/ChunksBoxedAny/SlotsLocal/SlotsBoxed report the
+// compile-time slot classification counters.
+func ChunksClassified() int64 { return 0 }
+func ChunksBoxedAny() int64   { return 0 }
+func SlotsLocal() int64       { return 0 }
+func SlotsBoxed() int64       { return 0 }
 
 // Reset zeroes every counter.
 func Reset() {}

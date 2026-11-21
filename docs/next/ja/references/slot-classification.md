@@ -46,3 +46,20 @@
 | vm.go:3218 | range のイテレータのスロット |
 
 いずれもブロッカーではない。`OpEvalAST`、`goto`、`defer`/`recover`、`inspect` は影響を受けない。行番号は main `a3f4e24` のもので、P1 のファイル分割の後は変わる。
+
+## P4-2a の計測（`TestSpikeSlotClassification`、difffuzz corpus 全体）
+
+コンパイラが `Chunk.Boxed` に記録した分類:
+
+| 指標 | 値 |
+|---|---:|
+| 分類された chunk | 4722 |
+| boxed スロットを持つ chunk（= escape） | 872（18.5%） |
+| ローカルスロット総数 | 12247 |
+| boxed スロット | 1634（13.3%） |
+
+事前の推定（レシーバ解決を観測値に限った正確な規則で 9.3%）より高い。
+差の主因はレシーバが不明なときの保守的な Boxed で、`x := f()` の結果型が
+推論で解けない operand や promoted member はすべて Boxed になる。
+10% への絞り込みはレシーバ解決の精度（declTyp の伝播）がボトルネックであり、
+P4-2c で扱う。

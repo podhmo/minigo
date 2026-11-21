@@ -968,6 +968,7 @@ func (c *compiler) calleeExpr(fun ast.Expr) {
 		// method value — keeps the "value method" wrapper text.
 		if id, isId := ast.Unparen(t.X).(*ast.Ident); isId {
 			if _, _, found := c.fs.find(id.Name); found {
+				c.boxReceiver(t.X, t.Sel.Name)
 				c.selectorBase(t.X)
 				c.emit(bytecode.OpSelectCall, c.nameIdx(t.Sel.Name), 0, t.Sel.Pos())
 				return

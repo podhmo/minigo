@@ -275,6 +275,8 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 	c.emit(bytecode.OpReturn, nresults, 0, fn.Decl.End())
 	c.ch.NLocals = c.fs.nlocals
 	c.ch.Upvals = c.fs.upvals
+	c.ch.Boxed = c.fs.boxedSlice()
+	spike.NoteChunkClassified(c.ch.Boxed)
 	fn.Chunk = c.ch
 	return nil
 }
@@ -296,6 +298,8 @@ func ExprStrict(pkg *runtime.Package, file *syntax.File, e ast.Expr, strict bool
 	c.expr(e)
 	c.emit(bytecode.OpReturn, 1, 0, e.End())
 	c.ch.NLocals = c.fs.nlocals
+	c.ch.Boxed = c.fs.boxedSlice()
+	spike.NoteChunkClassified(c.ch.Boxed)
 	return c.ch, nil
 }
 
@@ -329,6 +333,8 @@ func ExprScopedStrict(pkg *runtime.Package, file *syntax.File, e ast.Expr, local
 	c.expr(e)
 	c.emit(bytecode.OpReturn, 1, 0, e.End())
 	c.ch.NLocals = c.fs.nlocals
+	c.ch.Boxed = c.fs.boxedSlice()
+	spike.NoteChunkClassified(c.ch.Boxed)
 	return c.ch, nil
 }
 
@@ -389,6 +395,8 @@ func InitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) 
 	c.emit(bytecode.OpReturn, 0, 0, 0)
 	c.ch.NLocals = c.fs.nlocals
 	c.ch.Upvals = c.fs.upvals
+	c.ch.Boxed = c.fs.boxedSlice()
+	spike.NoteChunkClassified(c.ch.Boxed)
 	return c.ch, nil
 }
 
@@ -446,5 +454,7 @@ func ConstInitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, er
 	c.emit(bytecode.OpReturn, 0, 0, 0)
 	c.ch.NLocals = c.fs.nlocals
 	c.ch.Upvals = c.fs.upvals
+	c.ch.Boxed = c.fs.boxedSlice()
+	spike.NoteChunkClassified(c.ch.Boxed)
 	return c.ch, nil
 }
