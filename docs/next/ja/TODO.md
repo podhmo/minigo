@@ -58,7 +58,9 @@
 - [-] **P2-6 `special` を公開パッケージとして切り出す**: `SymbolID`、`QuotedCall`、`SpecialFunc`、`SpecialContext` を移し、`runtime` には型エイリアスを残す（I7）。レジストリと VM 側の context 実装は `internal/execution` に移す。完了条件: examples が無修正でコンパイルできる。
   - [x] `SymbolID` / `QuotedCall` → `special/` パッケージへ移動、`runtime` にエイリアス（PR #1141）
   - [ ] `SpecialFunc` / `SpecialContext` は `runtime.Value`/`Package`/`TypeDef` 参照のため移すと import cycle — `runtime` に残置。registry・context 実装の `internal/execution` 移行は P2-14 に含める
-- [ ] **P2-7 `internal/hostbridge` を抽出する**: `goValueOf`、`toReflectValueDepth`、`hostMarshal`、`adaptFunc`、`hostArgAs`、opaque store、host↔script の変換層（`hostErrTwins`、`goNative`、プロキシのボックス）を移す。完了条件: archcheck が `vm/` での `reflect` を禁止している。
+- [-] **P2-7 `internal/hostbridge` を抽出する**: `goValueOf`、`toReflectValueDepth`、`hostMarshal`、`adaptFunc`、`hostArgAs`、opaque store、host↔script の変換層（`hostErrTwins`、`goNative`、プロキシのボックス）を移す。完了条件: archcheck が `vm/` での `reflect` を禁止している。
+  - [x] opaque コンテナの引数パッキング（`OpaqueStoreArg`/`opaqueStoreKey`/`opaqueStoreValue`/`namedStoreValue`/`OpaqueKeyPosition`/`NamedLoadValue`）を `internal/hostbridge` へ（PR #1142）
+  - [ ] 残り: `goValueOf`/`toReflectValueDepth`/`hostMarshal`/`adaptFunc`/`hostArgAs`/`hostErrTwins`/`goNative` と `vm/` の `reflect` 禁止（select/composite/convert/binop の reflect 使用も含め別 PR 群）
 - [ ] **P2-8 `scriptIface` のアダプタ一族を生成に切り替える**: インタフェース → メソッド → arity の表から生成し、`scriptFileSeek` などの組み合わせ爆発をなくす。
 - [ ] **P2-9 `builtin/` を抽出する**: `builtins.go` を移す。
 - [ ] **P2-10 stdlib: 名前レジストリと `bind.Env`**: テーブルはまだ即時に構築したまま、`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位/bound-shadow チェックを `names` ビューに移す。エンジンを捕捉している約 45 個のクロージャを `bind.Env` 経由にする。完了条件: 振る舞いが変わっていない。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
