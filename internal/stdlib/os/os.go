@@ -1,7 +1,6 @@
 package stdos
 
 import (
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -136,8 +135,8 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			env.SetCwd(p)
 			return runtime.NIL, nil
 		}),
-		"Open":   h.Fn1("os.Open", func(a []any) (any, error) { return fsOp2(env, "os.Open", a, os.Open) }),
-		"Create": h.Fn1("os.Create", func(a []any) (any, error) { return fsOp2(env, "os.Create", a, os.Create) }),
+		"Open":   h.Fn1("os.Open", func(a []any) (any, error) { return fsFileOp(env, a, os.Open) }),
+		"Create": h.Fn1("os.Create", func(a []any) (any, error) { return fsFileOp(env, a, os.Create) }),
 		"OpenFile": h.Fn3("os.OpenFile", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -145,21 +144,44 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			f, err := os.OpenFile(p, stdlib.IntOf(a[1]), fs.FileMode(stdlib.IntOf(a[2])))
-			return stdlib.RetErr2(f, stdlib.ScriptPathErr(err, sp, p))
+			if err != nil {
+				return stdlib.RetErr2(f, stdlib.ScriptPathErr(err, sp, p))
+			}
+			return stdlib.RetErr2(&scriptFile{File: f, name: sp}, nil)
 		}),
 		"MkdirTemp": h.Fn2("os.MkdirTemp", func(a []any) (any, error) {
-			dir, err := fsTempDir(env, stdlib.Str(a[0]))
+			sp := stdlib.Str(a[0])
+			dir, err := fsTempDir(env, sp)
 			if err != nil {
 				return nil, err
 			}
-			return stdlib.RetErr2(os.MkdirTemp(dir, stdlib.Str(a[1])))
+			d, err := os.MkdirTemp(dir, stdlib.Str(a[1]))
+			if err != nil {
+				return stdlib.RetErr2(d, err)
+			}
+			// gc spells the result relative to the dir argument, not the
+			// resolved path — MkdirTemp("sub", "x") is "sub/x123" — while
+			// an empty dir reports os.TempDir()'s absolute path as is.
+			if sp != "" {
+				d = stdlib.ScriptPathOf(sp, dir, d)
+			}
+			return stdlib.RetErr2(d, nil)
 		}),
 		"CreateTemp": h.Fn2("os.CreateTemp", func(a []any) (any, error) {
-			dir, err := fsTempDir(env, stdlib.Str(a[0]))
+			sp := stdlib.Str(a[0])
+			dir, err := fsTempDir(env, sp)
 			if err != nil {
 				return nil, err
 			}
-			return stdlib.RetErr2(os.CreateTemp(dir, stdlib.Str(a[1])))
+			f, err := os.CreateTemp(dir, stdlib.Str(a[1]))
+			if err != nil {
+				return stdlib.RetErr2(f, err)
+			}
+			name := f.Name()
+			if sp != "" {
+				name = stdlib.ScriptPathOf(sp, dir, name)
+			}
+			return stdlib.RetErr2(&scriptFile{File: f, name: name}, nil)
 		}),
 		// DirFS resolves the dir through the same cwd+roots check as the
 		// file ops; the returned host fs.DirFS keeps its Open rooted
@@ -341,19 +363,6 @@ func fsErrOp(env intbind.Env, name string, a []any, op func(string) error) (any,
 	return stdlib.ErrVal(stdlib.ScriptPathErr(op(p), sp, p)), nil
 }
 
-// fsTempDir resolves the dir argument of MkdirTemp/CreateTemp: an empty
-// dir means os.TempDir() — only allowed when the engine is unrestricted
-// (a temp dir outside the roots could otherwise anchor escaped writes).
-func fsTempDir(env intbind.Env, dir string) (string, error) {
-	if dir == "" {
-		if len(env.AllowedRoots()) == 0 {
-			return "", nil
-		}
-		return "", errors.New("dir must name a directory inside the allowed roots")
-	}
-	return env.FsPath(dir)
-}
-
 // EngineStdout is the script-visible os.Stdout: a *os.File facade whose
 // writes forward to the engine's configured output so host consumers
 // handed it — text/template's Execute above all — write where
@@ -390,6 +399,10 @@ func (w *EngineStdout) out() io.Writer {
 // APIType spells the facade as *os.File under %T — the engine's
 // internal wrapper name is not part of the script's type vocabulary.
 func (w *EngineStdout) APIType() reflect.Type { return reflect.TypeFor[*os.File]() }
+
+// UnwrapHost gives a *os.File slot the real file, like scriptFile's —
+// os.Stdout as an exec.Cmd.ExtraFiles element reaches the child.
+func (w *EngineStdout) UnwrapHost() any { return w.File }
 
 // EngineFileOf unwraps the script-visible os.Stdout facade to the real
 // file for net's FileConn/FilePacketConn adapters.

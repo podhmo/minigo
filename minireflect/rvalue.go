@@ -30,6 +30,12 @@ type RValue struct {
 	// (Go's flagEmbedRO): selecting an exported field below it clears
 	// the restriction, as reflect does for `type T struct{ inner }`.
 	embedRO bool
+	// mexpr marks the Func value of a host type's Method(i)/MethodByName:
+	// the method expression's name. Call dispatches the receiver (in[0])
+	// by that name on the concrete value, so a facade's own method —
+	// EngineStdout.Write's output redirect — survives the reflect path
+	// instead of being unwrapped to the API type's real method.
+	mexpr string
 }
 
 // host reports whether this value delegates to a real reflect.Value.
@@ -44,6 +50,11 @@ func (v *RValue) get() runtime.Value {
 	}
 	return v.val
 }
+
+// APIType spells the facade as reflect.Value — the public type the
+// facade stands in for, so a host slot typed reflect.Value (a method
+// expression's receiver) accepts it.
+func (v *RValue) APIType() reflect.Type { return reflect.TypeOf(reflect.Value{}) }
 
 // ifaceVal produces the interface{} payload: raw script values pass
 // through untouched, host values stay boxed one level shallower.
@@ -489,7 +500,19 @@ func kindOfValue(x runtime.Value) reflect.Kind {
 func (v *RValue) Type() *RType {
 	v.mustValid("Type")
 	if v.host() {
-		return v.e.hostTypeOf(v.rv.Type())
+		rt := v.rv.Type()
+		// a host facade reports its API type — reflect.TypeOf(os.Stdout)
+		// is *os.File, not the engine's wrapper, and assert/compare on
+		// the RType sees the same identity (APITypeBox). An
+		// interface-typed Value keeps its DECLARED type like Go:
+		// FieldByName("Stdout").Type() is io.Writer even when the
+		// stored value is a facade.
+		if rt.Kind() != reflect.Interface && v.rv.CanInterface() {
+			if at, ok := v.rv.Interface().(interface{ APIType() reflect.Type }); ok {
+				rt = at.APIType()
+			}
+		}
+		return v.e.hostTypeOf(rt)
 	}
 	// A boxed host object reports its real reflect.Type when the stamped
 	// td only echoes the payload's type name — a bare td carries no
@@ -2581,6 +2604,9 @@ func (v *RValue) Call(in []*RValue) []*RValue {
 		} else if len(in) > n {
 			plain("reflect: Call with too many input arguments")
 		}
+		if res, ok := v.callMethodExpr(mt, in); ok {
+			return res
+		}
 		for i, a := range in {
 			var pt reflect.Type
 			if mt.IsVariadic() && i >= mt.NumIn()-1 {
@@ -2948,6 +2974,13 @@ func (v *RValue) CallSlice(in []*RValue) []*RValue {
 func (v *RValue) Method(i int) *RValue {
 	v.mustValid("Method")
 	if v.host() {
+		if recv, api, facade := v.methodRecv(); facade {
+			// enumeration order is the public type's method set —
+			// the facade's own table lists helpers gc has no names
+			// for (APIType &co), which would shift every index.
+			name := api.Method(i).Name
+			return v.e.wrapHost(v.vc, recv.MethodByName(name))
+		}
 		return v.e.wrapHost(v.vc, v.rv.Method(i))
 	}
 	names := exportedMethodNames(v.e.methodSet(v.td))
@@ -2957,9 +2990,39 @@ func (v *RValue) Method(i int) *RValue {
 	return v.MethodByName(names[i])
 }
 
+// methodRecv is the host Value a reflected method binds as its receiver.
+// A Value-of-Value box holds the inner facade — gc binds the method to
+// the *content* (the inner reflect.Value), so `IsValid` on a box of a
+// zero Value answers false and `Int` on a box of an int answers 42.
+// The facade's own methods implement exactly those semantics, so bind
+// them on the facade rather than on the box that stores it.
+func (v *RValue) methodRecv() (recv reflect.Value, api reflect.Type, facade bool) {
+	if v.rv.Kind() == reflect.Interface {
+		// an interface-typed box (`[]any{v}[0]`): gc enumerates the
+		// interface's own method set — zero for any — and dispatches
+		// on the concrete value, which reflect already does on v.rv.
+		return v.rv, nil, false
+	}
+	// ifaceVal calls Interface(), which panics on a Value obtained from
+	// an unexported host field — a method lookup there must still
+	// answer (invalid), not trap.
+	if v.rv.CanInterface() {
+		switch fv := v.ifaceVal().(type) {
+		case *RValue:
+			return reflect.ValueOf(fv), fv.APIType(), true
+		case *RType:
+			return reflect.ValueOf(fv), fv.APIType(), true
+		}
+	}
+	return v.rv, nil, false
+}
+
 func (v *RValue) NumMethod() int {
 	v.mustValid("NumMethod")
 	if v.host() {
+		if _, api, facade := v.methodRecv(); facade {
+			return api.NumMethod()
+		}
 		return v.rv.NumMethod()
 	}
 	return len(exportedMethodNames(v.e.methodSet(v.td)))
@@ -2970,7 +3033,8 @@ func (v *RValue) MethodByName(name string) *RValue {
 	// invisible, like Go.
 	v.mustValid("MethodByName")
 	if v.host() {
-		m := v.rv.MethodByName(name)
+		recv, _, _ := v.methodRecv()
+		m := recv.MethodByName(name)
 		return v.e.wrapHost(v.vc, m)
 	}
 	if !ast.IsExported(name) {
