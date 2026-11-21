@@ -844,6 +844,18 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		// a host-boxed payload (a tagged host composite literal — its
 		// Named tag only names the declared type) resolves fields and
 		// methods on the box itself, e.g. p.Get() on &sync.Pool{...}.
+		// a defined type over a host composite keeps the host box: gc
+		// gives it only the promoted method set — fields plus the
+		// anonymous field's methods — so the host type's own declared
+		// methods must not resolve here (gc: Wrap.M yes, Wrap.Q no —
+		// M4-2c).
+		if td != nil && td.Kind == runtime.KindNamedBasic && td.HostNew == nil &&
+			hostbridge.HostMemberInner(gv.V, name, false) < 0 &&
+			hostbridge.HostPromotedMethodInner(gv.V, name) < 0 {
+			if u := v.peelNamed(td); u != nil && u.HostNew != nil {
+				f.trap("%s has no field or method %s", tdName(n.Typ), name)
+			}
+		}
 		if mv, ok := v.hostMember(f, gv.V, name); ok {
 			return mv
 		}
@@ -1451,6 +1463,14 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 						continue
 					}
 					inner := hostbridge.HostMemberInner(embTd.HostNew(), name, embTd == raw)
+					if embTd != raw {
+						// a defined type over a host type keeps the methods
+						// promoted through the host's anonymous fields
+						// (gc: Wrap.M on `type Wrap Base` — M4-2c).
+						if pi := hostbridge.HostPromotedMethodInner(embTd.HostNew(), name); pi >= 0 && (inner < 0 || pi < inner) {
+							inner = pi
+						}
+					}
 					if inner < 0 {
 						continue
 					}
@@ -1787,6 +1807,12 @@ func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, selPkg *runt
 		case et.HostNew != nil:
 			if inner := hostbridge.HostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
 				d = 1 + inner
+			} else if et != raw {
+				// defined type over a host type: promoted anonymous-field
+				// methods still answer (M4-2c).
+				if inner := hostbridge.HostPromotedMethodInner(et.HostNew(), name); inner >= 0 {
+					d = 1 + inner
+				}
 			}
 		default:
 			// only the embed's own methods — a defined type does not

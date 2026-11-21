@@ -611,6 +611,15 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 						contest(m, fd, nil, nil, "host", false)
 					}
 				}
+				// methods promoted through the host type's anonymous
+				// fields carry to the defined type too (gc: Wrap.M on
+				// `type Wrap Base` for Base = struct{ Inner }) — at
+				// the depth they hold inside the shared field layout.
+				for m, md := range hostDepthsIn(u.HostType(), map[reflect.Type]bool{}) {
+					if md > 0 && promoted(m) {
+						contest(m, md, nil, nil, "host", true)
+					}
+				}
 			} else if sub2 := e.methodWalkU(u, ptr, seen); sub2 != nil {
 				unsure = unsure || sub2.Unsure
 				for m := range sub2.Names {

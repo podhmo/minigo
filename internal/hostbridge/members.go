@@ -37,6 +37,47 @@ func HostMemberInner(zero any, name string, methods bool) int {
 	return -1
 }
 
+// HostPromotedMethodInner reports the embed depth inside the boxed
+// type at which name's method is promoted through anonymous fields —
+// the members a defined type over the host type keeps: gc promotes
+// Inner.M for `type Wrap Base` where Base = struct{ Inner }, but none
+// of Base's own declared methods. -1 when name does not reach the
+// slot type through an anonymous field's method set.
+func HostPromotedMethodInner(zero any, name string) int {
+	t := reflect.TypeOf(zero)
+	if t == nil {
+		return -1
+	}
+	st := t
+	for st.Kind() == reflect.Pointer {
+		st = st.Elem()
+	}
+	if st.Kind() != reflect.Struct {
+		return -1
+	}
+	underPtr := t.Kind() == reflect.Pointer
+	best := -1
+	for i := 0; i < st.NumField(); i++ {
+		sf := st.Field(i)
+		if !sf.Anonymous {
+			continue
+		}
+		// methods promote through an unexported anonymous field too —
+		// only the field itself is invisible outside its package.
+		ct := sf.Type
+		if ct.Kind() != reflect.Pointer && ct.Kind() != reflect.Interface && underPtr {
+			ct = reflect.PointerTo(ct)
+		}
+		if _, ok := ct.MethodByName(name); !ok {
+			continue
+		}
+		if d := MethodInner(ct, name, map[reflect.Type]bool{}); d >= 0 && (best < 0 || d+1 < best) {
+			best = d + 1
+		}
+	}
+	return best
+}
+
 // hostMethodInner counts the embed levels inside the host type that
 // name's method is promoted through — 0 when it is declared on t's own
 // method set. t is the slot's declared type: a *T slot contributes the

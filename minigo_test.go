@@ -3813,3 +3813,110 @@ func main() { b.Use(a.T{}) }
 		t.Fatalf("main cannot select a's unexported m (gc: undefined) — must error")
 	}
 }
+
+// M4-2c: a defined type over a host struct keeps the methods promoted
+// through the host's anonymous fields (gc: Wrap.M on `type Wrap Base`
+// for Base = struct{ Inner }) but never the host type's own declared
+// methods (gc: Wrap.Q undefined).
+type hostEmbedInner struct{ X int }
+
+func (hostEmbedInner) M() int64  { return 7 }
+func (*hostEmbedInner) P() int64 { return 9 }
+
+type hostEmbedBase struct {
+	hostEmbedInner // anonymous field: methods promote even though its type is unexported
+	N              int64
+}
+
+func (hostEmbedBase) Q() int64 { return 5 }
+
+func TestHostDefinedTypePromotedMethods(t *testing.T) {
+	root := t.TempDir()
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "go.mod"), "module example.com/m\n\ngo 1.26\n")
+	write(filepath.Join(root, "call", "main.go"), `package main
+
+import h "example.com/store"
+
+type Wrap h.Base
+
+func Main() int64 { var w Wrap; return w.M() }
+`)
+	write(filepath.Join(root, "callptr", "main.go"), `package main
+
+import h "example.com/store"
+
+type Wrap h.Base
+
+func Main() int64 { var w Wrap; return w.P() }
+`)
+	write(filepath.Join(root, "satisfy", "main.go"), `package main
+
+import h "example.com/store"
+
+type Wrap h.Base
+
+type I interface{ M() int64 }
+
+func Use(x I) int64 { return x.M() }
+
+func Main() int64 { var w Wrap; return Use(w) }
+`)
+	write(filepath.Join(root, "embed", "main.go"), `package main
+
+import h "example.com/store"
+
+type Wrap h.Base
+
+type I interface{ M() int64 }
+
+type S struct{ Wrap }
+
+func Use(x I) int64 { return x.M() }
+
+func Main() int64 { var s S; return Use(s) }
+`)
+	write(filepath.Join(root, "field", "main.go"), `package main
+
+import h "example.com/store"
+
+type Wrap h.Base
+
+func Main() int64 { var w Wrap; w.N = 3; return w.N }
+`)
+	write(filepath.Join(root, "bad", "main.go"), `package main
+
+import h "example.com/store"
+
+type Wrap h.Base
+
+func Main() int64 { var w Wrap; return w.Q() }
+`)
+	e := minigo.NewEngine(root)
+	e.Bind("example.com/store", map[string]runtime.Value{
+		"Base": minigo.HostTypeOf(hostEmbedBase{}),
+	})
+	for dir, want := range map[string]int64{
+		"call": 7, "callptr": 9, "satisfy": 7, "embed": 7, "field": 3,
+	} {
+		got, err := e.Run(context.Background(), filepath.Join(root, dir), "Main")
+		if err != nil {
+			t.Fatalf("%s: %v", dir, err)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("%s mismatch (-want +got):\n%s", dir, diff)
+		}
+	}
+	_, err := e.Run(context.Background(), filepath.Join(root, "bad"), "Main")
+	if err == nil {
+		t.Fatalf("the host type's own declared method Q must not transfer to the defined type")
+	}
+}
