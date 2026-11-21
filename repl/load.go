@@ -416,10 +416,12 @@ func (r *REPL) initUnit(unit *loadUnit) error {
 			FileByName: p.FileByName,
 			Index:      &view,
 		},
-		Globals:  p.Globals,
-		Scopes:   p.Scopes,
-		Imports:  p.Imports,
-		Specials: p.Specials,
+		PackageInstance: runtime.PackageInstance{
+			Globals:  p.Globals,
+			Scopes:   p.Scopes,
+			Imports:  p.Imports,
+			Specials: p.Specials,
+		},
 	}
 	ch, err := compile.InitFunc(vp)
 	if err != nil {
