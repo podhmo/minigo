@@ -465,8 +465,17 @@ func (e *ScriptError) ScriptValue() runtime.Value {
 // script `Unwrap() []error` reports no single cause — like
 // errors.Join, the type has no Unwrap() error.
 func (e *ScriptError) Error() string {
+	// A typed-nil error still runs its Error(): the method may succeed
+	// on a nil receiver (`func (e *E) Error() string { return "x" }`,
+	// `errors.Join`'s joinError) and gc prints its result; only a
+	// panic lands on fmt's `<nil>` fallback, which the call's own
+	// recovery covers.
 	s, ok := runtime.IfaceCallString(e.C, e.V, "Error")
 	if !ok {
+		switch e.V.(type) {
+		case *runtime.TypedNil, *runtime.IfaceNil:
+			return "<nil>"
+		}
 		return fmt.Sprintf("%v", GoNative(e.V))
 	}
 	return s
