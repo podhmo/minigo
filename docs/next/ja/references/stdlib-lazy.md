@@ -43,3 +43,21 @@
 - ベンチ（Intel Xeon, -benchtime=2s）: `BenchmarkNewSession` 9043→9466 ns/op、`BenchmarkSessionForkReload` PackageOnly 552µs→606µs / PackageAndCall 612µs→658µs。誤差範囲内（遅延化の費用は初回利用側に残っているので NewSession への影響はない）。
 - lint の未使用検出で `namedSized`/`bytesSliceOf`/`runeSlice`/`h.fnvc`/`materializerOf` のルートラッパを削除（移動先が直接 `stdlib.*` を呼ぶため）。
 - 注意: 移設時の機械置換で `"time.X"` などの文字列リテラル内までエイリアス名に書き換えてしまい `cannot use time.Duration as stdtime.Duration` の実行時エラーになった。引用符内は戻すこと。
+
+### 初回利用コストの分離測定（P2-12c 確定）
+
+`BenchmarkInstallerFirstUse`（session_bench_test.go）は pending レジストリがセッションごとに新規になることを利用し、`cold` = 新しい Session での `Run`（session fork + locate/parse/index + install + call すべて込み）と `warm` = 同一 Session でのキャッシュ済み package の `Call` を測る。
+
+スタック先端 HEAD、Intel Xeon、`-benchtime=100x`:
+
+| 対象 | cold | warm |
+|---|---:|---:|
+| html | 97,965 ns | 2,248 ns |
+| unicode/utf8 | 90,203 ns | 2,561 ns |
+| time | 95,316 ns | 1,980 ns |
+| context | 87,822 ns | 3,477 ns |
+| text/template | 115,402 ns | 10,171 ns |
+| html/template | 81,631 ns | 2,524 ns |
+
+cold には 1 ファイルの script の load（locate/parse/index/compile、別測定で数十 µs 規模）と NewSession（~9µs）が含まれる。概算で installer 初回利用の遅延はパスごとに数十 µs オーダーで、NewSession（9µs）や reload 全体（~600µs）とは別系統の小さな遅延として分離できた。text/template は `FuncMap` typedef の生成を含みやや高い。
+

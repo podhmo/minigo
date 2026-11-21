@@ -312,3 +312,59 @@ func TestSessionForkConcurrentLoads(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// BenchmarkInstallerFirstUse separates the lazy-installer cost the
+// P2-12c move left on first use: every fresh session carries its own
+// pending registry, so a new session's first import of a target path
+// runs that path's Install (cold), while a repeat in the same session
+// hits the installed bound package (warm). Measured per moved
+// installer — stdlib lazy docs compare cold-warm-NewSession to
+// attribute the delay.
+func BenchmarkInstallerFirstUse(b *testing.B) {
+	scripts := map[string]string{
+		"html":          "package main\n\nimport \"html\"\n\nvar out string\n\nfunc main() { out = html.EscapeString(\"<a>\") }\n",
+		"unicode/utf8":  "package main\n\nimport \"unicode/utf8\"\n\nvar n int\n\nfunc main() { n = utf8.RuneCountInString(\"日本語\") }\n",
+		"time":          "package main\n\nimport \"time\"\n\nvar d time.Duration\n\nfunc main() { d = time.Second }\n",
+		"context":       "package main\n\nimport \"context\"\n\nvar c context.Context\n\nfunc main() { c = context.Background() }\n",
+		"text/template": "package main\n\nimport (\n\t\"strings\"\n\t\"text/template\"\n)\n\nvar s string\n\nfunc main() {\n\tt, _ := template.New(\"t\").Parse(\"{{.}}!\")\n\tvar w strings.Builder\n\t_ = t.Execute(&w, \"x\")\n\ts = w.String()\n}\n",
+		"html/template": "package main\n\nimport \"html/template\"\n\nvar s string\n\nfunc main() { s = template.HTMLEscapeString(\"<a>\") }\n",
+	}
+	for name, src := range scripts {
+		b.Run(name, func(b *testing.B) {
+			dir := b.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+				b.Fatal(err)
+			}
+			base := NewEngine(".")
+			ctx := context.Background()
+			b.Run("cold", func(b *testing.B) {
+				for b.Loop() {
+					s := base.NewSession()
+					if _, err := s.Run(ctx, dir, "main"); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+			s := base.NewSession()
+			if _, err := s.Run(ctx, dir, "main"); err != nil {
+				b.Fatal(err)
+			}
+			b.Run("warm", func(b *testing.B) {
+				for b.Loop() {
+					if _, err := s.Call(ctx, mustPkg(b, s, ctx, dir), "main"); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		})
+	}
+}
+
+func mustPkg(b *testing.B, s *Engine, ctx context.Context, dir string) *runtime.Package {
+	b.Helper()
+	p, err := s.Package(ctx, dir)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return p
+}
