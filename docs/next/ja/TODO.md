@@ -90,17 +90,41 @@
   - [ ] **P2-14d 特殊形式の registry と context を抽出する**: P2-14c のあと、P2-6 に残った実装を `internal/execution` 側に移す。公開型を参照する既存 examples、別名 import・shadowing・スタブがロードされないことを確認する。
   - [ ] **P2-14e Session 所有権チェックの入口をそろえる**: M3-1 の計画と現在の `Engine.Call` の常時チェックを照合し、適用する入口と対象を決める。別 Session の source package を渡した場合と、共有を許す host bind の場合をテストする。
 
-## M4 + P3: 型情報の統合（機能グループごとに 1 PR）
+## M4 + P3: 型情報の統合
 
 - [ ] **M4-1 フィールドと埋め込み**: `semantics.FieldPath` を作り、`(TypeID, name)` ごとにパスをキャッシュする。完了条件: 「selector resolution re-searches by name」の TODO が解消する。[references/typeid.md](./references/typeid.md)
+  - [ ] **M4-1a 埋め込みを含むパス探索**: 宣言情報から `FieldPath` を求める。直下のフィールドの優先、同じ深さでの曖昧性、非公開フィールド、埋め込みポインタをテストする。
+  - [ ] **M4-1b selector の読み出し**: M4-1a のパスを VM の読み出しに使い、nil の埋め込みポインタや名前の衝突で既存の結果になることを確認する。
+  - [ ] **M4-1c 書き込みとアドレス取得**: M4-1b のあと、代入・複合代入・`&x.f` を同じパスに切り替える。書き込み先・アドレスの同一性・nil の診断を検証する。
+  - [ ] **M4-1d FieldPath のキャッシュ**: M4-1b/c と M4-3a のあと、`(TypeID, name)` ごとにパスを再利用する。宣言が変われば古いパスを使わず、selector が同じパスを再探索しないことを確認する。
 - [ ] **M4-2 メソッドセットとインタフェース充足**: 型ごとに一度だけ計算する。`MethodSetOf`、`MethodFuncsOf`、充足判定、promote されたメンバの検索を、これに切り替える。完了条件: 「walks the method set twice」の TODO が解消する。
-- [ ] **M4-3 TypeID と Session ごとの intern 表**: `execution` に `TypeID → *runtime.TypeDef` の表を置き、`hostTypedefOf`、`hostPkgElemTypedef`、`HostTypeOf`、インスタンス化によるコピーをすべてこの表経由にする。キーは表している型 (PkgPath, Name) とする。完了条件: `atomic.Value` と `atomic.Pointer` が別の型として扱われる pin 済みケースがある。[references/typeid.md](./references/typeid.md)
+  - [ ] **M4-2a メソッド集合の計算**: 値・ポインタレシーバ、深さ、曖昧な埋め込みを宣言情報から計算し、`MethodSetOf` / `MethodFuncsOf` が同じ結果を使うようにする。
+  - [ ] **M4-2b インタフェース充足判定**: M4-2a の集合を型アサーションと充足判定から使う。値・ポインタの差、同名別パッケージ、シグネチャ不一致の診断を固定する。
+  - [ ] **M4-2c promoted method の検索**: M4-2a の結果をメソッド値と呼び出しに使い、レシーバ調整と曖昧性を既存テストで照合する。重複探索がなくなったことを確認する。
+- [ ] **M4-3 TypeID と Session ごとの intern 表**: `execution` に `TypeID → *runtime.TypeDef` の表を置き、`hostTypedefOf`、`hostPkgElemTypedef`、`HostTypeOf`、インスタンス化によるコピーをすべてこの表経由にする。host 型のキーは表している型の (PkgPath, Name, 型引数) とする。完了条件: `atomic.Value` と `atomic.Pointer` が別の型として扱われる pin 済みケースがある。[references/typeid.md](./references/typeid.md)
+  - [ ] **M4-3a TypeID のキーと反例**: source named 型、host が表す型、無名型のキーを定める。`atomic.Value` と `atomic.Pointer` の区別、運搬型が異なる `*time.Timer` の同一性、ソース版と型引数の違いを固定する。M4-1d のキャッシュはこのキーを使う。
+  - [ ] **M4-3b Session 内の intern 表**: M4-3a と P2-14c のあとに導入する。同じキーを並行登録しても Session 内で同じ typedef を返し、別 Session の typedef と混ざらないことをテストする。
+  - [ ] **M4-3c host typedef の入口を切り替える**: `hostTypedefOf` / `hostPkgElemTypedef`、`HostTypeOf` / bind 側を入口ごとに移す。source・bind 間の twin、型付き nil と型の表示を各差分で確認する。
+  - [ ] **M4-3d インスタンス化の typedef を切り替える**: M4-3b の表へコピーを集約する。型引数が異なる型、別宣言の同名型、別 Session の分離を確認する。
 - [ ] **M4-4 host twin 系の helper を消す（1 つにつき 1 PR）**: 対象は `hostTwinIs`、`hostNilTwin`、`sameSpelledTwin`、`HostNamedIs`/`HostTwinOf`、`sourceTwinOf`。完了条件: 各 PR が pin 済みのリグレッションケースで裏付けられている。
 - [ ] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。
+  - [ ] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。
+  - [ ] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
+  - [ ] **M4-5c 変換可能性**: `ConvertibleTo` を移し、構造・タグや数値など、代入の規則と結果が異なるケースを分けて検証する。
 - [ ] **M4-6 ジェネリクス推論を分割する**: TypeID の上での単一化は `semantics` に、引数の値から TypeID への対応づけは実行側のアダプタに置く。インスタンスキャッシュのキーは `(関数宣言, []TypeID)` にする。完了条件: 「per-call key spelling」の TODO が解消する。
+  - [ ] **M4-6a TypeID 上の単一化**: M4-3 のキーを使い、値の取り出しを実行側アダプタに残して推論を移す。制約、部分指定、推論不能の診断を固定する。
+  - [ ] **M4-6b インスタンスキャッシュのキー**: M4-6a のあとに `(関数宣言, []TypeID)` へ切り替える。正しいキャッシュ再利用と衝突がないことを確認し、既存のジェネリクスベンチで差分を記録する。
 - [ ] **M4-7 遅延された事実を実装する**: M2-3 で事実と仕分けた問いについて、Deferred のときは `CallSite` に `TypeRef` を持たせ、VM が最初の実行時に `AllowIndex` で解決する。Missing と Failed は `TRAP` にする。完了条件: 15 件の受け入れセットが、強制的に Deferred にしても通る。[references/acceptance-set.md](./references/acceptance-set.md)
+  - [ ] **M4-7a 遅延参照を保持・解決する経路**: `CallSite` に必要な `TypeRef` とソース位置だけを載せる。VM での初回解決、Missing/Failed の `TRAP`、未実行分岐で解決が走らないことを固定する。既存の引数バッファ等の移行は P4-4 で扱う。
+  - [ ] **M4-7b import 名・型宣言・複合リテラル**: M4-7a を使い、`assign_pkgname_differs`、`litkey_named_peel`、`src_pkgtype_maplit_keys`、`TestSelMemberSyntheticTypeEntry` を強制 Deferred で通す。
+  - [ ] **M4-7c 定数の有無・型・シフト**: `isConstExprDepth`、`certainlyNonConstDepth` と修飾定数の判定を移す。`shift_const_count`、`gate_qualconst`、`gate_qualconstbind` を強制 Deferred で通す。
+  - [ ] **M4-7d 比較・変換・nil 判定と診断**: 残る selector 経路と診断用の package 名を移し、`TestNetHTTPRoundtrip`、残りの `gate_qual*`、`selconv_typearg`、`selnilable_trap` を固定する。全 15 件で通常・強制 Deferred の出力または `TRAP` 文言を照合する。
 - [ ] **M4-8 `WithStrictLazyCompile` を入れて CI で回す**: `IndexedOnly` で、すべての事実を Deferred にしてコンパイルするモード。完了条件: conformance スイートの結果がこのモードでも同一である。
+  - [ ] **M4-8a strict モードとロード順の比較**: M4-7 の全ケースが通ってから `WithStrictLazyCompile` を導入する。未 index と事前 index の両条件で結果を比較し、C1 の計測でコンパイル時初期化がゼロであることを確かめる。
+  - [ ] **M4-8b CI の conformance ジョブ**: M4-8a を通常モードと併走させる。15 件の受け入れセットに加え、既存 conformance の出力と `TRAP` の同値性を確認する。
 - [ ] **M4-9 `staticOpTyp` 系の裏ルートを置き換える**: `staticOpTyp`/`callOpTyp`/`opTyp`/`stampVarTyps`/`OpLocalTyp`/`OpGlobalTyp`/`statics` を、chunk に格納するヒントと事実に置き換える。
+  - [ ] **M4-9a 既存の静的情報を仕分ける**: `staticOpTyp` / `callOpTyp` / `opTyp` の利用側を列挙し、変換・推論・診断で事実を必要とするケースを固定する。
+  - [ ] **M4-9b chunk への格納と旧経路の削除**: M4-7/8 のあと、`stampVarTyps`、`OpLocalTyp`、`OpGlobalTyp`、`statics` を利用側ごとに置き換える。各差分で通常・strict のテストと bytecode golden を照合する。
 
 ## M5: PackageImage と PackageInstance
 
