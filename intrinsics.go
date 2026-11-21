@@ -1105,33 +1105,6 @@ func callInt(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) i
 	return int64Of(hostbridge.CallOrPanic(vc, fn, args))
 }
 
-// cellElemTyp reads the declared type held by a cell (the target of
-// errors.As's &x): its TypedNil/IfaceNil/Struct tag.
-func cellElemTyp(v runtime.Value) *runtime.TypeDef {
-	c, ok := v.(*runtime.Cell)
-	if !ok {
-		return nil
-	}
-	switch e := c.Elem.(type) {
-	case *runtime.Cell:
-		// the variable's VALUE is itself a pointer (a cell): `&p` where
-		// p is declared `*T` — the assignable target type is T.
-		if e.Typ != nil {
-			return e.Typ
-		}
-		if s, ok := e.Elem.(*runtime.Struct); ok {
-			return s.Def
-		}
-		return nil
-	case *runtime.Slice, *runtime.Map, *runtime.Chan:
-		// a container-typed target carries no usable element typedef for
-		// As — nil keeps the matcher permissive (a nil want accepts
-		// anything).
-		return nil
-	}
-	return valueDeclTyp(c.Elem)
-}
-
 // asCell peels Named tags to reach the addressable cell underneath —
 // the pointee slot whose Typ is the declared (static) type. Ref kinds
 // (FieldRef/IndexRef) are not cells and report nil.

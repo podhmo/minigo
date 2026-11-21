@@ -1,16 +1,21 @@
-package minigo
+package errors
 
 import (
 	"errors"
 	"fmt"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installErrors(h *hostHelpers) {
-	e.bindBound("errors", map[string]runtime.Value{
-		"New": h.fn("errors.New", func(a []any) (any, error) { return errors.New(str(a[0])), nil }, errors.New),
+// Install binds the errors intrinsics: New plus the chain-walking
+// Is/As/Unwrap and the AsType generic. ifaceReqSet supplies the
+// interface typedef's requirement keys (see iface_reqs.go in the root
+// package) — an engine responsibility the caller hands in.
+func Install(bind stdlib.Bind, h stdlib.Helpers, ifaceReqSet func(*runtime.TypeDef) map[string]bool) {
+	bind("errors", map[string]runtime.Value{
+		"New": h.Fn("errors.New", func(a []any) (any, error) { return errors.New(stdlib.Str(a[0])), nil }, errors.New),
 		// sentinel vars ride GoValue boxes so `err == errors.ErrUnsupported`
 		// and errors.Is against the chain see the real objects.
 		"ErrUnsupported": &runtime.GoValue{V: errors.ErrUnsupported},
@@ -21,7 +26,7 @@ func (e *Engine) installErrors(h *hostHelpers) {
 					errs = append(errs, err)
 				}
 			}
-			return errVal(errors.Join(errs...)), nil
+			return stdlib.ErrVal(errors.Join(errs...)), nil
 		}},
 		// Is/Unwrap/As take raw runtime args: h.fn's hostbridge.GoNative would flatten
 		// a script error value to its printed string, losing the type the
@@ -48,7 +53,7 @@ func (e *Engine) installErrors(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("errors.Unwrap needs 1 arg")
 			}
-			return errVal(errors.Unwrap(hostbridge.HostErrOf(v, args[0]))), nil
+			return stdlib.ErrVal(errors.Unwrap(hostbridge.HostErrOf(v, args[0]))), nil
 		}},
 		// As walks the error tree the way gc's errors.As does — each
 		// node's dynamic type, its own As(any) bool, then Unwrap() error
@@ -59,7 +64,7 @@ func (e *Engine) installErrors(h *hostHelpers) {
 				return nil, fmt.Errorf("errors.As needs 2 args")
 			}
 			want := cellElemTyp(args[1])
-			sv, ok := hostbridge.FindAsTarget(v, hostbridge.HostErrOf(v, args[0]), want, e.ifaceReqSet(want), args[1])
+			sv, ok := hostbridge.FindAsTarget(v, hostbridge.HostErrOf(v, args[0]), want, ifaceReqSet(want), args[1])
 			if ok && runtime.SetRef(args[1], sv) {
 				return true, nil
 			}
@@ -87,7 +92,7 @@ func (e *Engine) installErrors(h *hostHelpers) {
 			// target stands in for errors.As's user cell: a node's own
 			// As method writes its answer through this pointer.
 			target := &runtime.Cell{Elem: zero}
-			sv, ok := hostbridge.FindAsTarget(v, hostbridge.HostErrOf(v, args[0]), want, e.ifaceReqSet(want), target)
+			sv, ok := hostbridge.FindAsTarget(v, hostbridge.HostErrOf(v, args[0]), want, ifaceReqSet(want), target)
 			if ok {
 				return &runtime.Tuple{Elems: []runtime.Value{sv, true}}, nil
 			}
@@ -96,61 +101,29 @@ func (e *Engine) installErrors(h *hostHelpers) {
 	})
 }
 
-// errKids returns the error node's children: a script `Unwrap()
-// []error` fans out like errors.Join's elements (a shape Unwrap()
-// error cannot express alongside it on one Go type), a plain
-// `Unwrap() error` is the single cause.
-// wrapError is fmt.Errorf's %w product: message plus one cause.
-type wrapError struct {
-	msg string
-	err error
-}
-
-// wrapOperand is gc's `a[n].(error)` on a %w operand: a boxed host
-// error, a script value with an Error method, or a boxed typed nil
-// (a non-nil error) converts through hostErrOf; anything else — an
-// int, a string, a nil interface — wraps nothing.
-func wrapOperand(c runtime.MemberCaller, v runtime.Value) error {
-	switch x := runtime.Unwrap(v).(type) {
-	case *runtime.GoValue:
-		if _, ok := x.V.(error); !ok {
-			return nil
-		}
-		return hostbridge.HostErrOf(c, v)
-	case *runtime.IfaceNil:
-		return hostbridge.HostErrOf(c, v)
+// cellElemTyp reads the declared type held by a cell (the target of
+// errors.As's &x): its TypedNil/IfaceNil/Struct tag.
+func cellElemTyp(v runtime.Value) *runtime.TypeDef {
+	c, ok := v.(*runtime.Cell)
+	if !ok {
+		return nil
 	}
-	if _, ok := runtime.IfaceMember(c, v, "Error"); ok {
-		return hostbridge.HostErrOf(c, v)
-	}
-	return nil
-}
-
-// wrapErrors is fmt.Errorf's product for several %w verbs: message plus
-// every cause, reachable through Unwrap() []error.
-type wrapErrors struct {
-	msg  string
-	errs []error
-}
-
-// osErrPred binds one of os.IsNotExist/IsExist/IsPermission/IsTimeout.
-// These look through exactly one *fs.PathError / *os.LinkError /
-// *os.SyscallError layer by host type switch, so the argument goes
-// through hostErrArg: a script-built *fs.PathError (io/fs runs from
-// source) reaches the host as a real *fs.PathError.
-func osErrPred(name string, pred func(error) bool) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Target: pred, Fn: func(c runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) != 1 {
-			return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
+	switch e := c.Elem.(type) {
+	case *runtime.Cell:
+		// the variable's VALUE is itself a pointer (a cell): `&p` where
+		// p is declared `*T` — the assignable target type is T.
+		if e.Typ != nil {
+			return e.Typ
 		}
-		return pred(hostbridge.HostErrArg(c, args[0])), nil
-	}}
+		if s, ok := e.Elem.(*runtime.Struct); ok {
+			return s.Def
+		}
+		return nil
+	case *runtime.Slice, *runtime.Map, *runtime.Chan:
+		// a container-typed target carries no usable element typedef for
+		// As — nil keeps the matcher permissive (a nil want accepts
+		// anything).
+		return nil
+	}
+	return stdlib.ValueDeclTyp(c.Elem)
 }
-
-func (e *wrapError) Error() string { return e.msg }
-
-func (e *wrapError) Unwrap() error { return e.err }
-
-func (e *wrapErrors) Error() string { return e.msg }
-
-func (e *wrapErrors) Unwrap() []error { return e.errs }

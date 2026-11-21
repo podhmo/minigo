@@ -14,6 +14,7 @@ import (
 
 	"github.com/podhmo/minigo/internal/bind"
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -170,10 +171,10 @@ func (e *Engine) installOs(h *hostHelpers) {
 			}
 			return &runtime.GoValue{V: os.DirFS(p)}, nil
 		}),
-		"IsNotExist":   osErrPred("os.IsNotExist", os.IsNotExist),
-		"IsExist":      osErrPred("os.IsExist", os.IsExist),
-		"IsPermission": osErrPred("os.IsPermission", os.IsPermission),
-		"IsTimeout":    osErrPred("os.IsTimeout", os.IsTimeout),
+		"IsNotExist":   stdlib.OsErrPred("os.IsNotExist", os.IsNotExist),
+		"IsExist":      stdlib.OsErrPred("os.IsExist", os.IsExist),
+		"IsPermission": stdlib.OsErrPred("os.IsPermission", os.IsPermission),
+		"IsTimeout":    stdlib.OsErrPred("os.IsTimeout", os.IsTimeout),
 		// the error structs os's helpers type-switch on. PathError
 		// aliases io/fs's source-interpreted typedef, so a script-built
 		// &os.PathError{} is the same *fs.PathError twin hostErrArg

@@ -495,3 +495,25 @@ func TemplateMust(name string, target any) *runtime.BuiltinFunc {
 		return ScriptVal(hostbridge.GoNative(t)), nil
 	}}
 }
+
+// ValueDeclTyp reads the declared typedef carried by a value's tag:
+// Struct's Def, Named's Typ, container and typed-nil Typ fields.
+func ValueDeclTyp(v runtime.Value) *runtime.TypeDef {
+	switch x := v.(type) {
+	case *runtime.Struct:
+		return x.Def
+	case *runtime.Named:
+		return x.Typ
+	case *runtime.Slice:
+		return x.Typ
+	case *runtime.Map:
+		return x.Typ
+	case *runtime.Chan:
+		return x.Typ
+	case *runtime.TypedNil:
+		return x.Typ
+	case *runtime.IfaceNil:
+		return x.Typ
+	}
+	return nil
+}
