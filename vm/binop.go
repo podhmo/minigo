@@ -69,7 +69,7 @@ func (v *VM) slotEql(td *runtime.TypeDef, a, b runtime.Value) bool {
 		return v.ifaceEql(v.topFrame(), a, b)
 	}
 	if isGoValue(a) || isGoValue(b) {
-		a, b = twinSlot(td, a), twinSlot(td, b)
+		a, b = v.twinSlot(td, a), v.twinSlot(td, b)
 	}
 	return v.eqlValue(a, b)
 }
@@ -1258,23 +1258,23 @@ func hostNamedNonString(x runtime.Value) (runtime.Value, reflect.Type, bool) {
 // with its source twin or bound typedef ([runtime.HostTwinOf]) holding
 // the same payload — never a look-alike of another type. ok is false
 // when neither side is such a box.
-func hostNamedEql(a, b runtime.Value) (eq, ok bool) {
+func (v *VM) hostNamedEql(a, b runtime.Value) (eq, ok bool) {
 	pa, rta, okA := hostNamedNonString(a)
 	pb, rtb, okB := hostNamedNonString(b)
 	switch {
 	case okA && okB:
 		return rta == rtb && pa == pb, true
 	case okA:
-		return twinPayloadEql(pa, rta, b), true
+		return v.twinPayloadEql(pa, rta, b), true
 	case okB:
-		return twinPayloadEql(pb, rtb, a), true
+		return v.twinPayloadEql(pb, rtb, a), true
 	}
 	return false, false
 }
 
 // twinPayloadEql reports whether x is a value of the host type rt whose
 // payload is p: a Named of rt's twin typedef, or a raw host scalar of rt.
-func twinPayloadEql(p runtime.Value, rt reflect.Type, x runtime.Value) bool {
+func (v *VM) twinPayloadEql(p runtime.Value, rt reflect.Type, x runtime.Value) bool {
 	n, ok := x.(*runtime.Named)
 	if !ok {
 		// an untagged script scalar is another type; a raw host
@@ -1282,7 +1282,7 @@ func twinPayloadEql(p runtime.Value, rt reflect.Type, x runtime.Value) bool {
 		q, qt, ok := runtime.HostNamedPayload(x)
 		return ok && qt == rt && p == q
 	}
-	if !runtime.HostTwinOf(rt, n.Typ) {
+	if !v.hostTypedefIs(rt, n.Typ) {
 		return false
 	}
 	switch q := n.V.(type) {
@@ -1301,11 +1301,11 @@ func twinPayloadEql(p runtime.Value, rt reflect.Type, x runtime.Value) bool {
 // that slot's source values hold, so eqlValue compares it with a value
 // the slot stored untagged. Any other value, or an interface-typed slot,
 // passes through: there the dynamic type decides.
-func twinSlot(td *runtime.TypeDef, x runtime.Value) runtime.Value {
+func (v *VM) twinSlot(td *runtime.TypeDef, x runtime.Value) runtime.Value {
 	if td == nil || td.Kind == runtime.KindInterface {
 		return x
 	}
-	if p, rt, ok := hostNamedNonString(x); ok && runtime.HostTwinOf(rt, td) {
+	if p, rt, ok := hostNamedNonString(x); ok && v.hostTypedefIs(rt, td) {
 		return runtime.Tag(td, p)
 	}
 	return x
@@ -1317,7 +1317,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 	// source twin field by field, while S{m} == S{uint32(fs.ModeDir)}
 	// with an `any` field stays false like Go.
 	if isGoValue(a) || isGoValue(b) {
-		if eq, ok := hostNamedEql(a, b); ok {
+		if eq, ok := v.hostNamedEql(a, b); ok {
 			return eq
 		}
 	}
