@@ -218,6 +218,14 @@ func typeExprName(e ast.Expr) string {
 	case *ast.MapType:
 		return "map[" + typeExprName(t.Key) + "]" + typeExprName(t.Value)
 	case *ast.ChanType:
+		// direction is part of the type identity: <-chan T, chan<- T
+		// and chan T are three different types.
+		if t.Dir == ast.SEND {
+			return "chan<- " + typeExprName(t.Value)
+		}
+		if t.Dir == ast.RECV {
+			return "<-chan " + typeExprName(t.Value)
+		}
 		return "chan " + typeExprName(t.Value)
 	case *ast.SelectorExpr:
 		return typeExprName(t.X) + "." + t.Sel.Name
@@ -959,7 +967,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 		// a nil host *T (or named host slice or map, net.IP) asserts to its
 		// source twin's type (or to the bound one) by identity, like
 		// a non-nil host box.
-		return v.hostTwinIs(f, dyn, td)
+		return v.sameTypedef(dyn, td)
 	}
 	return v.sigTypEq(td, dyn)
 }
@@ -1216,15 +1224,53 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 	return x
 }
 
-// sameSpelledTwin reports whether tag is a host-minted twin of the
-// declared type td: bound host code stamps name-only typedefs
-// (Spec == nil) on containers it hands to source-interpreted stdlib —
-// a host []fs.DirEntry feeding io/fs's `[]DirEntry` slot — and those
-// re-tag when the spellings agree. Script declarations carry a Spec,
-// so same-named script types from different scopes never qualify
-// (named-to-named needs a conversion in Go).
-func sameSpelledTwin(tag, td *runtime.TypeDef) bool {
-	return tag != nil && tag.Spec == nil && td != nil && tdName(tag) == tdName(td)
+// sameTypedef reports whether two typedefs denote the same type: the
+// interned canonical descriptors equal (M4-4 — a stamped fs.DirEntry
+// converges on the source declaration), or one side is a spelled twin
+// interning cannot resolve — a host-minted tag carrying only a name
+// (Spec == nil), or two source-anonymous descriptors whose spellings
+// agree in different resolution contexts.
+func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if v.internTypedef(a) == v.internTypedef(b) {
+		return true
+	}
+	// the spelled acceptance needs actual content on both sides — a
+	// fabricated bare {Kind: Slice} descriptor would equal every other
+	// unspellable slice via tdName's kind fallback. Func is excluded:
+	// the fabricated signature-free FuncType spells "func()" for any
+	// signature and must not equate a real `func(int)`.
+	na, nb := tdName(a), tdName(b)
+	return a.Spec == nil &&
+		a.Kind != runtime.KindFunc &&
+		b.Kind != runtime.KindFunc &&
+		(a.Name != "" || a.Anon != nil) &&
+		(b.Name != "" || b.Anon != nil) &&
+		na == nb &&
+		na != "struct{}" && na != "func()" && na != "interface{}" &&
+		!lossySpelling(a) && !lossySpelling(b)
+}
+
+// lossySpelling reports whether the name tdName derives from td.Anon
+// discards content: typeExprName folds every StructType to "struct{}",
+// FuncType to "func()" and InterfaceType to "interface{}", so a
+// spelling containing one — "*struct{}" for both *struct{X int} and
+// *struct{Y int} — cannot decide type identity.
+func lossySpelling(td *runtime.TypeDef) bool {
+	if td.Name != "" || td.Anon == nil {
+		return false
+	}
+	lossy := false
+	ast.Inspect(td.Anon, func(n ast.Node) bool {
+		switch n.(type) {
+		case *ast.StructType, *ast.FuncType, *ast.InterfaceType:
+			lossy = true
+		}
+		return !lossy
+	})
+	return lossy
 }
 
 // hostElemTwin reports whether tag is an unnamed host slice whose
@@ -1235,106 +1281,13 @@ func (v *VM) hostElemTwin(f *frame, tag, td *runtime.TypeDef) bool {
 	if tag == nil || tag.Kind != runtime.KindSlice || tag.Name != "" || tag.Elem == nil {
 		return false
 	}
-	return v.hostTwinIs(f, tag.Elem, v.elemTypedef(f, td))
+	return v.sameTypedef(tag.Elem, v.elemTypedef(f, td))
 }
 
-// HostNilTwin is [VM.hostNilTwin] for intrinsics (reflect.DeepEqual).
-func (v *VM) HostNilTwin(a, b *runtime.TypeDef) bool { return v.hostNilTwin(a, b) }
-
-// hostNilTwin reports whether a and b, the types of two nils, denote the
-// same type because one is a nil host *T ([HostNilPtrTypedef]) and the
-// other the *T of its source twin (or of the bound type).
-func (v *VM) hostNilTwin(a, b *runtime.TypeDef) bool {
-	switch {
-	case HostNilPtrType(a) != nil:
-		return v.hostTwinIs(nil, a, b)
-	case HostNilPtrType(b) != nil:
-		return v.hostTwinIs(nil, b, a)
-	case hostNilIdent(a):
-		// a nil net.IP from net.ParseIP against a script zero net.IP (or a
-		// nil url.Values against a script zero one)
-		return v.hostTwinIs(nil, a, b)
-	case hostNilIdent(b):
-		return v.hostTwinIs(nil, b, a)
-	}
-	return false
-}
-
-// hostNilIdent reports whether td is the typedef [HostNil] mints for a
-// nil named host slice or map (net.IP, url.Values): a slice or map kind
-// carrying the host identity.
-func hostNilIdent(td *runtime.TypeDef) bool {
-	return td != nil && (td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap) && td.HostIdent != nil && td.Spec == nil
-}
-
-// unresolvedSpells reports whether src, an anonymous *T typedef whose T
-// does not resolve, spells rt: `*pkg.Name` where pkg names rt's package
-// in src's file — through the file's import table, so a renamed import
-// (`rx "regexp"`) matches by path — and Name is rt's type name.
-func unresolvedSpells(src *runtime.TypeDef, rt reflect.Type) bool {
-	st, ok := src.Anon.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := st.X.(*ast.SelectorExpr)
-	if !ok || sel.Sel.Name != rt.Name() {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	if src.Pkg != nil && src.File != nil {
-		for _, ref := range src.Pkg.Imports[src.File] {
-			name := ref.Alias
-			if name == "" {
-				name = ref.PackageName()
-			}
-			if name == pkg.Name {
-				return ref.Path == rt.PkgPath()
-			}
-		}
-	}
-	// no import table to consult: rt.String() is "pkgname.Name", its
-	// prefix the package clause name an import spells by default.
-	return rt.String() == pkg.Name+"."+rt.Name()
-}
-
-// hostTwinIs reports whether host, a [hostPkgElemTypedef] typedef, and
-// src, a source typedef, denote the same type: the same named type, or
-// pointers to it.
-func (v *VM) hostTwinIs(f *frame, host, src *runtime.TypeDef) bool {
-	if host == nil || src == nil {
-		return false
-	}
-	src = v.peelAlias(src)
-	if host.Kind == runtime.KindPointer && host.HostIdent == nil {
-		if src.Kind != runtime.KindPointer || src.Name != "" {
-			return false
-		}
-		et := v.elemTypedef(f, src)
-		if et == nil {
-			// the pointee names nothing the engine can resolve — a
-			// bound package that registers no entry for the type
-			// (regexp.Regexp) shadows its source decl. The spelling is
-			// all there is: *regexp.Regexp against the host *Regexp.
-			return host.Elem != nil && host.Elem.HostIdent != nil && unresolvedSpells(src, host.Elem.HostIdent)
-		}
-		return v.hostTwinIs(f, host.Elem, et)
-	}
-	if host.HostIdent == nil {
-		return false
-	}
-	if src.HostIdent != nil {
-		return src.HostIdent == host.HostIdent
-	}
-	if src.HostNew != nil {
-		// a bound typedef boxes a pointer zero (or the value itself)
-		ht := src.HostType()
-		return ht == host.HostIdent || (ht.Kind() == reflect.Pointer && ht.Elem() == host.HostIdent)
-	}
-	return runtime.HostNamedIs(host.HostIdent, src)
-}
+// HostNilTwin is [VM.sameTypedef] for intrinsics (reflect.DeepEqual):
+// nil types denote the same type when their canonical descriptors do —
+// a nil host *T interns to the *T of its source or bound twin (M4-4).
+func (v *VM) HostNilTwin(a, b *runtime.TypeDef) bool { return v.sameTypedef(a, b) }
 
 // peelAlias follows only Alias links, one hop at a time: `type A = B`
 // is the same type as B, while `type A B` defines a distinct named type

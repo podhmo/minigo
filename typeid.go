@@ -90,7 +90,19 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	}
 	// anonymous and named-basic composites: recurse through Elem when
 	// the typedef carries one, else fall back to the canonical
-	// underlying spelling (func signatures, anonymous structs).
+	// underlying spelling (func signatures, anonymous structs). A
+	// package-resolved anonymous descriptor keeps its spelling: a *T
+	// stamped by a host value converges on a source *T (its Elem is a
+	// canonical twin the spelling already names), and spelled keys are
+	// context-stable in a way per-file elem keys are not.
+	if td.Anon != nil && td.Pkg != nil {
+		if s := runtime.TypGoSpelling(td.Anon, td); s != "" {
+			// identity spelling (keeps chan direction), not underlying.
+			// Selector qualifiers already resolve to import paths through
+			// the file's imports, so same-named packages do not collide.
+			return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, s, args))
+		}
+	}
 	if td.Elem != nil {
 		return runtime.TypeID(fmt.Sprintf("anon:%d:%s%s", td.Kind, e.typeIDOf(td.Elem), args))
 	}
@@ -145,25 +157,60 @@ func (e *Engine) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 // interns to the same descriptor source `*fs.DirEntry` does. Anything
 // else returns unchanged.
 func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil || td.Spec != nil {
+	// A td carrying a package IS a canonical descriptor (bound at
+	// Bind, or the source declaration) — no twin to resolve, and
+	// short-circuiting keeps a re-entrant Bind from deadlocking the
+	// lazy package install hostTwin would trigger.
+	if td == nil || td.Spec != nil || td.Pkg != nil {
 		return td
 	}
 	if td.HostIdent != nil {
 		if twin := e.hostTwin(td.HostIdent); twin != nil {
 			return twin
 		}
+		rt := td.HostIdent
+		if rt.Kind() == reflect.Pointer {
+			if ert := rt.Elem(); ert.Name() != "" && ert.PkgPath() != "" {
+				// an unnamed host *T stamp ([hostPkgElemTypedef] via
+				// [HostNilPtrTypedef]) — the descriptor stands for *T, so
+				// canonical is a pointer over T's twin, keyed like a source
+				// *T descriptor.
+				if et := e.hostTwin(ert); et != nil {
+					return anonPtrTypedefOf(et)
+				}
+			}
+		}
+		return td
+	}
+	var rt0 reflect.Type
+	if td.HostScalar != nil {
+		rt0 = reflect.TypeOf(td.HostScalar)
+	} else if td.HostNew != nil {
+		rt0 = td.HostType()
+	}
+	if rt0 != nil {
+		// carrier-backed: the typedef represents the host type its box
+		// mints — *T carriers name T — but only when the descriptor
+		// names that very type: a bound Widget boxing *strings.Builder
+		// represents Widget, not Builder.
+		if rt0.Kind() == reflect.Pointer && rt0.Name() == "" {
+			rt0 = rt0.Elem()
+		}
+		if rt0.Name() != "" && td.Name == rt0.String() {
+			if twin := e.hostTwin(rt0); twin != nil {
+				return twin
+			}
+		}
 		return td
 	}
 	if td.Elem != nil && td.Name == "" && td.Anon == nil {
 		et := e.canonicalTypedef(td.Elem)
 		if et != td.Elem {
+			if td.Kind == runtime.KindPointer && et.Pkg != nil {
+				return anonPtrTypedefOf(et)
+			}
 			nt := *td
 			nt.Elem = et
-			if td.Kind == runtime.KindPointer && et.Pkg != nil {
-				nt.Anon = &ast.StarExpr{X: ast.NewIdent(et.Name)}
-				nt.Pkg = et.Pkg
-				nt.File = et.File
-			}
 			return &nt
 		}
 	}
@@ -214,4 +261,30 @@ func splitHostName(s string) (string, string, bool) {
 		}
 	}
 	return "", "", false
+}
+
+// anonPtrTypedefOf mints the canonical *T descriptor over an element
+// twin: the same anonymous pointer a source `*T` resolves to — the
+// expr, package and file are what a declared *T carries, so its intern
+// key spells identically.
+func anonPtrTypedefOf(et *runtime.TypeDef) *runtime.TypeDef {
+	// the qualifier spells the element's import PATH, matching what
+	// typSpelling produces for a declared `*T` (it resolves the
+	// selector's package name through the file's import table to the
+	// path, so a renamed import `rx "regexp"` still keys *regexp.Regexp).
+	var x ast.Expr = ast.NewIdent(et.Name)
+	if et.Pkg != nil && et.Pkg.Path != "" {
+		if _, short, ok := strings.Cut(et.Name, "."); ok {
+			x = &ast.SelectorExpr{X: ast.NewIdent(et.Pkg.Path), Sel: ast.NewIdent(short)}
+		}
+	} else if pkg, short, ok := strings.Cut(et.Name, "."); ok {
+		x = &ast.SelectorExpr{X: ast.NewIdent(pkg), Sel: ast.NewIdent(short)}
+	}
+	return &runtime.TypeDef{
+		Kind: runtime.KindPointer,
+		Elem: et,
+		Anon: &ast.StarExpr{X: x},
+		Pkg:  et.Pkg,
+		File: et.File,
+	}
 }
