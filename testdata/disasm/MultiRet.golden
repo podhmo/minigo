@@ -1,0 +1,21 @@
+chunk MultiRet (params=1 locals=1 results=2)
+  0000  OpGlobal k0 site0
+  0001  OpLocalType
+  0002  OpCoerce slot0
+  0003  OpLocal slot0
+  0004  OpGlobal k1 site1
+  0005  OpLocalType
+  0006  OpCoerceTop
+  0007  OpLocal slot0
+  0008  OpConst k2
+  0009  OpBinary +
+  0010  OpGlobal k3 site2
+  0011  OpLocalType
+  0012  OpCoerceTop
+  0013  OpReturn 2
+  0014  OpReturn 2
+consts:
+  k0: "int" (string)
+  k1: "int" (string)
+  k2: <*runtime.UConst>
+  k3: "int" (string)

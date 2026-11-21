@@ -1,0 +1,24 @@
+chunk Goto (params=0 locals=1 results=1)
+  0000  OpConst k0
+  0001  OpNewLocal slot0
+  0002  OpLocal slot0
+  0003  OpConst k1
+  0004  OpBinary +
+  0005  OpSetLocal slot0
+  0006  OpLocal slot0
+  0007  OpConst k2
+  0008  OpBinary <
+  0009  OpJumpFalse ->12
+  0010  OpJump ->2
+  0011  OpJump ->12
+  0012  OpLocal slot0
+  0013  OpGlobal k3 site0
+  0014  OpLocalType
+  0015  OpCoerceTop
+  0016  OpReturn 1
+  0017  OpReturn 1
+consts:
+  k0: <*runtime.UConst>
+  k1: <*runtime.UConst>
+  k2: <*runtime.UConst>
+  k3: "int" (string)

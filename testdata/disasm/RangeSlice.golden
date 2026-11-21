@@ -1,0 +1,31 @@
+chunk RangeSlice (params=1 locals=4 results=1)
+  0000  OpConst k0
+  0001  OpLocalType
+  0002  OpCoerce slot0
+  0003  OpConst k1
+  0004  OpNewLocal slot1
+  0005  OpLocal slot0
+  0006  OpIter
+  0007  OpNewLocal slot2
+  0008  OpRangeNext ->20 slot2 6
+  0009  OpNewLocal slot3
+  0010  OpPop
+  0011  OpLocalRef slot1
+  0012  OpLocal slot3
+  0013  OpSwap
+  0014  OpDup
+  0015  OpDeref
+  0016  OpRot3
+  0017  OpBinary +
+  0018  OpSetRefs 1
+  0019  OpJump ->8
+  0020  OpLocal slot1
+  0021  OpGlobal k2 site0
+  0022  OpLocalType
+  0023  OpCoerceTop
+  0024  OpReturn 1
+  0025  OpReturn 1
+consts:
+  k0: <*runtime.TypeDef>
+  k1: <*runtime.UConst>
+  k2: "int" (string)

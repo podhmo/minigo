@@ -1,0 +1,7 @@
+chunk Special (params=0 locals=0 results=0)
+  0000  OpSpecialCall k0 k1
+  0001  OpPop
+  0002  OpReturn
+consts:
+  k0: <runtime.SymbolID>
+  k1: <*runtime.QuotedCall>

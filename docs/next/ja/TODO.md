@@ -17,7 +17,7 @@
 - [x] **M0-5 Session の分離と編集後の更新を pin する**: 2 つの Session でカウンタが独立に進むこと、ソースを編集したあと既存の Session は旧版のまま動き、新しい Session は新版を使うこと、を確かめる。完了条件: 現状の振る舞いを記述するテストがある（違いが既知の差分なら、その旨を明記する）。[references/ownership.md](./references/ownership.md)
 - [x] **M0-6 Quoted Go を pin する**: スタブパッケージがロードも実行もされないこと、別名 import、ローカルなシャドウイング、同じ綴りの別関数を正しく判別することを確かめる。完了条件: 該当する examples（convert-define）以外にもルートのテストがある。
 - [x] **M0-7 コンパイル時の事実に依存する 15 件を明示する**: スパイクで答えない oracle を使うと壊れた 15 件に、「compile-time fact」のラベル（コメントかテーブル）を付ける。完了条件: 一覧が [references/acceptance-set.md](./references/acceptance-set.md) とテスト側の両方にある。
-- [ ] **M0-8 `bytecode.Disasm` の golden を追加する**: 代表的な関数を十数個選ぶ（クロージャ、defer、range、特殊形式、ジェネリクス、多値返却、goto）。完了条件: compile の変更が golden の diff として見える。
+- [x] **M0-8 `bytecode.Disasm` の golden を追加する**: 代表的な関数を十数個選ぶ（クロージャ、defer、range、特殊形式、ジェネリクス、多値返却、goto）。完了条件: compile の変更が golden の diff として見える。
 
 ## M1: 所有権の構造的な分割
 

@@ -1,0 +1,18 @@
+chunk NamedRet (params=0 locals=1 results=1)
+  0000  OpNil
+  0001  OpNewLocal slot0
+  0002  OpGlobal k0 site0
+  0003  OpLocalType
+  0004  OpCoerce slot0
+  0005  OpLocalRef slot0
+  0006  OpConst k1
+  0007  OpSetRefs 1
+  0008  OpGlobal k2 site1
+  0009  OpLocalType
+  0010  OpCoerce slot0
+  0011  OpReturn -1
+  0012  OpReturn 1
+consts:
+  k0: "int" (string)
+  k1: <*runtime.UConst>
+  k2: "int" (string)
