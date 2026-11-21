@@ -1,4 +1,4 @@
-package minigo
+package stdjson
 
 import (
 	"bytes"
@@ -14,13 +14,27 @@ import (
 	"strings"
 	"unsafe"
 
+	"sync/atomic"
+
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
+	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installEncodingJson(h *hostHelpers) {
-	e.bindBound("encoding/json", map[string]runtime.Value{
+// typeStr is the %T speller every engine installs — the same pure
+// function each time, so the store races harmlessly, but we still go
+// through atomic.Value to keep the race detector quiet when engines
+// install concurrently.
+var typeStr atomic.Value // func(runtime.Value) string
+
+func typeStrOf(x runtime.Value) string {
+	return typeStr.Load().(func(runtime.Value) string)(x)
+}
+
+func Install(bind stdlib.Bind, h stdlib.Helpers, ad *stdio.Adapters, ts func(runtime.Value) string) {
+	typeStr.Store(ts)
+	bind("encoding/json", map[string]runtime.Value{
 		"Number": &runtime.TypeDef{Name: "encoding/json.Number", Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostNew: func() any { return json.Number("") }},
 		// the Marshaler/Unmarshaler interface types — gc dispatches
 		// through an interface-holding target (`var i json.Unmarshaler
@@ -29,18 +43,18 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 		"Marshaler": &runtime.TypeDef{Name: "encoding/json.Marshaler", Kind: runtime.KindInterface, MReqs: []string{"MarshalJSON"}},
 		// *json.SyntaxError: the bound decoder returns the host error for
 		// malformed input, so `err.(*json.SyntaxError)` asserts on it.
-		"SyntaxError": hostType("encoding/json.SyntaxError", func() any { return &json.SyntaxError{} }),
+		"SyntaxError": stdlib.HostType("encoding/json.SyntaxError", func() any { return &json.SyntaxError{} }),
 		// *json.UnsupportedTypeError: Marshal's unsupported-type failure
 		// surfaces the host error, so `err.(*json.UnsupportedTypeError)`
 		// and errors.As assert on it.
-		"UnsupportedTypeError": hostType("encoding/json.UnsupportedTypeError", func() any { return &json.UnsupportedTypeError{} }),
+		"UnsupportedTypeError": stdlib.HostType("encoding/json.UnsupportedTypeError", func() any { return &json.UnsupportedTypeError{} }),
 		// *json.MarshalerError: a script MarshalJSON/MarshalText failure
 		// surfaces the host error (its Type is a scriptReflectType
 		// spelling — a script type has no reflect.Type), so the same
 		// assert and errors.As apply.
-		"MarshalerError": hostType("encoding/json.MarshalerError", func() any { return &json.MarshalerError{} }),
+		"MarshalerError": stdlib.HostType("encoding/json.MarshalerError", func() any { return &json.MarshalerError{} }),
 		"Unmarshaler":    &runtime.TypeDef{Name: "encoding/json.Unmarshaler", Kind: runtime.KindInterface, MReqs: []string{"UnmarshalJSON"}},
-		"Encoder":        hostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
+		"Encoder":        stdlib.HostType("encoding/json.Encoder", func() any { return &jsonEncoder{enc: json.NewEncoder(io.Discard)} }),
 		// NewEncoder boxes a jsonEncoder — the wrapper, not the host
 		// *json.Encoder — so Encode takes its raw script arg through
 		// goJSON like Marshal (see jsonEncoder.ScriptMethod).
@@ -48,7 +62,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("json.NewEncoder needs 1 arg, got %d", len(args))
 			}
-			w, err := asWriterVM(v, args[0])
+			w, err := ad.AsWriterVM(v, args[0])
 			if err != nil {
 				return nil, err
 			}
@@ -64,21 +78,21 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 			err = jsonUnsupportedOf(err)
 			var se *jsonScriptErr
 			if errors.As(err, &se) {
-				return &runtime.Tuple{Elems: []runtime.Value{scriptVal([]byte{}), errVal(jsonMarshalerErr(v, se))}}, nil
+				return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal([]byte{}), stdlib.ErrVal(jsonMarshalerErr(v, se))}}, nil
 			}
-			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(err)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(b), stdlib.ErrVal(err)}}, nil
 		}},
 		"MarshalIndent": &runtime.BuiltinFunc{Name: "json.MarshalIndent", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 3 {
 				return nil, fmt.Errorf("json.MarshalIndent needs 3 args, got %d", len(args))
 			}
-			b, err := json.MarshalIndent(goJSON(v, args[0]), str(hostbridge.GoNative(args[1])), str(hostbridge.GoNative(args[2])))
+			b, err := json.MarshalIndent(goJSON(v, args[0]), stdlib.Str(hostbridge.GoNative(args[1])), stdlib.Str(hostbridge.GoNative(args[2])))
 			err = jsonUnsupportedOf(err)
 			var se *jsonScriptErr
 			if errors.As(err, &se) {
-				return &runtime.Tuple{Elems: []runtime.Value{scriptVal([]byte{}), errVal(jsonMarshalerErr(v, se))}}, nil
+				return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal([]byte{}), stdlib.ErrVal(jsonMarshalerErr(v, se))}}, nil
 			}
-			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(b), errVal(err)}}, nil
+			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(b), stdlib.ErrVal(err)}}, nil
 		}},
 		// Two shapes: Unmarshal(data) decodes into the runtime value tree
 		// (maps/slices/scalars) and returns it; Unmarshal(data, &v) decodes
@@ -86,8 +100,8 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 		"Unmarshal": &runtime.BuiltinFunc{Name: "json.Unmarshal", Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) == 1 {
 				var dec any
-				err := json.Unmarshal(byteSlice(hostbridge.GoNative(args[0])), &dec)
-				return &runtime.Tuple{Elems: []runtime.Value{scriptVal(jsonDeep(dec)), errVal(err)}}, nil
+				err := json.Unmarshal(stdlib.ByteSlice(hostbridge.GoNative(args[0])), &dec)
+				return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(jsonDeep(dec)), stdlib.ErrVal(err)}}, nil
 			}
 			if len(args) != 2 {
 				return nil, fmt.Errorf("json.Unmarshal needs 1 or 2 args, got %d", len(args))
@@ -97,16 +111,16 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 			if _, ok := runtime.Deref(args[1]); !ok {
 				atd := v.TypeOf(args[1])
 				if atd == nil {
-					return errVal(fmt.Errorf("json: Unmarshal(nil)")), nil
+					return stdlib.ErrVal(fmt.Errorf("json: Unmarshal(nil)")), nil
 				}
-				return errVal(fmt.Errorf("json: Unmarshal(non-pointer %s)", runtime.DisplayName(atd))), nil
+				return stdlib.ErrVal(fmt.Errorf("json: Unmarshal(non-pointer %s)", runtime.DisplayName(atd))), nil
 			}
-			data := byteSlice(hostbridge.GoNative(args[0]))
+			data := stdlib.ByteSlice(hostbridge.GoNative(args[0]))
 			// gc validates the input up front (checkValid): a syntax
 			// error reports before any UnmarshalJSON dispatch.
 			var dec any
 			if err := json.Unmarshal(data, &dec); err != nil {
-				return errVal(err), nil
+				return stdlib.ErrVal(err), nil
 			}
 			// a target whose method set offers UnmarshalJSON decodes
 			// itself — gc's indirect() hands it the raw literal instead
@@ -124,7 +138,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 				}
 			}
 			if m, ok := runtime.IfaceMember(v, args[1], "UnmarshalJSON"); ok && jsonUnmarshalShape(m) {
-				r, cerr := v.Call(m, []runtime.Value{scriptVal(data)})
+				r, cerr := v.Call(m, []runtime.Value{stdlib.ScriptVal(data)})
 				if cerr != nil {
 					return nil, cerr
 				}
@@ -168,15 +182,15 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 					return pickCall, nil
 				}
 				if pickErr != nil {
-					return errVal(pickErr), nil
+					return stdlib.ErrVal(pickErr), nil
 				}
 				// no path resolved — the first-recorded call error
 				// stands, matching decode order.
 				return ectx.callErrs[0].ev, nil
 			}
-			return errVal(jsonInputErr(data, ectx.errs)), nil
+			return stdlib.ErrVal(jsonInputErr(data, ectx.errs)), nil
 		}},
-		"Valid": h.fn("json.Valid", func(a []any) (any, error) { return json.Valid(byteSlice(a[0])), nil }, json.Valid),
+		"Valid": h.Fn("json.Valid", func(a []any) (any, error) { return json.Valid(stdlib.ByteSlice(a[0])), nil }, json.Valid),
 	})
 }
 
@@ -235,7 +249,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		return goJSONSeen(c, x.V, seen)
 	case *runtime.Cell:
 		if jsonSeen(seen, x) {
-			return jsonCycle{via: scriptTypeString(x)}
+			return jsonCycle{via: typeStrOf(x)}
 		}
 		defer delete(seen, x)
 		return goJSONSeen(c, x.Elem, seen)
@@ -245,7 +259,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		// would reflect on its bookkeeping fields. Guard it like a Cell:
 		// `s.V = &s.V` revisits the same ref.
 		if jsonSeen(seen, x) {
-			return jsonCycle{via: scriptTypeString(x)}
+			return jsonCycle{via: typeStrOf(x)}
 		}
 		defer delete(seen, x)
 		if el, ok := runtime.Deref(x); ok {
@@ -260,7 +274,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		if jsonSeen(seen, x) {
 			// a struct only recurs through a pointer to it — gc names
 			// that pointer type.
-			return jsonCycle{via: "*" + scriptTypeString(x)}
+			return jsonCycle{via: "*" + typeStrOf(x)}
 		}
 		defer delete(seen, x)
 		// structs marshal in DECLARATION order (encoding/json never
@@ -301,7 +315,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		return o
 	case *runtime.Slice:
 		if jsonSeen(seen, x) {
-			return jsonCycle{via: scriptTypeString(x)}
+			return jsonCycle{via: typeStrOf(x)}
 		}
 		defer delete(seen, x)
 		out := make([]any, len(x.Elems))
@@ -311,7 +325,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		return out
 	case *runtime.Map:
 		if jsonSeen(seen, x) {
-			return jsonCycle{via: scriptTypeString(x)}
+			return jsonCycle{via: typeStrOf(x)}
 		}
 		defer delete(seen, x)
 		m := make(map[string]any, x.Len())
@@ -336,7 +350,7 @@ func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 		}
 		m := make(map[string]any, len(x))
 		for k, e := range x {
-			m[str(k)] = goJSONSeen(c, e, seen)
+			m[stdlib.Str(k)] = goJSONSeen(c, e, seen)
 		}
 		return m
 	case map[string]any: // jsonHostArg's restored container copy
@@ -448,7 +462,7 @@ func jsonMapKeyName(c runtime.MemberCaller, k runtime.Value, kt *runtime.TypeDef
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return strconv.FormatUint(rv.Uint(), 10)
 	}
-	return str(nk)
+	return stdlib.Str(nk)
 }
 
 // jsonFieldKey maps a struct field to its JSON object key: the `json`
@@ -607,7 +621,7 @@ func jsonFuncValue(v any) (jsonUnsupported, bool) {
 	default:
 		return jsonUnsupported{}, false
 	}
-	e := &unsupportedFunc{name: scriptTypeString(v)}
+	e := &unsupportedFunc{name: typeStrOf(v)}
 	if n != nil {
 		e.rt = runtime.HostIterSeqType(n.Typ)
 	}
@@ -754,7 +768,7 @@ func jsonMarshalResult(r runtime.Value) (b []byte, e runtime.Value, ok bool) {
 	default:
 		e = t.Elems[1]
 	}
-	b, ok = byteSlice(hostbridge.GoNative(t.Elems[0])), true
+	b, ok = stdlib.ByteSlice(hostbridge.GoNative(t.Elems[0])), true
 	return b, e, ok
 }
 
@@ -764,7 +778,7 @@ func jsonMarshalResult(r runtime.Value) (b []byte, e runtime.Value, ok bool) {
 // non-nil error return as the competing callErr at the current path.
 // ok=false means the call itself blew up and decoding must stop.
 func jsonCallMethod(c runtime.ScriptCaller, m runtime.Value, lit []byte, ectx *jsonErrCtx) bool {
-	r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)})
+	r, cerr := c.Call(m, []runtime.Value{stdlib.ScriptVal(lit)})
 	if cerr != nil {
 		if ectx.fatal == nil {
 			ectx.fatal = cerr
@@ -834,40 +848,11 @@ func jsonAllocPointee(c runtime.ElemZeroTyper, ptd *runtime.TypeDef) runtime.Val
 	return &runtime.Cell{Elem: z}
 }
 
-// peelNil unwraps cells, refs and named wrappers down to a nil
-// payload and reports its tagged typedef — the one peel-to-nil walk
-// json's nil probe (any nilish payload) and fmt's pointer skip
-// (pointer-tagged nil only) share.
-func peelNil(v runtime.Value) (*runtime.TypeDef, bool) {
-	var seen map[runtime.Value]bool
-	for {
-		if dv, ok := runtime.Deref(v); ok {
-			if seen == nil {
-				seen = map[runtime.Value]bool{v: true}
-			} else if seen[v] {
-				// a cyclic pointer (x := any(nil); x = &x) is no nil
-				return nil, false
-			} else {
-				seen[v] = true
-			}
-			v = dv
-			continue
-		}
-		switch n := v.(type) {
-		case *runtime.TypedNil:
-			return n.Typ, true
-		case *runtime.IfaceNil:
-			return n.Typ, true // a TypedNil boxed by an interface slot keeps its tag
-		}
-		return nil, false
-	}
-}
-
 // jsonNilish reports a nil pointer/interface payload — a cell or a
 // named wrapper keeps the verdict of the value it carries so a nil
 // *T inside one still reads as nil.
 func jsonNilish(v runtime.Value) bool {
-	_, ok := peelNil(v)
+	_, ok := stdlib.PeelNil(v)
 	return ok
 }
 
@@ -1206,7 +1191,7 @@ func jsonResolveTypName(c runtime.ExprResolver, st *runtime.TypeDef, e ast.Expr)
 	if st != nil {
 		pkg = st.Pkg
 	}
-	return elemTyp(e, pkg)
+	return stdlib.ElemTyp(e, pkg)
 }
 
 // jsonPeelPtr removes pointer levels from a typedef through the
@@ -1231,7 +1216,7 @@ func jsonPeelPtr(c runtime.ElemTyper, td *runtime.TypeDef) *runtime.TypeDef {
 			if td.Elem != nil {
 				et = td.Elem
 			} else if st, ok := td.TypeExpr().(*ast.StarExpr); ok {
-				et = elemTyp(st.X, td.Pkg)
+				et = stdlib.ElemTyp(st.X, td.Pkg)
 			} else {
 				return td
 			}
@@ -1355,12 +1340,12 @@ func jsonMarshalLive(ents []jsonFieldEntry) []jsonFieldEntry {
 // null nils pointer/slice/map/interface targets and is a no-op elsewhere.
 func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.Value, ectx *jsonErrCtx) runtime.Value {
 	if td == nil {
-		return scriptVal(jsonDeep(dec))
+		return stdlib.ScriptVal(jsonDeep(dec))
 	}
 	if dec == nil {
 		switch td.Kind {
 		case runtime.KindPointer, runtime.KindSlice, runtime.KindMap, runtime.KindInterface:
-			if td.Kind == runtime.KindSlice && isArrayTyp(td) {
+			if td.Kind == runtime.KindSlice && stdlib.IsArrayTyp(td) {
 				// gc ignores null for fixed arrays: the value stays.
 				return priorOr(prior, c, td)
 			}
@@ -1481,7 +1466,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 				idx := e.path[h]
 				etd := jsonEmbedTyp(c, curTd, idx)
 				if etd == nil {
-					etd = fieldTypOf(curTd, idx)
+					etd = stdlib.FieldTypOf(curTd, idx)
 				}
 				var pf2 runtime.Value
 				if curPf != nil && idx < len(curPf) {
@@ -1525,7 +1510,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		// A string decodes as base64 only for a byte SLICE — a [N]byte
 		// array is a number list like any other array (gc has no
 		// base64 special case for arrays).
-		if s, ok := dec.(string); ok && byteSliceTyp(td) && !isArrayTyp(td) {
+		if s, ok := dec.(string); ok && stdlib.ByteSliceTyp(td) && !stdlib.IsArrayTyp(td) {
 			b, err := base64.StdEncoding.DecodeString(s)
 			if err != nil {
 				ectx.fail("string", td, err)
@@ -1543,7 +1528,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 			return priorOr(prior, c, td)
 		}
 		et := c.TypeOf(c.ElemZero(td))
-		if isArrayTyp(td) {
+		if stdlib.IsArrayTyp(td) {
 			// gc's fixed-array semantics: JSON positions decode into
 			// the element in place (a failed position keeps the prior
 			// value), positions past the JSON array reset to zero, and
@@ -1653,7 +1638,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 		}
 		return &runtime.Cell{Elem: jsonShape(c, dec, c.TypeOf(c.ElemZero(td)), ep, ectx)}
 	case runtime.KindInterface:
-		return scriptVal(jsonDeep(dec))
+		return stdlib.ScriptVal(jsonDeep(dec))
 	}
 	return jsonScalar(c, dec, td, prior, ectx)
 }
@@ -1676,7 +1661,7 @@ func jsonMapKeyTyp(c runtime.ExprResolver, td *runtime.TypeDef) *runtime.TypeDef
 	if rt, err := c.ResolveType(td, mt.Key); err == nil && rt != nil {
 		return rt
 	}
-	kt, _ := mapElemTyps(td)
+	kt, _ := stdlib.MapElemTyps(td)
 	return kt
 }
 
@@ -1692,7 +1677,7 @@ func jsonMapKey(c runtime.VMCaller, k string, kt *runtime.TypeDef, ectx *jsonErr
 	}
 	// a pointer key decodes as the pointee, then addresses
 	if pt, ok := kt.TypeExpr().(*ast.StarExpr); ok {
-		et := bindTyp(kt, elemTyp(pt.X, kt.Pkg))
+		et := stdlib.BindTyp(kt, stdlib.ElemTyp(pt.X, kt.Pkg))
 		if rt, err := c.ResolveType(kt, pt.X); err == nil && rt != nil {
 			et = rt
 		}
@@ -1718,7 +1703,7 @@ func jsonMapKey(c runtime.VMCaller, k string, kt *runtime.TypeDef, ectx *jsonErr
 		return kr.Elem, true
 	}
 	conv := func(x any) (runtime.Value, bool) {
-		v, err := c.Convert(kt, scriptVal(x))
+		v, err := c.Convert(kt, stdlib.ScriptVal(x))
 		if err != nil {
 			ectx.fail("string", kt, nil)
 			return nil, false
@@ -1770,7 +1755,7 @@ func jsonScalar(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.
 		return priorOr(prior, c, td)
 	}
 	conv := func(x any) runtime.Value {
-		v, err := c.Convert(td, scriptVal(x))
+		v, err := c.Convert(td, stdlib.ScriptVal(x))
 		if err != nil {
 			return fail()
 		}
@@ -1876,9 +1861,9 @@ func jsonStringOpt(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runti
 	s, sok := dec.(string)
 	if td == nil {
 		if sok {
-			return scriptVal(s)
+			return stdlib.ScriptVal(s)
 		}
-		return scriptVal(jsonDeep(dec))
+		return stdlib.ScriptVal(jsonDeep(dec))
 	}
 	// A quoted "null" is the null literal, not the word: it follows
 	// normal null semantics (nils nilable kinds, leaves the rest).
@@ -1893,7 +1878,7 @@ func jsonStringOpt(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runti
 		return &runtime.Cell{Elem: jsonStringOpt(c, dec, c.TypeOf(c.ElemZero(td)), ep, ectx)}
 	}
 	conv := func(x any) runtime.Value {
-		v, err := c.Convert(td, scriptVal(x))
+		v, err := c.Convert(td, stdlib.ScriptVal(x))
 		if err != nil {
 			ectx.fail("string", td, nil)
 			return priorOr(prior, c, td)
@@ -2219,7 +2204,7 @@ func (e *jsonEncoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtim
 		if len(args) != 1 {
 			return nil, fmt.Errorf("json.Encoder.Encode needs 1 arg, got %d", len(args))
 		}
-		return errVal(e.encode(v, args[0])), nil
+		return stdlib.ErrVal(e.encode(v, args[0])), nil
 	}, true
 }
 
@@ -2303,4 +2288,26 @@ func (e *jsonUnmarshalTypeError) Error() string {
 		s += ": " + e.cause.Error()
 	}
 	return s
+}
+
+// derefTyp peels the pointer level off a value's typedef — json.Unmarshal
+// decodes into the pointee, so `&cfg` (*Config) shapes as Config.
+func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
+	if td != nil && td.Kind == runtime.KindPointer {
+		if td.Elem == nil {
+			// `&v` where the pointee's typedef could not be recovered
+			// (e.g. `var v any` carries an untyped iface nil) — decode
+			// as `any` rather than wrapping the value in a cell.
+			return nil
+		}
+		return td.Elem
+	}
+	return td
+}
+
+// IsEncoder reports whether v is the package's script-facing
+// *json.Encoder box — the %T speller names it before the %T fallback.
+func IsEncoder(v any) bool {
+	_, ok := v.(*jsonEncoder)
+	return ok
 }
