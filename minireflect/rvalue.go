@@ -46,6 +46,27 @@ type RValue struct {
 // host reports whether this value delegates to a real reflect.Value.
 func (v *RValue) host() bool { return v != nil && v.rv.IsValid() }
 
+// ContentKey implements runtime.ContentKeyer: a reflect.Value is copied
+// on assignment like any struct, so the box pointer is not the map-key
+// identity — the wrapped reflect.Value is (gc compares Value by its
+// typ/ptr/flag fields). A script-domain view carries no host Value and
+// keys by its own pointer.
+func (v *RValue) ContentKey() any {
+	if v.host() {
+		return v.rv
+	}
+	// a script-domain view keys like the Value it models: a settable
+	// view by the location it reads through, a plain view by the viewed
+	// value's own identity.
+	if v.ref != nil {
+		return v.ref
+	}
+	if v.val != nil {
+		return v.val
+	}
+	return v
+}
+
 // get reads the current script value, through the ref when settable.
 func (v *RValue) get() runtime.Value {
 	if v.ref != nil {

@@ -131,10 +131,9 @@ func Symbols(h Hooks) map[string]runtime.Value {
 	// which the host-object value model cannot execute.
 	e := &Env{h: h}
 	valueTD := &runtime.TypeDef{
-		Name:       "reflect.Value",
-		Kind:       runtime.KindStruct,
-		HostNew:    func() any { return &RValue{} },
-		HostNoCopy: true, // reflect.Value is immutable: assignment shares the box
+		Name:    "reflect.Value",
+		Kind:    runtime.KindStruct,
+		HostNew: func() any { return &RValue{} },
 	}
 	e.valueTD = valueTD
 	syms := map[string]runtime.Value{
