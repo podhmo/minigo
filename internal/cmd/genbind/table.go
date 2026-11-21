@@ -22,23 +22,23 @@ var specs = []spec{
 	{Path: "encoding/base64", File: "encoding_base64",
 		// the constructors adapt script io.Writer/io.Reader values.
 		Skip: map[string]bool{"NewEncoder": true, "NewDecoder": true}},
-	{Path: "crypto/sha256", File: "crypto_sha256"},
+	{Path: "crypto/sha256", File: "crypto_sha256", Dir: "internal/stdlib/sha256"},
 	{Path: "html", File: "html", Dir: "internal/stdlib/html"},
-	{Path: "path", File: "path"},
-	{Path: "strconv", File: "strconv"},
+	{Path: "path", File: "path", Dir: "internal/stdlib/path"},
+	{Path: "strconv", File: "strconv", Dir: "internal/stdlib/strconv"},
 	{Path: "unicode/utf8", File: "unicode_utf8", Dir: "internal/stdlib/utf8",
 		Skip: map[string]bool{"EncodeRune": true, "AppendRune": true}},
 	{Path: "path/filepath", File: "path_filepath",
 		Skip: map[string]bool{"Walk": true, "WalkDir": true,
 			"Separator": true, "ListSeparator": true,
 			"Abs": true, "Rel": true, "EvalSymlinks": true, "Glob": true}},
-	{Path: "net/netip", File: "net_netip",
+	{Path: "net/netip", File: "net_netip", Dir: "internal/stdlib/netip",
 		Skip: map[string]bool{"Addr": true, "AddrPort": true, "Prefix": true}},
-	{Path: "unicode", File: "unicode",
+	{Path: "unicode", File: "unicode", Dir: "internal/stdlib/unicode",
 		// Upper/Lower/TitleCase are consts typed unicode.Case in source but
 		// scripts spell them as ints — they stay handwritten.
 		Skip: map[string]bool{"UpperCase": true, "LowerCase": true, "TitleCase": true}},
-	{Path: "bytes", File: "bytes",
+	{Path: "bytes", File: "bytes", Dir: "internal/stdlib/bytes",
 		// rune-predicate callbacks need the caller — a signature-pure
 		// bind cannot adapt a script function (strings keeps its own
 		// handwritten runePred adapters for the same reason).
