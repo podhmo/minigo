@@ -69,7 +69,7 @@ func TestMapWalkMutation(t *testing.T) {
 				})
 				return seen
 			},
-			want: result{Seen: []Value{int64(0), int64(1), int64(2), int64(3), int64(4)}, Left: []Value{}},
+			want: result{Seen: []Value{int64(0), int64(1), int64(2), int64(3), int64(4)}, Left: nil},
 		},
 		{
 			name: "delete next",
@@ -98,7 +98,10 @@ func TestMapWalkMutation(t *testing.T) {
 			},
 			// the reinserted key is found at its old slot (go may or may
 			// not produce it; either is allowed)
-			want: result{Seen: []Value{int64(0), int64(1), int64(2), int64(3), int64(4)}, Left: []Value{int64(0), int64(1), int64(2), int64(4), int64(3)}},
+			// the reinserted key is not produced: its old slot is
+			// tombstoned and its new slot is beyond the walk's length
+			// (go may or may not produce it; either is allowed)
+			want: result{Seen: []Value{int64(0), int64(1), int64(2), int64(4)}, Left: []Value{int64(0), int64(1), int64(2), int64(4), int64(3)}},
 		},
 		{
 			name: "clear",
@@ -110,7 +113,7 @@ func TestMapWalkMutation(t *testing.T) {
 				})
 				return seen
 			},
-			want: result{Seen: []Value{int64(0)}, Left: []Value{}},
+			want: result{Seen: []Value{int64(0)}, Left: nil},
 		},
 		{
 			name: "growth is not produced",
@@ -148,19 +151,25 @@ func TestMapWalkMutation(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			m := newIntMap(5)
-			got := result{Seen: c.run(m), Left: append([]Value{}, m.Order...)}
+			left, _ := m.SnapshotKeys()
+			_ = left
+			seen := c.run(m)
+			disp, _ := m.SnapshotKeys()
+			got := result{Seen: seen, Left: disp}
 			if diff := cmp.Diff(c.want, got); diff != "" {
 				t.Errorf("mismatch (-want +got):\n%s", diff)
 			}
-			if len(m.Order) != len(m.Pairs) || len(m.Keys) != len(m.Order) {
-				t.Errorf("order/pairs out of sync: order=%d keys=%d pairs=%d", len(m.Order), len(m.Keys), len(m.Pairs))
+			// Order keeps tombstoned slots until compaction: its live
+			// count always equals Pairs, and Keys stays aligned.
+			if len(m.Order) != len(m.Pairs)+m.dead || len(m.Keys) != len(m.Order) {
+				t.Errorf("order/pairs out of sync: order=%d keys=%d pairs=%d dead=%d", len(m.Order), len(m.Keys), len(m.Pairs), m.dead)
 			}
 		})
 	}
 }
 
-// TestMapWalkDeleteCopiesOnce: a walk costs one copy of the order
-// slices, not one per delete — later deletes shift the private copy.
+// TestMapWalkDeleteCopiesOnce: deletes tombstone in place — the order
+// slice a walk holds is never reallocated or shifted under it.
 func TestMapWalkDeleteCopiesOnce(t *testing.T) {
 	m := newIntMap(100)
 	w := m.BeginWalk()
