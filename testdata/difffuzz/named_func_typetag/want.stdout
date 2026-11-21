@@ -1,0 +1,5 @@
+bufio.SplitFunc
+func([]uint8, bool) (int, []uint8, error)
+func([]uint8, bool) (int, []uint8, error)
+main.S2
+func()
