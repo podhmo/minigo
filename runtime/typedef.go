@@ -1109,6 +1109,7 @@ func (c sigComparer) sigFieldListEq(fa *ast.FieldList, ca *TypeDef, fb *ast.Fiel
 // identity spelling. A variadic ellipsis is part of the signature —
 // func(...T) is never func([]T).
 func (c sigComparer) sigExprEq(ea ast.Expr, ca *TypeDef, eb ast.Expr, cb *TypeDef) bool {
+	ea, eb = sigParenOff(ea), sigParenOff(eb)
 	ae, aIs := ea.(*ast.Ellipsis)
 	be, bIs := eb.(*ast.Ellipsis)
 	if aIs != bIs {
@@ -1117,12 +1118,45 @@ func (c sigComparer) sigExprEq(ea ast.Expr, ca *TypeDef, eb ast.Expr, cb *TypeDe
 	if aIs {
 		return c.sigExprEq(ae.Elt, ca, be.Elt, cb)
 	}
+	// ResolveType peels `*T` to T — right for method sets, wrong for
+	// identity (`*int` is not `int`). A spelled pointer never reaches
+	// it: mint the anonymous typedef instead, so *T vs U compares the
+	// pointer against whatever U resolves to (an alias still peels to
+	// *T and identifies).
+	sa, aStar := ea.(*ast.StarExpr)
+	sb, bStar := eb.(*ast.StarExpr)
+	if aStar && bStar {
+		return c.sigExprEq(sa.X, ca, sb.X, cb)
+	}
+	if aStar || bStar {
+		star, sctx, other, octx := sa, ca, eb, cb
+		if !aStar {
+			star, sctx, other, octx = sb, cb, ea, ca
+		}
+		ta := &TypeDef{Kind: KindPointer, Anon: star, Pkg: sctx.Pkg, File: sctx.File, Binds: sctx.Binds, LocalTypes: sctx.LocalTypes}
+		if tb, errB := c.res.ResolveType(octx, other); errB == nil && tb != nil {
+			return c.sigTypEq(ta, tb)
+		}
+		return TypSpelling(ea, ca) == TypSpelling(eb, cb)
+	}
 	if ta, errA := c.res.ResolveType(ca, ea); errA == nil && ta != nil {
 		if tb, errB := c.res.ResolveType(cb, eb); errB == nil && tb != nil {
 			return c.sigTypEq(ta, tb)
 		}
 	}
 	return TypSpelling(ea, ca) == TypSpelling(eb, cb)
+}
+
+// sigParenOff unwraps parenthesization — `(*T)` (and `((*T))`) spells
+// the same type as `*T` — so the StarExpr check above sees through.
+func sigParenOff(e ast.Expr) ast.Expr {
+	for {
+		if p, ok := e.(*ast.ParenExpr); ok {
+			e = p.X
+			continue
+		}
+		return e
+	}
 }
 
 // sigElemOf resolves the element typedef of a container typedef whose

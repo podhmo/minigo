@@ -58,6 +58,32 @@ func TestTypIdentical(t *testing.T) {
 	}
 }
 
+func TestSigTypEqParen(t *testing.T) {
+	// Parenthesized types in signatures spell the same type as bare
+	// ones, at any depth: `((*T))` is `*T`. gofmt strips redundant
+	// parens in source, so the cases are parsed from strings.
+	pkg := &Package{Path: "example.com/p"}
+	fn := func(s string) *TypeDef {
+		return &TypeDef{Kind: KindFunc, Anon: typeExpr(t, s), Pkg: pkg}
+	}
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"paren pointer", "func(*int)", "func((*int))", true},
+		{"nested paren pointer", "func(*int)", "func(((*int)))", true},
+		{"paren basic", "func(int)", "func((int))", true},
+		{"pointer vs int", "func(*int)", "func(int)", false},
+		{"nested paren vs int", "func(((*int)))", "func((int))", false},
+	}
+	for _, tt := range tests {
+		if diff := cmp.Diff(tt.want, SigTypEq(fn(tt.a), fn(tt.b), nil)); diff != "" {
+			t.Errorf("%s: SigTypEq(%s, %s) mismatch (-want +got):\n%s", tt.name, tt.a, tt.b, diff)
+		}
+	}
+}
+
 func TestTypIdenticalStrict(t *testing.T) {
 	pkg := &Package{Path: "example.com/p"}
 	anon := func(s string) *TypeDef {

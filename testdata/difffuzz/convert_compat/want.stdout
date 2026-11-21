@@ -1,0 +1,26 @@
+1
+A
+ab
+3 3
+3 7
+[1 2]
+[1 2]
+int->string: true
+string->[]byte: true
+string->[]int: false
+int->float: true
+S1->S2: true
+S1 assignable S2: false
+S1->S3: false
+[]byte->string: true
+[]B->string: true
+[]int->string: false
+nested tag: false
+anon nested tag: true
+renamed field: false
+iface order: true
+array len expr: false
+local type: true
+ptr field: false
+ptr field same: true
+paren ptr field: true
