@@ -2145,9 +2145,14 @@ func TestScriptProfiler(t *testing.T) {
 		t.Fatalf("go tool pprof: %v\n%s", err, out)
 	}
 	top := string(out)
+	// Parked wait is identified at LINE granularity: ticks landing in
+	// parked's post-unpark send or its return are real run time the
+	// sampler legitimately charges to the frame — only a sample on the
+	// `<-ch` line itself means parked time leaked into the profile.
+	recvLine := funcLineOf(t, "testdata/scriptprof/main.go", "func parked", "	<-ch")
 	got := map[string]bool{
 		"spin loop line":  strings.Contains(top, "main.(*T).spin") && strings.Contains(top, "scriptprof/main.go:10"),
-		"parked excluded": !strings.Contains(top, "main.parked"),
+		"parked excluded": !profHasFuncAtLine(top, "main.parked", recvLine),
 		"closure name":    strings.Contains(top, " main.Closure.func1 "),
 		// the deferred Sleep lands on the defer statement's line
 		"deferred host call": profFlatMs(top, "main.slowDefer ") >= 100,
@@ -2158,6 +2163,42 @@ func TestScriptProfiler(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("profile mismatch (-want +got):\n%s\n%s", diff, top)
 	}
+}
+
+// funcLineOf finds the 1-based line of needle inside the function that
+// starts with fnPrefix — the profiler's per-line attribution makes an
+// exact line the only unambiguous name for the instruction under test.
+func funcLineOf(t *testing.T, file, fnPrefix, needle string) int {
+	t.Helper()
+	src, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inFn := false
+	for i, line := range strings.Split(string(src), "\n") {
+		if strings.HasPrefix(line, fnPrefix) {
+			inFn = true
+		} else if inFn && strings.HasPrefix(line, "func ") {
+			inFn = false
+		}
+		if inFn && line == needle {
+			return i + 1
+		}
+	}
+	t.Fatalf("%s: line %q not found inside %s", file, needle, fnPrefix)
+	return 0
+}
+
+// profHasFuncAtLine reports whether any pprof -top -lines row names fn
+// sampled at main.go:line.
+func profHasFuncAtLine(top, fn string, line int) bool {
+	suffix := fmt.Sprintf(":%d", line)
+	for _, row := range strings.Split(top, "\n") {
+		if strings.Contains(row, fn) && strings.Contains(row, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // profFlatMs sums the flat ms of the `go tool pprof -top -unit=ms` rows
