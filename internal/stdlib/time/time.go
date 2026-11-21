@@ -137,7 +137,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"Thursday":  weekdayConst(stdtime.Thursday),
 		"Friday":    weekdayConst(stdtime.Friday),
 		"Saturday":  weekdayConst(stdtime.Saturday),
-		"Location":  stdlib.HostType("time.Location", func() any { return stdtime.Local }),
+		"Location":  stdlib.HostType("time.Location", func() any { return &stdtime.Location{} }),
 		"LoadLocation": h.Fn("time.LoadLocation", func(a []any) (any, error) {
 			loc, err := stdtime.LoadLocation(stdlib.Str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(loc), stdlib.ErrVal(err)}}, nil
