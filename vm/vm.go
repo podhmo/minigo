@@ -23,6 +23,7 @@ import (
 	"go/ast"
 	"go/token"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -688,6 +689,14 @@ func (v *VM) resolveGlobalE(f *frame, name string) (runtime.Value, error) {
 func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *runtime.Cell, cacheable bool, err error) {
 	pkg := f.fn.Pkg
 	file := fileOf(f, pkg)
+	// 0. compiler-minted `.imp:` qualifiers: a re-scoped type spelling
+	// carries the import's path in the name — the file scope never
+	// declares it, the registry does.
+	if strings.HasPrefix(name, ".imp:") {
+		if ref := runtime.SynthImportRef(name); ref != nil {
+			return ref, nil, true, nil
+		}
+	}
 	// 1. file imports
 	if file != nil {
 		if ref, ok := pkg.Scopes[file][name]; ok {

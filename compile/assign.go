@@ -467,12 +467,14 @@ func (c *compiler) noteIfaceBinds(st *ast.AssignStmt) {
 				if t.iface {
 					c.fs.markIface(id.Name)
 				}
-				c.fs.noteDeclTyp(id.Name, t.te, t.teFile)
+				c.fs.noteDeclTyp(id.Name, c.declTypCanon(t.te), t.teFile)
 			} else if t.deferred {
 				// `a, b := p.F()` where p is unindexed — the name's type
 				// is the call's i-th declared result, a deferred fact.
-				c.fs.noteDeferTyp(id.Name, &ast.IndexExpr{X: st.Rhs[0],
-					Index: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}})
+				if src := c.deferOperandOf(st.Rhs[0]); src != nil {
+					c.fs.noteDeferTyp(id.Name, &ast.IndexExpr{X: src,
+						Index: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(i)}})
+				}
 			} else if i == 0 {
 				c.noteDeclTyp(id.Name, nil, false, st.Rhs[0], nil)
 			}
@@ -850,13 +852,37 @@ func (c *compiler) isImportName(name string) bool {
 // real name by materializing each unnamed import, like the VM's global
 // resolution does (vm.go's step 2.5).
 func (c *compiler) importRef(name string) (*runtime.ImportRef, bool) {
+	// a local declaration shadows the import name: `unsafe := f()` in
+	// a function means `unsafe.Sizeof(x)` calls a field or method, not
+	// the intrinsic — its argument must be evaluated like any call.
+	// Under pkgScopeTyp the spelling comes from a package decl, whose
+	// scope has no function-local bindings — the check stands down
+	// and the decl file's imports answer instead.
+	if c.pkgScopeTyp == nil && c.fs != nil && c.fs.lookupBinding(name) != nil {
+		return nil, false
+	}
 	if ref, ok := c.synthImports[name]; ok {
 		return ref, true
 	}
-	if c.pkg == nil || c.file == nil {
+	// a deferred-eval fragment recompiled in a fresh pass meets the
+	// `.imp:` qualifier without this instance's mint table — the
+	// runtime registry still binds it.
+	if strings.HasPrefix(name, ".imp:") {
+		if ref := runtime.SynthImportRef(name); ref != nil {
+			return ref, true
+		}
+	}
+	if c.pkg == nil {
 		return nil, false
 	}
-	return c.pkgImportRef(c.pkg, c.file, name)
+	file := c.file
+	if c.pkgScopeTyp != nil {
+		file = c.pkgScopeTyp
+	}
+	if file == nil {
+		return nil, false
+	}
+	return c.pkgImportRef(c.pkg, file, name)
 }
 
 // storeTarget emits the store for one LHS expression; the value is on stack.

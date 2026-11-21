@@ -403,6 +403,33 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	}
 	if n, ok := b.(*runtime.Named); ok {
 		if aTd != nil && !sameTypeDef(aTd, n.Typ) {
+			// a nil operand asks nilness, not typedef identity:
+			// `s == nil` on a nilable named type is lawful and true
+			// when s holds nil — only a non-nilable named type
+			// mismatches the way gc rejects it at compile.
+			if (op == bytecode.BinEql || op == bytecode.BinNeq ||
+				op == bytecode.BinEqlIface) && (isNilVal(n.V) || isNilVal(a)) {
+				other, otherTd := a, aTd
+				nilTd := n.Typ
+				if !isNilVal(n.V) {
+					other, otherTd = n.V, n.Typ
+					nilTd = aTd
+				}
+				// only an untyped nil gates — it adopts the other's
+				// typedef, so a non-nilable named type mismatches.
+				// A nil carrying a real typedef (an interface slot's
+				// nil tag) compares as a value: `any(nil) == x` is
+				// lawful and answers false, not a type error.
+				if (nilTd == nil || nilTd.Name == "untyped nil") &&
+					!v.nilableTypedef(otherTd) {
+					f.trap("invalid operation: mismatched types %s and untyped nil", tdName(otherTd))
+				}
+				eq := isNilVal(other)
+				if op == bytecode.BinNeq {
+					return !eq
+				}
+				return eq
+			}
 			// equality is lawful between differently-typed dynamic
 			// values — `any(u64) != any(u32)` is true in Go; the
 			// ordered ops and arithmetic stay a type error.

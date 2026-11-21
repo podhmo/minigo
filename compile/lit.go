@@ -471,7 +471,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 			for _, n := range names {
 				slot := ic.fs.declare(n.Name, n.Pos())
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
-				ic.fs.noteDeclTyp(n.Name, field.Type, nil)
+				ic.fs.noteDeclTyp(n.Name, ic.declTypCanon(field.Type), nil)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -485,7 +485,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 		for _, field := range x.Type.Results.List {
 			for _, n := range field.Names {
 				slot := ic.fs.declare(n.Name, n.Pos())
-				ic.fs.noteDeclTyp(n.Name, field.Type, nil)
+				ic.fs.noteDeclTyp(n.Name, ic.declTypCanon(field.Type), nil)
 				ic.ch.NamedSlots = append(ic.ch.NamedSlots, slot)
 				ic.emit(bytecode.OpNil, 0, 0, n.Pos())
 				ic.emit(bytecode.OpNewLocal, slot, 0, n.Pos())

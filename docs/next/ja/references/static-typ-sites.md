@@ -41,3 +41,8 @@
 
 - `OpLocalTyp`/`OpGlobalTyp`/`OpUpvalTyp` 系(statics)はコンパイル時の問い合わせを持たない — セルの `Typ` を実行時に読む**実行時事実**であり、Deferred 設計とは独立して既に遅延解決している。
 - `staticOpTyp` 系のコンパイル時問い合わせはすべて `selOpTyp`→`askIndexed` に集約されるため、M4-9b の「chunk への格納」は、`opTyp` の `deferred`/`dexpr` 系統(および `maybeUntyped`)をゲート以外の利用側(G1/G2/G4)へ伝搬させるのが主な作業になる。
+
+## M4-9b の残り評価 (bind-site + staticTyp)
+
+- `stampVarTyps`/`stampInferredTyps`(OpCoerce/OpCoerceGlobal)と `OpLocalTyp`/`OpUpvalTyp`/`OpGlobalTyp`(statics)はコンパイル時の問い合わせではなく**実行時の宣言型スタンプ**を読む経路で、Deferred 設計と独立して既に遅延解決している。chunk 事実への置き換えは `t.te` の綴りをジェネリック・他ファイルのスコープで再解決する必要があり、スタンプ済みセルより正確にならないため置き換えない。
+- 代わりに `staticTyp`(assert 診断 + `argStatics` 推論)の deferred 穴だけを塞いだ:`declDefer` を持つ束縛名は `OpDeferredValueTyp` でマーカー式を実行時解決する(range/recv/複数結果束縛の合成 IndexExpr/IndexListExpr)。

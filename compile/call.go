@@ -324,7 +324,7 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 		if t := c.staticOpTyp(call); t.deferred {
 			c.fs.noteDeferTyp(name, t.dexpr)
 		} else if t.te != nil {
-			c.fs.noteDeclTyp(name, t.te, t.teFile)
+			c.fs.noteDeclTyp(name, c.declTypCanon(t.te), t.teFile)
 		}
 		c.emit(bytecode.OpNewLocal, slot, 0, call.Pos())
 		names[call] = name
@@ -709,6 +709,13 @@ unwrapped:
 					te = ot.dte
 				case ot.iface:
 					te = &ast.InterfaceType{Interface: x.Pos(), Methods: &ast.FieldList{}}
+				case ot.logical:
+					// `!x`, `x && y`, `x || y` with an opaque operand
+					// is SOME bool-flavoured type — every bool type
+					// has bool's size and alignment, so the intrinsic
+					// answers from bool's typedef and the operand is
+					// never evaluated (gc folds it statically).
+					te = &ast.Ident{Name: "bool"}
 				}
 				if te != nil {
 					// gc folds Sizeof/Alignof statically — the operand

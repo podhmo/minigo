@@ -62,6 +62,10 @@ func (c *compiler) isIfaceTypeExpr(e ast.Expr) bool {
 	case *ast.ParenExpr:
 		return c.isIfaceTypeExpr(t.X)
 	case *ast.Ident:
+		if t.NamePos == token.NoPos && predeclaredTypeNames[t.Name] {
+			// synthesized name: the builtin, not the shadow
+			return t.Name == "any" || t.Name == "error"
+		}
 		info, found := c.resolveName(t.Name)
 		return found && info.iface
 	}
@@ -176,6 +180,12 @@ type opTyp struct {
 	// from (`var y = p.C` asks about p.C, not y).
 	deferred bool
 	dexpr    ast.Expr
+	// logical marks `!x`, `x && y`, `x || y` whose operand types are
+	// opaque: the result is SOME bool-flavoured type (the operand's
+	// named bool type, or builtin bool), so its size and alignment are
+	// always bool's — unsafe.Sizeof/Alignof may answer without
+	// evaluating the expression.
+	logical bool
 	// elLit is a `[...]T` composite literal whose length the compile
 	// time fold could not resolve — callers that must not evaluate the
 	// operand (unsafe.Sizeof/Alignof) emit the key positions for a
@@ -231,23 +241,27 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 	case *ast.CallExpr:
 		return c.callOpTyp(x)
 	case *ast.IndexExpr:
-		return opTyp{te: c.elemTypExpr(c.staticOpTyp(x.X).te, 4)}
+		ot := c.staticOpTyp(x.X)
+		// the element is a subexpr of the operand's spelling —
+		// its names resolve in the same decl file.
+		return opTyp{te: c.elemTypExpr(ot.te, ot.teFile, 4), teFile: ot.teFile}
 	case *ast.SliceExpr:
 		// a subslice keeps its type (so does a substring) — except an
 		// array operand, which reads a slice of its elements, and so
 		// does *A[:] on a pointer to array.
 		ot := c.staticOpTyp(x.X)
-		ue := ast.Unparen(c.unfoldTypExpr(ot.te, 4))
+		ue := ast.Unparen(c.unfoldScopedTypExpr(ot.te, ot.teFile, 4))
 		if st, ok := ue.(*ast.StarExpr); ok {
-			ue = ast.Unparen(c.unfoldTypExpr(st.X, 3))
+			ue = ast.Unparen(c.unfoldScopedTypExpr(st.X, ot.teFile, 3))
 		}
 		if at, ok := ue.(*ast.ArrayType); ok && at.Len != nil {
-			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}}
+			return opTyp{te: &ast.ArrayType{Lbrack: at.Lbrack, Elt: at.Elt}, teFile: ot.teFile}
 		}
 		return ot
 	case *ast.StarExpr:
 		// *p dereferences a pointer-typed operand
-		return opTyp{te: c.starBaseTypExpr(c.staticOpTyp(x.X).te, 4)}
+		ot := c.staticOpTyp(x.X)
+		return opTyp{te: c.starBaseTypExpr(ot.te, ot.teFile, 4), teFile: ot.teFile}
 	case *ast.TypeAssertExpr:
 		if x.Type == nil {
 			return opTyp{} // a type switch's guard, not an operand
@@ -262,6 +276,12 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			if xt.untyped {
 				return opTyp{te: &ast.Ident{Name: "bool"}, untyped: true, dte: &ast.Ident{Name: "bool"}}
 			}
+			if xt.te == nil {
+				// `!v` is SOME bool but which is unknowable when the
+				// operand's type is opaque — `f() == b` with `type B
+				// bool` returning B must not gate on a guessed bool.
+				return opTyp{logical: true}
+			}
 			if te := c.namedBoolTyp(xt); te != nil {
 				return opTyp{te: te} // !v keeps a named bool's type
 			}
@@ -269,7 +289,8 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 		case token.SUB, token.ADD, token.XOR:
 			return c.staticOpTyp(x.X) // -x/+x/^x keeps the operand's type
 		case token.ARROW:
-			return opTyp{te: c.chanElemTypExpr(c.staticOpTyp(x.X).te, 4)}
+			ot := c.staticOpTyp(x.X)
+			return opTyp{te: c.chanElemTypExpr(ot.te, ot.teFile, 4), teFile: ot.teFile}
 		case token.AND:
 			// &x answers a pointer to x's static type — `i == &d`
 			// mismatches int and *D. An operand without a static
@@ -299,6 +320,12 @@ func (c *compiler) staticOpTyp(e ast.Expr) opTyp {
 			// `v && true` with `type B bool` is a B.
 			if te := c.logicalNamedTyp(x); te != nil {
 				return opTyp{te: te}
+			}
+			// an operand with no static type leaves the result's bool
+			// flavour unknowable — `v && f()` is a B when f returns a
+			// named bool; guessing builtin would trap a legal compare.
+			if ux.te == nil || uy.te == nil {
+				return opTyp{logical: true}
 			}
 			return opTyp{te: &ast.Ident{Name: "bool"}}
 		}
@@ -456,11 +483,15 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// (`var x = 5` is int).
 				if len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
 					rhs := vs.Values[vd.NameIdx]
-					// the initializer's names live in the package's
-					// scope — a local binding at the use site must
-					// not shadow what the decl's keys resolve to.
+					// the initializer's names live in the decl's own
+					// scope — its file's imports resolve qualifiers
+					// and a local binding at the use site must not
+					// shadow what the decl's keys resolve to.
 					c.pkgScopeFold = true
+					savedScope := c.pkgScopeTyp
+					c.pkgScopeTyp = vd.File
 					t := c.staticOpTyp(rhs)
+					c.pkgScopeTyp = savedScope
 					c.pkgScopeFold = false
 					if !t.untyped {
 						// the literal's own decl file wins over
@@ -469,6 +500,15 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 						// under a's imports.
 						if t.elLit != nil && t.elFile == nil {
 							t.elFile = vd.File
+						}
+						// the whole initializer walked under vd.File's
+						// package scope, so a type it produced is
+						// spelled for that file — `var V = -dep.Word(1)`
+						// resolves `dep` under the decl's imports, not
+						// the use site's. A nested type that already
+						// carries its own file keeps it.
+						if t.te != nil && t.teFile == nil {
+							t.teFile = vd.File
 						}
 						return t
 					}
@@ -480,7 +520,14 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// by the call's i-th result; a comma-ok second name is
 				// bool, the first carries the operand's static type.
 				if len(vs.Values) == 1 && len(vs.Names) > 1 {
-					if t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx); t.te != nil || t.deferred {
+					savedScope := c.pkgScopeTyp
+					c.pkgScopeTyp = vd.File
+					t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx)
+					c.pkgScopeTyp = savedScope
+					if t.te != nil || t.deferred {
+						if t.te != nil && t.teFile == nil {
+							t.teFile = vd.File
+						}
 						return t
 					}
 					if vd.NameIdx == 1 && commaOkStatic(vs.Values[0]) {
@@ -546,8 +593,10 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if id, ok := x.X.(*ast.Ident); ok {
 		// a closer declaration shadows the import name — `v.F` then
-		// reads the local's field, never a package member.
-		if c.fs.lookupBinding(id.Name) == nil {
+		// reads the local's field, never a package member. Under
+		// pkgScopeTyp the selector was spelled in a package decl,
+		// which use-site locals cannot shadow.
+		if c.pkgScopeTyp != nil || c.fs.lookupBinding(id.Name) == nil {
 			if ref, isPkg := c.importRef(id.Name); isPkg {
 				return c.selPkgMemberOpTyp(x, ref)
 			}
@@ -557,12 +606,12 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if base.te == nil || base.untyped || base.iface {
 		return opTyp{}
 	}
-	te := c.fieldTypExpr(base.te, x.Sel.Name, 4)
+	te, teFile := c.fieldTypExpr(base.te, base.teFile, x.Sel.Name, 4)
 	if te == nil {
 		// a selector through a pointer reads the pointee's fields
 		// the same way — `p.A` on a *Pair is Pair's A.
-		if sb := c.starBaseTypExpr(base.te, 4); sb != nil {
-			te = c.fieldTypExpr(sb, x.Sel.Name, 4)
+		if sb := c.starBaseTypExpr(base.te, base.teFile, 4); sb != nil {
+			te, teFile = c.fieldTypExpr(sb, base.teFile, x.Sel.Name, 4)
 		}
 	}
 	if te == nil {
@@ -571,7 +620,7 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 	if c.isIfaceTypeExpr(te) {
 		return opTyp{iface: true}
 	}
-	return opTyp{te: te}
+	return opTyp{te: te, teFile: teFile}
 }
 
 // valueSpecMemberOpTyp types one name of a foreign package's var/const
@@ -647,7 +696,11 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		// true = 'a'` binds `true` there, so the index wins.
 		if p.Index.Consts[t.Name] != nil || p.Index.Vars[t.Name] != nil ||
 			p.Index.Funcs[t.Name] != nil || p.Index.Types[t.Name] != nil {
-			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: ast.NewIdent(t.Name)}
+			name := c.callerImportName(p.Path)
+			if name == "" {
+				return nil // the caller cannot spell p — opaque, not a wrong name
+			}
+			return &ast.SelectorExpr{X: &ast.Ident{Name: name}, Sel: ast.NewIdent(t.Name)}
 		}
 		if universeIdent(t.Name) {
 			// the bare ident reads the CALLER's scope back — keep it
@@ -737,6 +790,12 @@ func (c *compiler) scopeOperandExpr(p *runtime.Package, sf *syntax.File, e ast.E
 		return nil
 	case *ast.CompositeLit:
 		te := c.scopeSpecType(p, sf, t.Type)
+		if te == nil && t.Type != nil {
+			// the spelled type re-scoped to nothing — opaque. An
+			// elided inner literal ([][]int{{1}} has a bare {1}) has
+			// no type to lose: its elements still re-scope.
+			return nil
+		}
 		elts := make([]ast.Expr, len(t.Elts))
 		for i, el := range t.Elts {
 			elts[i] = c.scopeOperandExpr(p, sf, el)
@@ -841,15 +900,15 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 		// T() {...}` answers its own signature, not g's.
 		if b := c.fs.lookupBinding(f.Name); b != nil {
 			if ft, ok := ast.Unparen(b.declTyp).(*ast.FuncType); ok {
-				return c.funcTypeResultOpTyp(ft)
+				return c.funcTypeResultOpTyp(ft, b.declTypFile)
 			}
 			return opTyp{}
 		}
 		// a declared function resolves its result type regardless of
 		// arity — the args gate below exists for builtins like len()
 		// whose zero-arg form has no meaningful static result.
-		if ft := c.calleeFuncTyp(x); ft != nil {
-			return c.funcTypeResultOpTyp(ft)
+		if ft, ftFile := c.calleeFuncTyp(x); ft != nil {
+			return c.funcTypeResultOpTyp(ft, ftFile)
 		}
 		if len(x.Args) == 0 {
 			return opTyp{}
@@ -921,7 +980,7 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 				if p := res.Val; p.Index != nil {
 					if ot := c.srcMemberOpTyp(p, f.Sel.Name); ot.te != nil {
 						if ft, ok2 := ast.Unparen(ot.te).(*ast.FuncType); ok2 {
-							return c.funcTypeResultOpTyp(ft)
+							return c.funcTypeResultOpTyp(ft, nil)
 						}
 					}
 				}
@@ -929,8 +988,8 @@ func (c *compiler) callOpTyp(x *ast.CallExpr) opTyp {
 			}
 		}
 		// a method call on a known named type resolves to its decl.
-		if ft := c.calleeFuncTyp(x); ft != nil {
-			return c.funcTypeResultOpTyp(ft)
+		if ft, ftFile := c.calleeFuncTyp(x); ft != nil {
+			return c.funcTypeResultOpTyp(ft, ftFile)
 		}
 		return opTyp{}
 	case *ast.IndexExpr, *ast.IndexListExpr:
@@ -960,7 +1019,10 @@ func (c *compiler) argsAllUntyped(args []ast.Expr) bool {
 // only a single-result signature can type an operand; a result spelling
 // a declared type parameter is opaque (each instantiation binds it, the
 // static name doesn't).
-func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
+// file is the file the signature was spelled in — a nil file means the
+// signature was already re-scoped for the caller (srcMemberOpTyp) or is
+// a use-site spelling.
+func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType, file *syntax.File) opTyp {
 	if ft == nil || ft.Results == nil || len(ft.Results.List) != 1 {
 		return opTyp{}
 	}
@@ -975,7 +1037,7 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 	if c.isIfaceTypeExpr(te) {
 		return opTyp{iface: true}
 	}
-	return opTyp{te: te}
+	return opTyp{te: te, teFile: file}
 }
 
 // calleeFuncTyp resolves a call's callee to its signature: a declared
@@ -983,18 +1045,22 @@ func (c *compiler) funcTypeResultOpTyp(ft *ast.FuncType) opTyp {
 // FuncType. Builtins, host-package functions, and opaque callees report
 // nil. Shared by callOpTyp (result typing) and nthResultOpTyp
 // (multi-result binding) so the callee walk lives in one place.
-func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
+// The signature's decl file rides along: a raw declared signature
+// resolves its names in the file that wrote it, while a member's
+// srcMemberOpTyp answer is already re-scoped for the caller and needs
+// none.
+func (c *compiler) calleeFuncTyp(x *ast.CallExpr) (*ast.FuncType, *syntax.File) {
 	switch f := x.Fun.(type) {
 	case *ast.Ident:
 		if b := c.fs.lookupBinding(f.Name); b != nil {
 			if ft, ok := ast.Unparen(b.declTyp).(*ast.FuncType); ok {
-				return ft
+				return ft, b.declTypFile
 			}
-			return nil
+			return nil, nil
 		}
 		if c.pkg != nil && c.pkg.Index != nil {
 			if fd := c.pkg.Index.Funcs[f.Name]; fd != nil {
-				return fd.Func.Type
+				return fd.Func.Type, fd.File
 			}
 		}
 	case *ast.SelectorExpr:
@@ -1009,30 +1075,32 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 					if p := res.Val; p.Index != nil {
 						if ot := c.srcMemberOpTyp(p, f.Sel.Name); ot.te != nil {
 							if ft, ok2 := ast.Unparen(ot.te).(*ast.FuncType); ok2 {
-								return ft
+								return ft, nil
 							}
 						}
 					}
 				}
-				return nil
+				return nil, nil
 			}
 		}
 		base := c.staticOpTyp(f.X)
 		if base.te == nil {
-			return nil
+			return nil, nil
 		}
 		if tdi := c.typeDeclOf(base.te); tdi != nil {
 			if md := tdi.Methods[f.Sel.Name]; md != nil {
-				return md.Func.Type
+				return md.Func.Type, md.File
 			}
 		}
 		// a struct field of func type is callable too —
 		// `p := S{F: func() int{…}}; p.F()` has a declared signature.
-		if ft, ok := ast.Unparen(c.structFieldTypExpr(base.te, f.Sel.Name)).(*ast.FuncType); ok {
-			return ft
+		if fte, ftf := c.structFieldTypExpr(base.te, base.teFile, f.Sel.Name); fte != nil {
+			if ft, ok := ast.Unparen(fte).(*ast.FuncType); ok {
+				return ft, ftf
+			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // nthResultOpTyp resolves the static type a multi-result call binds at
@@ -1047,7 +1115,7 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	if !ok || c.conversionCall(x) {
 		return opTyp{}
 	}
-	ft := c.calleeFuncTyp(x)
+	ft, ftFile := c.calleeFuncTyp(x)
 	if ft == nil || ft.Results == nil {
 		if t := c.staticOpTyp(x); t.deferred {
 			return opTyp{deferred: true}
@@ -1056,7 +1124,7 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	}
 	if i == 0 && len(ft.Results.List) == 1 {
 		// the single-result walk is the i=0 case.
-		return c.funcTypeResultOpTyp(ft)
+		return c.funcTypeResultOpTyp(ft, ftFile)
 	}
 	pos := 0
 	for _, res := range ft.Results.List {
@@ -1072,7 +1140,7 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 			if c.isIfaceTypeExpr(te) {
 				return opTyp{iface: true}
 			}
-			return opTyp{te: te}
+			return opTyp{te: te, teFile: ftFile}
 		}
 		pos += arity
 	}
@@ -1161,7 +1229,8 @@ func (c *compiler) lenOperandArrayTyp(arg ast.Expr) ast.Expr {
 	te := c.staticOpTyp(arg).te
 	if te == nil {
 		if sel, ok := ast.Unparen(arg).(*ast.SelectorExpr); ok {
-			te = c.structFieldTypExpr(c.staticOpTyp(sel.X).te, sel.Sel.Name)
+			xt := c.staticOpTyp(sel.X)
+			te, _ = c.structFieldTypExpr(xt.te, xt.teFile, sel.Sel.Name)
 		}
 	}
 	te = c.unfoldTypExpr(te, 8)
@@ -1169,33 +1238,6 @@ func (c *compiler) lenOperandArrayTyp(arg ast.Expr) ast.Expr {
 		te = c.unfoldTypExpr(st.X, 8)
 	}
 	return te
-}
-
-// structFieldTypExpr is fieldTypExpr that also sees through a pointer
-// to the struct and accepts an anonymous struct type (direct fields
-// only for the latter).
-func (c *compiler) structFieldTypExpr(base ast.Expr, name string) ast.Expr {
-	if base == nil {
-		return nil
-	}
-	if st, isPtr := ast.Unparen(base).(*ast.StarExpr); isPtr {
-		base = st.X
-	}
-	if te := c.fieldTypExpr(base, name, 4); te != nil {
-		return te
-	}
-	st, ok := c.unfoldTypExpr(base, 8).(*ast.StructType)
-	if !ok || st.Fields == nil {
-		return nil
-	}
-	for _, f := range st.Fields.List {
-		for _, n := range f.Names {
-			if n.Name == name {
-				return f.Type
-			}
-		}
-	}
-	return nil
 }
 
 // mayInvolveTypeParam reports whether an operand's static type may
@@ -1346,7 +1388,20 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 			return t
 		}
 		if p != c.pkg && pkgTypeSpec(p, t.Name) != nil {
-			return &ast.SelectorExpr{X: &ast.Ident{Name: c.callerImportName(p.Path)}, Sel: &ast.Ident{Name: t.Name}}
+			name := c.callerImportName(p.Path)
+			if name == "" {
+				// the caller cannot spell p — mint an unspellable
+				// qualifier that binds p's ref directly, like the
+				// selector arm does, instead of going opaque.
+				ref := &runtime.ImportRef{
+					Path: p.Path,
+					Load: func(string) (*runtime.Package, error) {
+						return p, nil
+					},
+				}
+				name = c.synthImportName(ref)
+			}
+			return &ast.SelectorExpr{X: &ast.Ident{Name: name}, Sel: &ast.Ident{Name: t.Name}}
 		}
 		return t
 	case *ast.SelectorExpr:
@@ -1357,43 +1412,90 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		}
 		return t
 	case *ast.ArrayType:
-		if e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams); e != t.Elt {
-			return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: e}
+		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
+		if e == nil {
+			return nil
+		}
+		nl := t.Len
+		if nl != nil {
+			// the length expression's names live in the declaring
+			// file's scope too — `[dep3.Size]T` must not reach the
+			// caller unscoped or emitLenFolds evaluates `dep3` there.
+			// `[...]T` carries an Ellipsis — nothing to re-scope, and
+			// scoping it would drop the whole array type.
+			if _, isEllipsis := nl.(*ast.Ellipsis); !isEllipsis {
+				nl = c.scopeOperandExpr(p, sf, nl)
+				if nl == nil {
+					return nil
+				}
+			}
+		}
+		if e != t.Elt || nl != t.Len {
+			return &ast.ArrayType{Lbrack: t.Lbrack, Len: nl, Elt: e}
 		}
 		return t
 	case *ast.MapType:
 		k, v := c.scopeSpecTypeNames(p, sf, t.Key, tparams), c.scopeSpecTypeNames(p, sf, t.Value, tparams)
+		if k == nil || v == nil {
+			return nil
+		}
 		if k != t.Key || v != t.Value {
 			return &ast.MapType{Map: t.Map, Key: k, Value: v}
 		}
 		return t
 	case *ast.StarExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.StarExpr{Star: t.Star, X: x}
 		}
 		return t
 	case *ast.ChanType:
-		if v := c.scopeSpecTypeNames(p, sf, t.Value, tparams); v != t.Value {
+		v := c.scopeSpecTypeNames(p, sf, t.Value, tparams)
+		if v == nil {
+			return nil
+		}
+		if v != t.Value {
 			return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: v}
 		}
 		return t
 	case *ast.Ellipsis:
-		if e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams); e != t.Elt {
+		e := c.scopeSpecTypeNames(p, sf, t.Elt, tparams)
+		if e == nil {
+			return nil
+		}
+		if e != t.Elt {
 			return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: e}
 		}
 		return t
 	case *ast.ParenExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.ParenExpr{Lparen: t.Lparen, X: x, Rparen: t.Rparen}
 		}
 		return t
 	case *ast.StructType:
-		if fs := c.scopeFieldListNames(p, sf, t.Fields, tparams); fs != t.Fields {
+		fs := c.scopeFieldListNames(p, sf, t.Fields, tparams)
+		if fs == nil {
+			if t.Fields != nil {
+				return nil
+			}
+		} else if fs != t.Fields {
 			return &ast.StructType{Struct: t.Struct, Fields: fs, Incomplete: t.Incomplete}
 		}
 		return t
 	case *ast.InterfaceType:
-		if ms := c.scopeFieldListNames(p, sf, t.Methods, tparams); ms != t.Methods {
+		ms := c.scopeFieldListNames(p, sf, t.Methods, tparams)
+		if ms == nil {
+			if t.Methods != nil {
+				return nil
+			}
+		} else if ms != t.Methods {
 			return &ast.InterfaceType{Interface: t.Interface, Methods: ms, Incomplete: t.Incomplete}
 		}
 		return t
@@ -1412,10 +1514,14 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		}
 		var dirty bool
 		params, results := t.Params, t.Results
-		if fs := c.scopeFieldListNames(p, sf, t.Params, inner); fs != t.Params {
+		if fs := c.scopeFieldListNames(p, sf, t.Params, inner); fs == nil && t.Params != nil {
+			return nil
+		} else if fs != t.Params {
 			params, dirty = fs, true
 		}
-		if fs := c.scopeFieldListNames(p, sf, t.Results, inner); fs != t.Results {
+		if fs := c.scopeFieldListNames(p, sf, t.Results, inner); fs == nil && t.Results != nil {
+			return nil
+		} else if fs != t.Results {
 			results, dirty = fs, true
 		}
 		if dirty {
@@ -1423,12 +1529,20 @@ func (c *compiler) scopeSpecTypeNames(p *runtime.Package, sf *syntax.File, e ast
 		}
 		return t
 	case *ast.IndexExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.IndexExpr{X: x, Lbrack: t.Lbrack, Index: t.Index, Rbrack: t.Rbrack}
 		}
 		return t
 	case *ast.IndexListExpr:
-		if x := c.scopeSpecTypeNames(p, sf, t.X, tparams); x != t.X {
+		x := c.scopeSpecTypeNames(p, sf, t.X, tparams)
+		if x == nil {
+			return nil
+		}
+		if x != t.X {
 			return &ast.IndexListExpr{X: x, Lbrack: t.Lbrack, Indices: t.Indices, Rbrack: t.Rbrack}
 		}
 		return t
@@ -1447,6 +1561,10 @@ func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *
 	list := make([]*ast.Field, len(fl.List))
 	for i, f := range fl.List {
 		nt := c.scopeSpecTypeNames(p, sf, f.Type, tparams)
+		if nt == nil {
+			return nil // a field type the caller cannot spell — the
+			// whole spec is opaque rather than half-scoped
+		}
 		if nt != f.Type {
 			dirty = true
 			nf := *f
@@ -1464,9 +1582,10 @@ func (c *compiler) scopeFieldListNames(p *runtime.Package, sf *syntax.File, fl *
 
 // callerImportName returns the qualifier under which the caller's file
 // reaches pkgPath — the import's local name. When the caller does not
-// import the package the result is deliberately unresolvable: a bare
-// path element like `time` could otherwise pick up a same-named caller
-// decl, which belongs to a different scope entirely.
+// import the package the result is empty: a bare path element like
+// `time` could otherwise pick up a same-named caller decl, which
+// belongs to a different scope entirely, so unspellable means the
+// caller must treat the re-scoped expression as unknown instead.
 func (c *compiler) callerImportName(pkgPath string) string {
 	if c.pkg != nil && c.file != nil {
 		for name, ref := range c.pkg.Scopes[c.file] {
@@ -1475,7 +1594,7 @@ func (c *compiler) callerImportName(pkgPath string) string {
 			}
 		}
 	}
-	return "." + pkgPath
+	return ""
 }
 
 // synthImportName mints the qualifier a re-scoped expression uses for a
@@ -1485,7 +1604,10 @@ func (c *compiler) callerImportName(pkgPath string) string {
 // caller's import list. The ".imp:" prefix can never collide with a
 // declared identifier.
 func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
-	name := ".imp:" + ref.Path
+	// the mint is globally unique — same-path packages in different
+	// sessions never share a qualifier, so the runtime registry below
+	// can only hand back this session's own ref.
+	name := runtime.MintSynthImportName(ref)
 	if c.synthImports == nil {
 		c.synthImports = map[string]*runtime.ImportRef{}
 	}
@@ -1593,9 +1715,25 @@ func (c *compiler) pkgImportRef(p *runtime.Package, sf *syntax.File, name string
 	return nil, false
 }
 
+// unfoldScopedTypExpr unfolds a decl-scope spelling: names in te
+// resolve in file's package scope, so a use-site local that shadows
+// an import name does not rebind a qualified `pkg.T` the decl wrote.
+func (c *compiler) unfoldScopedTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
+	return c.unfoldTypExpr(te, depth)
+}
+
 // elemTypExpr resolves the element type of an indexing operand — an
 // array/slice's Elt or a map's Value, through a named type's spec.
-func (c *compiler) elemTypExpr(te ast.Expr, depth int) ast.Expr {
+// file is the decl's file for a package-derived spelling (opTyp.teFile):
+// under it names resolve in package scope — use-site locals do not
+// rebind a qualified `pkg.T` the decl wrote.
+func (c *compiler) elemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
 	switch t := c.unfoldTypExpr(te, depth).(type) {
 	case *ast.ArrayType:
 		return t.Elt
@@ -1619,8 +1757,12 @@ func (c *compiler) elemTypExpr(te ast.Expr, depth int) ast.Expr {
 }
 
 // chanElemTypExpr resolves the element type of a receive operand's
-// channel type, through a named type's spec.
-func (c *compiler) chanElemTypExpr(te ast.Expr, depth int) ast.Expr {
+// channel type, through a named type's spec. file scopes the unfold
+// like elemTypExpr's.
+func (c *compiler) chanElemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
 	if t, ok := c.unfoldTypExpr(te, depth).(*ast.ChanType); ok {
 		return t.Value
 	}
@@ -1628,8 +1770,12 @@ func (c *compiler) chanElemTypExpr(te ast.Expr, depth int) ast.Expr {
 }
 
 // starBaseTypExpr resolves the base type of a deref operand's pointer
-// type, through a named type's spec.
-func (c *compiler) starBaseTypExpr(te ast.Expr, depth int) ast.Expr {
+// type, through a named type's spec. file scopes the unfold like
+// elemTypExpr's.
+func (c *compiler) starBaseTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
 	if t, ok := c.unfoldTypExpr(te, depth).(*ast.StarExpr); ok {
 		return t.X
 	}
@@ -1640,53 +1786,6 @@ func (c *compiler) starBaseTypExpr(te ast.Expr, depth int) ast.Expr {
 // type: te names the struct (or aliases to one), sel the field. Embedded
 // fields are searched like selector promotion; the depth cap keeps a
 // cyclic type graph finite. nil means the field isn't statically known.
-func (c *compiler) fieldTypExpr(te ast.Expr, sel string, depth int) ast.Expr {
-	if depth <= 0 {
-		return nil
-	}
-	ts := c.typeSpecOf(te)
-	if ts == nil {
-		return nil
-	}
-	st, ok := ast.Unparen(ts.Type).(*ast.StructType)
-	if !ok {
-		return nil
-	}
-	// direct fields win over promoted ones regardless of declaration
-	// order — Go's shallower-depth rule. A first pass over named
-	// fields, then the embeds; the other order lets a promoted field
-	// shadow a direct one, which gc rejects in the opposite direction.
-	for _, f := range st.Fields.List {
-		for _, n := range f.Names {
-			if n.Name == sel {
-				return f.Type
-			}
-		}
-	}
-	var promoted ast.Expr
-	for _, f := range st.Fields.List {
-		if len(f.Names) != 0 {
-			continue
-		}
-		// an embedded field promotes its own fields; `*T` embeds
-		// promote like `T` (a parens/star wrapper is not a selector).
-		emb := ast.Unparen(f.Type)
-		if s, ok := emb.(*ast.StarExpr); ok {
-			emb = ast.Unparen(s.X)
-		}
-		t := c.fieldTypExpr(emb, sel, depth-1)
-		if t == nil {
-			continue
-		}
-		if promoted != nil {
-			// two same-depth promotions — gc rejects the selector
-			// itself as ambiguous, so the operand is opaque.
-			return nil
-		}
-		promoted = t
-	}
-	return promoted
-}
 
 // namedTypID is a named type's compile-time identity: two operand types
 // with different ids are different named types, which gc never assigns
@@ -1705,6 +1804,17 @@ type namedTypID struct {
 func (c *compiler) namedIdentOf(te ast.Expr) (namedTypID, bool) {
 	switch t := ast.Unparen(te).(type) {
 	case *ast.Ident:
+		if t.NamePos == token.NoPos && predeclaredTypeNames[t.Name] {
+			// a synthesized predeclared name — `int` for a range
+			// index, `rune` for a string element, `bool` for
+			// comma-ok — means the builtin itself: a decl like
+			// `type int uint8` cannot rename it. `any`/`error` stay
+			// unnamed — interface types report none.
+			if t.Name == "any" || t.Name == "error" {
+				return namedTypID{}, false
+			}
+			return namedTypID{id: "predecl:" + runtime.CanonicalBasicName(t.Name), name: t.Name}, true
+		}
 		info, found := c.resolveName(t.Name)
 		if !found || !info.isType || info.iface {
 			return namedTypID{}, false
@@ -1900,6 +2010,14 @@ func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) 
 			return true, true
 		}
 	}
+	// a declared type's spec still spells its shape — `type List []T`
+	// materializes with the declared kind, not the slice's, and the
+	// Kind switch above reports it non-nilable. Read the spec expr,
+	// unfolded under the decl's own file scope.
+	if td.Anon != nil {
+		n, _ := c.nilableTypExpr(c.unfoldScopedTypExpr(td.Anon, td.File, 4))
+		return n, true
+	}
 	return false, true
 }
 
@@ -1956,7 +2074,7 @@ func (c *compiler) noteDeclTyp(name string, effType ast.Expr, isConst bool, rhs 
 		}
 	}
 	if te != nil {
-		c.fs.noteDeclTyp(name, te, teFile)
+		c.fs.noteDeclTyp(name, c.declTypCanon(te), teFile)
 		return
 	}
 	if isConst {
@@ -2009,10 +2127,19 @@ func (c *compiler) staticTyp(e ast.Expr) {
 			return
 		}
 		c.emit(bytecode.OpGlobalTyp, c.nameIdx(id.Name), 0, id.Pos())
-	case !isUp:
-		c.emit(bytecode.OpLocalTyp, idx, 0, id.Pos())
 	default:
-		c.emit(bytecode.OpUpvalTyp, idx, 0, id.Pos())
+		if b := c.fs.lookupBinding(id.Name); b != nil && b.declDefer != nil && b.declTyp == nil {
+			// a deferred bind site (range/recv/multi-result markers)
+			// stamps no cell typedef — resolve the marker expr at
+			// run time instead of answering NIL.
+			c.emit(bytecode.OpDeferredValueTyp, c.exprSite(b.declDefer, id.Pos()), 0, id.Pos())
+			return
+		}
+		if !isUp {
+			c.emit(bytecode.OpLocalTyp, idx, 0, id.Pos())
+		} else {
+			c.emit(bytecode.OpUpvalTyp, idx, 0, id.Pos())
+		}
 	}
 }
 

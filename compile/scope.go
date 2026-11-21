@@ -339,10 +339,11 @@ func (s *fscope) capture(name string) bool {
 // type, plus the type details callers inspect (its decl spec, its
 // typedef, and whether the resolved type is an interface).
 type nameInfo struct {
-	isType bool
-	tspec  *ast.TypeSpec    // decl spec when syntactically known (local `type` or package index)
-	td     *runtime.TypeDef // typedef when the resolution carries one (index, binds)
-	iface  bool             // the resolved type is an interface type
+	isType  bool
+	tspec   *ast.TypeSpec    // decl spec when syntactically known (local `type` or package index)
+	td      *runtime.TypeDef // typedef when the resolution carries one (index, binds)
+	iface   bool             // the resolved type is an interface type
+	predecl bool             // resolved by the universe block — nothing user-declared answered
 }
 
 // resolveName reports what an identifier resolves to, walking the one
@@ -354,15 +355,20 @@ type nameInfo struct {
 func (c *compiler) resolveName(name string) (nameInfo, bool) {
 	// lookupBinding is a pure scope walk — find() would capture an
 	// enclosing name into this function's upvals as a side effect,
-	// and a classifier must never emit.
-	if b := c.fs.lookupBinding(name); b != nil {
-		if b.typeDecl {
-			return nameInfo{isType: true, tspec: b.tspec, td: b.tdef, iface: b.ifaceT}, true
+	// and a classifier must never emit. Under pkgScopeTyp the name
+	// was spelled in a package decl — the use site's locals and
+	// upvalues cannot shadow it (the same rule typeIdent applies at
+	// emit).
+	if c.pkgScopeTyp == nil {
+		if b := c.fs.lookupBinding(name); b != nil {
+			if b.typeDecl {
+				return nameInfo{isType: true, tspec: b.tspec, td: b.tdef, iface: b.ifaceT}, true
+			}
+			return nameInfo{}, true // a var/const binding — never a type
 		}
-		return nameInfo{}, true // a var/const binding — never a type
-	}
-	if _, isUp := c.fs.upmap[name]; isUp {
-		return nameInfo{}, true // an already-captured var
+		if _, isUp := c.fs.upmap[name]; isUp {
+			return nameInfo{}, true // an already-captured var
+		}
 	}
 	if bv, bound := c.binds[name]; bound {
 		info := nameInfo{isType: true} // generic instantiation binds name a type
@@ -392,9 +398,26 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 		}
 	}
 	if predeclaredTypeNames[name] {
-		return nameInfo{isType: true, iface: name == "any" || name == "error"}, true
+		return nameInfo{isType: true, iface: name == "any" || name == "error", predecl: true}, true
 	}
 	return nameInfo{}, false
+}
+
+// declTypCanon rewrites an ident type expression that resolves, in the
+// declaration's own scope, to a predeclared type into a position-less
+// marker: `var x int` binds builtin int, and an inner block's later
+// `type int uint8` must not retype x when a gate resolves the name in
+// the use site's scope. A decl-scope shadow keeps the real ident —
+// `var x int` inside a `type int` block IS the named type.
+func (c *compiler) declTypCanon(te ast.Expr) ast.Expr {
+	id, ok := ast.Unparen(te).(*ast.Ident)
+	if !ok || id.NamePos == token.NoPos || !predeclaredTypeNames[id.Name] {
+		return te
+	}
+	if info, found := c.resolveName(id.Name); found && info.predecl && !info.iface {
+		return &ast.Ident{Name: id.Name}
+	}
+	return te
 }
 
 // typeIdent emits the typedef an identifier names in type position —
@@ -403,6 +426,13 @@ func (c *compiler) resolveName(name string) (nameInfo, bool) {
 // function returning `item`) must not push the variable where
 // OpCoerce* expects a typedef.
 func (c *compiler) typeIdent(e ast.Expr, name string) {
+	if id, ok := e.(*ast.Ident); ok && id.NamePos == token.NoPos && predeclaredTypeNames[name] && runtime.BasicTypedef(name) != nil {
+		// a synthesized predeclared name — `int` for a range index,
+		// `rune` for a string element, `bool` for comma-ok — names
+		// the builtin type itself: no shadow can rename it.
+		c.emit(bytecode.OpConst, c.constIdx(runtime.BasicTypedef(name)), 0, e.Pos())
+		return
+	}
 	if c.pkgScopeTyp != nil {
 		// a re-derived package decl's type resolves in package
 		// scope — the use site's locals and bound type params

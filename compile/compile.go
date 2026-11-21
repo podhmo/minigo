@@ -203,7 +203,7 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 		nparams++
 		if recvType != nil {
 			coerces = append(coerces, paramCoerce{slot: slot, typ: recvType})
-			c.fs.noteDeclTyp(recv, recvType, nil)
+			c.fs.noteDeclTyp(recv, c.declTypCanon(recvType), nil)
 		}
 	}
 	if fn.Decl.Type.Params != nil {
@@ -218,7 +218,7 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 					c.fs.markIface(n.Name)
 				}
 				coerces = append(coerces, paramCoerce{slot: slot, typ: field.Type})
-				c.fs.noteDeclTyp(n.Name, field.Type, nil)
+				c.fs.noteDeclTyp(n.Name, c.declTypCanon(field.Type), nil)
 				nparams++
 			}
 			if _, ok := field.Type.(*ast.Ellipsis); ok {
@@ -243,7 +243,7 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 				if c.isIfaceTypeExpr(field.Type) {
 					c.fs.markIface(n.Name)
 				}
-				c.fs.noteDeclTyp(n.Name, field.Type, nil)
+				c.fs.noteDeclTyp(n.Name, c.declTypCanon(field.Type), nil)
 				c.ch.NamedSlots = append(c.ch.NamedSlots, slot)
 				c.emit(bytecode.OpNil, 0, 0, n.Pos())
 				c.emit(bytecode.OpNewLocal, slot, 0, n.Pos())

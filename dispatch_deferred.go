@@ -7,6 +7,7 @@ import (
 	"go/constant"
 	"go/token"
 	"strconv"
+	"strings"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
@@ -41,8 +42,20 @@ func (e *Engine) importPackageAt(from *runtime.TypeDef, name string) (*runtime.P
 		if from.Pkg.Path == name {
 			return from.Pkg, nil
 		}
+		path := name
+		// a `.imp:` qualifier was minted by the compiler's
+		// synthImportName for a package the calling file cannot
+		// spell — the path is embedded in the name itself.
+		if strings.HasPrefix(name, ".imp:") {
+			path = strings.TrimPrefix(name, ".imp:")
+			// minted names carry a uniqueness suffix past the path
+			// (`.imp:path#seq`) — strip it for the load.
+			if i := strings.IndexByte(path, '#'); i >= 0 {
+				path = path[:i]
+			}
+		}
 		ref = &runtime.ImportRef{
-			Path: name,
+			Path: path,
 			Load: func(path string) (*runtime.Package, error) {
 				return e.loadPath(context.Background(), path)
 			},
@@ -529,14 +542,18 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 	case *ast.IndexExpr:
 		// a synthetic bind-site marker the compiler emits for a
 		// deferred multi-result call — `f(args)[i]` asks the callee's
-		// i-th declared result typedef; `src[0]` asks the element
-		// typedef of a deferred container member.
-		if call, ok := ast.Unparen(t.X).(*ast.CallExpr); ok {
-			i := 0
-			if lit, ok := t.Index.(*ast.BasicLit); ok {
-				i, _ = strconv.Atoi(lit.Value)
+		// i-th declared result typedef. The explicit index tells it
+		// apart from the element marker `f(args)`-less `src`, which
+		// asks the operand's element typedef — including a call's
+		// 0-th result's element (`for _, v := range p.Ints()`).
+		if call, ok := ast.Unparen(t.X).(*ast.CallExpr); ok && t.Index != nil {
+			// the marker's synthetic literal carries no source position;
+			// a REAL `f()[0]` — say `var Rows = makeRows()[0]` — indexes
+			// into the result and falls through to the element walk.
+			if lit, ok2 := t.Index.(*ast.BasicLit); ok2 && lit.ValuePos == token.NoPos {
+				i, _ := strconv.Atoi(lit.Value)
+				return e.callResultTypOf(ctx, call.Fun, i, depth+1)
 			}
-			return e.callResultTypOf(ctx, call.Fun, i, depth+1)
 		}
 		td, _, err := e.valueTypDepth(ctx, t.X, depth+1)
 		if err != nil || td == nil {

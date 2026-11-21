@@ -19,11 +19,9 @@ import (
 //   - the same member spelling on a different package
 //     ("other.com/define".OtherConvert) reaches the bound package, not
 //     the special form;
-//   - KNOWN DIVERGENCE: a local variable shadowing the import alias
-//     still dispatches the special — Go resolves the local first, so
-//     `d.Convert(5)` should be a method call returning 50, but today
-//     the importRef lookup ignores local scope and the special fires.
-//     Pinned as the current (wrong) behavior; recorded in TODO.md.
+//   - a local variable shadowing the import alias does NOT dispatch
+//     the special — Go resolves the local first, so `d.Convert(5)` is
+//     a method call returning 50.
 func TestQuotedGoPin(t *testing.T) {
 	ctx := context.Background()
 
@@ -77,20 +75,19 @@ func TestQuotedGoPin(t *testing.T) {
 		}
 	})
 
-	t.Run("LocalShadowingStillDispatches", func(t *testing.T) {
-		// current behavior: the special fires even though `d` is a
-		// local variable — Go semantics would call the method and
-		// return 50.
+	t.Run("LocalShadowingSkipsSpecial", func(t *testing.T) {
+		// `d` is a local variable, so `d.Convert` is a method call —
+		// the special must not fire and the method's result (50) wins.
 		var fired []string
 		e := newEngine(t, &fired)
 		v, err := e.Call(ctx, load(t, e), "shadowed")
 		if err != nil {
 			t.Fatalf("shadowed: %v", err)
 		}
-		if diff := cmp.Diff([]string{"Convert"}, fired); diff != "" {
+		if diff := cmp.Diff([]string(nil), fired); diff != "" {
 			t.Errorf("fired specials mismatch (-want +got):\n%s", diff)
 		}
-		if diff := cmp.Diff(int64(0), v); diff != "" {
+		if diff := cmp.Diff(int64(50), v); diff != "" {
 			t.Errorf("shadowed mismatch (-want +got):\n%s", diff)
 		}
 	})
