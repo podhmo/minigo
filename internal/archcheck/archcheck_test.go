@@ -97,6 +97,26 @@ func TestFileBudgetsMatchRepo(t *testing.T) {
 	}
 }
 
+// BannedCalls on the real repo: compile/ must never call
+// ImportRef.Materialize or Package.EnsureReady directly — package
+// queries go through the internal/source adapter (M2-4).
+func TestBannedCallsRealRepo(t *testing.T) {
+	root := filepath.Join("..", "..")
+	for dir, names := range archcheck.BannedCalls {
+		banned := map[string]bool{}
+		for _, n := range names {
+			banned[n] = true
+		}
+		reps, err := archcheck.BannedSelectors(root, []string{dir}, banned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range reps {
+			t.Errorf("%s:%d calls .%s, banned in %s/", r.File, r.Line, r.Name, dir)
+		}
+	}
+}
+
 // CheckSharedFields on the real repo: sharedAssets must stay clean of
 // runtime execution-state types (M1-3).
 func TestSharedFieldsRealRepo(t *testing.T) {

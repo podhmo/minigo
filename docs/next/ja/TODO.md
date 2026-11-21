@@ -38,7 +38,7 @@
 - [x] **M2-1 `internal/semantics` の骨格を作る**: `TypeRef`、`Policy`（`IndexedOnly`/`AllowIndex`）、`Result`（Found/Missing/Deferred/Failed）を置く。`runtime`、`vm`、`compile` は import しない（archcheck に規則を足す）。完了条件: 型宣言の問い合わせが 1 つ、4 種類すべての結果についてユニットテスト付きで動く。[references/semantics-api.md](./references/semantics-api.md)
 - [x] **M2-2 `internal/source` に Indexed ビューを用意する**: `semantics` から見えるのは `IndexedOnly`/`AllowIndex` のビューだけにし、初期化を呼べないようにする。`ImportRef.Materialize`（実際には index している）を、名前で段階が分かるアダプタで包む。完了条件: semantics から `EnsureReady` 系に到達できないことを archcheck が保証している。
 - [x] **M2-3 コンパイラの 8 箇所をヒントと事実に仕分ける**: 仕分けの草案は [references/fact-sites.md](./references/fact-sites.md) にある。`DisplayName` 経由で到達する `runtime/typedef.go` の呼び出しも含める。完了条件: 各箇所にヒントか事実かを書いたコメントとテーブルがある。
-- [ ] **M2-4 8 箇所をコンパイラ用アダプタ経由にする**: nil/false で表していた「不明」を `Result` に置き換える。Deferred になった事実は、当面は今と同じく `AllowIndex` で即時に答える（振る舞いは変えない）。完了条件: `compile/` から `ImportRef.Materialize()` を直接呼んでいる箇所が 0 になり、archcheck がそれを禁止している。
+- [x] **M2-4 8 箇所をコンパイラ用アダプタ経由にする**: nil/false で表していた「不明」を `Result` に置き換える。Deferred になった事実は、当面は今と同じく `AllowIndex` で即時に答える（振る舞いは変えない）。完了条件: `compile/` から `ImportRef.Materialize()` を直接呼んでいる箇所が 0 になり、archcheck がそれを禁止している。
 
 ## M3: 実行時チェック
 

@@ -21,6 +21,8 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/semantics"
+	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -550,10 +552,11 @@ func (c *compiler) selOpTyp(x *ast.SelectorExpr) opTyp {
 // drives `==` lowering and gc-parity rejections. The typed-const
 // defaulting path alone would be a hint; the rest is not.
 func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
-	p, err := ref.Materialize()
-	if err != nil || p == nil {
+	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	if res.Kind != semantics.Found {
 		return opTyp{}
 	}
+	p := res.Val
 	if p.Globals != nil {
 		if v, ok := p.Globals.Get(x.Sel.Name); ok {
 			// an initialized source package binds members into
@@ -1432,8 +1435,8 @@ func (c *compiler) synthImportName(ref *runtime.ImportRef) string {
 // diagnostic wording must match gc's. When the lookup is Deferred the
 // runtime trap prints the same resolved name.
 func pkgDispName(ref *runtime.ImportRef) string {
-	if q, err := ref.Materialize(); err == nil && q != nil && q.Name != "" {
-		return q.Name
+	if res := source.PackageAtIndexed(ref, semantics.AllowIndex); res.Kind == semantics.Found && res.Val.Name != "" {
+		return res.Val.Name
 	}
 	if i := strings.LastIndexByte(ref.Path, '/'); i >= 0 {
 		return ref.Path[i+1:]
@@ -1489,10 +1492,11 @@ func pkgTypeSpec(p *runtime.Package, name string) *ast.TypeSpec {
 // semantics: fact — pkg.T's TypeSpec decides composite-literal key
 // types and conversions.
 func selTypeSpec(ref *runtime.ImportRef, name string) (*runtime.Package, *ast.TypeSpec) {
-	p, err := ref.Materialize()
-	if err != nil || p == nil {
+	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	if res.Kind != semantics.Found {
 		return nil, nil
 	}
+	p := res.Val
 	if ts := pkgTypeSpec(p, name); ts != nil {
 		return p, ts
 	}
@@ -1513,11 +1517,11 @@ func pkgImportRef(p *runtime.Package, sf *syntax.File, name string) (*runtime.Im
 		if ref.Alias != "" {
 			continue
 		}
-		q, err := ref.Materialize()
-		if err != nil || q == nil {
+		res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+		if res.Kind != semantics.Found {
 			continue
 		}
-		if q.Name == name {
+		if res.Val.Name == name {
 			return ref, true
 		}
 	}
@@ -1716,10 +1720,11 @@ func (c *compiler) selIsIface(ref *runtime.ImportRef, name string) bool {
 // semantics: fact — whether pkg.T names a type, and its spec/typedef;
 // selIsType, selIsIface and selNilable all answer through this.
 func (c *compiler) selMember(ref *runtime.ImportRef, name string) (*ast.TypeSpec, *runtime.TypeDef, bool) {
-	p, err := ref.Materialize()
-	if err != nil || p == nil {
+	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	if res.Kind != semantics.Found {
 		return nil, nil, false
 	}
+	p := res.Val
 	if p.Index != nil {
 		if tdi := p.Index.Types[name]; tdi != nil {
 			if tdi.Decl != nil {
@@ -1788,10 +1793,11 @@ func (c *compiler) nilableTypExpr(te ast.Expr) bool {
 // chans and funcs can; structs and basic types cannot. ok=false when
 // the member can't be resolved at all.
 func (c *compiler) selNilable(ref *runtime.ImportRef, name string) (bool, bool) {
-	p, err := ref.Materialize()
-	if err != nil || p == nil {
+	res := source.PackageAtIndexed(ref, semantics.AllowIndex)
+	if res.Kind != semantics.Found {
 		return false, false
 	}
+	p := res.Val
 	ts, td, ok := c.selMember(ref, name)
 	if !ok {
 		return false, false
