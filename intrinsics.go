@@ -134,8 +134,8 @@ func (h *hostHelpers) fnvc(name string, f func(runtime.VMCaller, []any) (any, er
 // fnvcRaw is an arity-checked fnvc that also hands f the raw script
 // args — an error argument must reach hostErrOf unflattened so a script
 // error keeps its identity through the host (goNative would format it).
-func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error)) *runtime.BuiltinFunc {
-	return &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
+	bf := &runtime.BuiltinFunc{Name: name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != arity {
 			return nil, fmt.Errorf("%s needs %d args, got %d", name, arity, len(args))
 		}
@@ -149,6 +149,10 @@ func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 		}
 		return scriptVal(r), nil
 	}}
+	if len(target) > 0 {
+		bf.Target = target[0]
+	}
+	return bf
 }
 
 // fn1/fn2/fn3 are arity-checked variants.
@@ -486,6 +490,10 @@ func scriptVal(v any) runtime.Value {
 		return &runtime.Slice{Elems: el, Typ: anonSliceTyp("byte")}
 	case []string:
 		return strsSlice(x)
+	case []rune:
+		return runeSlice(x)
+	case [][]byte:
+		return scriptVal(bytesSliceOf(x))
 	case time.Duration:
 		// durations stay raw host values: methods (.Hours(), .String())
 		// dispatch through reflection and binaryOp unwraps for arithmetic.
@@ -524,6 +532,14 @@ func scriptVal(v any) runtime.Value {
 			if tn := vm.HostNil(rv.Type()); tn != nil {
 				return tn
 			}
+		}
+		// a fixed-size host array (sha256.Sum256's [32]byte) unboxes to a
+		// script slice so `sum[:]` and encoders consume it, matching the
+		// handwritten adapters' `sum[:]` result.
+		if rv := reflect.ValueOf(x); rv.Kind() == reflect.Array {
+			sl := reflect.MakeSlice(reflect.SliceOf(rv.Type().Elem()), rv.Len(), rv.Len())
+			reflect.Copy(sl, rv)
+			return scriptVal(sl.Interface())
 		}
 		return &runtime.GoValue{V: x}
 	}
@@ -1043,6 +1059,30 @@ func strsSlice(ss []string) runtime.Value {
 // unboxed from host values (no package context — the name is a builtin).
 func anonSliceTyp(name string) *runtime.TypeDef {
 	return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent(name)}}
+}
+
+// bytesSliceOf lifts a [][]byte result into []any so scriptVal turns each
+// element into a script []byte slice. A nil result keeps the [][]uint8
+// spelling so %T matches Go on a nil [][]byte.
+func bytesSliceOf(bb [][]byte) any {
+	if bb == nil {
+		return &runtime.TypedNil{Typ: anonSliceTyp("[]uint8")}
+	}
+	out := make([]any, len(bb))
+	for i, b := range bb {
+		out[i] = b
+	}
+	return out
+}
+
+// runePred adapts a script callback into a rune predicate — strings'
+// TrimFunc/IndexFunc family and unicode's Is-print predicates call it.
+func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
+	return func(r rune) bool {
+		res := callOrPanic(v, fn, []runtime.Value{int64(r)})
+		b, _ := res.(bool)
+		return b
+	}
 }
 
 // runeSlice lifts a []rune result into a script slice of rune-tagged

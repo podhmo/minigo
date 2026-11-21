@@ -144,28 +144,4 @@ func netFileOf(v any) *os.File {
 	return t
 }
 
-func netipAddrOf(v any) netip.Addr { t, _ := v.(netip.Addr); return t }
-
 func addrPortOf(v any) netip.AddrPort { t, _ := v.(netip.AddrPort); return t }
-
-// byteSlice4/byteSlice16 read a script [4]byte/[16]byte (or []byte) into
-// the fixed-size array netip's AddrFrom* take.
-func byteSlice4(v any) (out [4]byte) {
-	for i, b := range byteSlice(v) {
-		if i >= 4 {
-			break
-		}
-		out[i] = b
-	}
-	return out
-}
-
-func byteSlice16(v any) (out [16]byte) {
-	for i, b := range byteSlice(v) {
-		if i >= 16 {
-			break
-		}
-		out[i] = b
-	}
-	return out
-}
