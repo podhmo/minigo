@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"strconv"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/runtime"
@@ -239,13 +240,15 @@ func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
 	return calls
 }
 
-// callResultTypOf answers a call's single-result typedef from the
+// callResultTypOf answers a call's want-th result typedef from the
 // callee's declared signature: `p.F(v)` under IndexedOnly resolves
-// p.F's FuncType and returns its one result's typedef, without ever
-// calling F. A member that is not a source function, a signature with
-// more than one result, or a result spelling a type parameter reports
-// unknown — the intrinsic or gate stays silent like before.
-func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, depth int) (*runtime.TypeDef, bool, error) {
+// p.F's FuncType and returns the declared result's typedef, without
+// ever calling F. want is 0 for a value operand, n for the synthetic
+// `f(args)[n]` marker a deferred multi-result bind leaves behind. A
+// member that is not a source function, an out-of-range want, or a
+// result spelling a type parameter reports unknown — the intrinsic or
+// gate stays silent like before.
+func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, want, depth int) (*runtime.TypeDef, bool, error) {
 	if depth > 8 {
 		return nil, false, nil
 	}
@@ -283,12 +286,25 @@ func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, depth int) 
 	if !ok || f.Decl == nil || f.Decl.Type == nil || f.Decl.Type.Results == nil {
 		return nil, false, nil
 	}
+	// walk the result fields by arity — `func() (a, b int, s string)`
+	// wants List[0] for want∈{0,1} and List[1] for want==2.
 	res := f.Decl.Type.Results
-	if len(res.List) != 1 || len(res.List[0].Names) > 1 {
-		// more than one result can't be a value operand anyway.
+	rt := ast.Expr(nil)
+	pos := 0
+	for _, rf := range res.List {
+		arity := len(rf.Names)
+		if arity == 0 {
+			arity = 1
+		}
+		if want < pos+arity {
+			rt = rf.Type
+			break
+		}
+		pos += arity
+	}
+	if rt == nil {
 		return nil, false, nil
 	}
-	rt := res.List[0].Type
 	if resultSpellsParam(f.Decl, rt) {
 		// `F[T any](v T) T` or `G[T]() [1]T` — the result binds at the
 		// call site, and resolving T against the package's decls would
@@ -509,7 +525,78 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		if err == nil && td != nil {
 			return td, false, nil
 		}
-		return e.callResultTypOf(ctx, t.Fun, depth+1)
+		return e.callResultTypOf(ctx, t.Fun, 0, depth+1)
+	case *ast.IndexExpr:
+		// a synthetic bind-site marker the compiler emits for a
+		// deferred multi-result call — `f(args)[i]` asks the callee's
+		// i-th declared result typedef; `src[0]` asks the element
+		// typedef of a deferred container member.
+		if call, ok := ast.Unparen(t.X).(*ast.CallExpr); ok {
+			i := 0
+			if lit, ok := t.Index.(*ast.BasicLit); ok {
+				i, _ = strconv.Atoi(lit.Value)
+			}
+			return e.callResultTypOf(ctx, call.Fun, i, depth+1)
+		}
+		td, _, err := e.valueTypDepth(ctx, t.X, depth+1)
+		if err != nil || td == nil {
+			return nil, false, err
+		}
+		// `for _, v := range s` binds rune for a string operand —
+		// elemOf answers the string itself, not what ranging yields.
+		if u, uerr := e.underlying(td); uerr == nil && u != nil &&
+			u.Kind == runtime.KindNamedBasic &&
+			runtime.CanonicalBasicName(u.Name) == "string" {
+			return runtime.BasicTypedef("rune"), false, nil
+		}
+		etd, err := e.elemOf(td)
+		if err != nil || etd == nil {
+			return nil, false, err
+		}
+		return etd, false, nil
+	case *ast.IndexListExpr:
+		// a synthetic bind-site marker for a deferred range's key var:
+		// int for array/slice/string, the map's key type, the channel's
+		// element, and the operand's own typedef for an integer range.
+		td, _, err := e.valueTypDepth(ctx, t.X, depth+1)
+		if err != nil || td == nil {
+			return nil, false, err
+		}
+		u, err := e.underlying(td)
+		if err != nil || u == nil {
+			return nil, false, err
+		}
+		switch u.Kind {
+		case runtime.KindSlice, runtime.KindPointer:
+			// arrays share KindSlice; `*arr` ranges over the array —
+			// either way the key var is int.
+			return runtime.BasicTypedef("int"), false, nil
+		case runtime.KindNamedBasic:
+			switch runtime.CanonicalBasicName(u.Name) {
+			case "string":
+				return runtime.BasicTypedef("int"), false, nil
+			case "int", "int8", "int16", "int32", "int64",
+				"uint", "uint8", "uint16", "uint32", "uint64", "uintptr":
+				// `for i := range n` — i takes n's own type.
+				return td, false, nil
+			}
+			return nil, false, nil
+		case runtime.KindMap:
+			if mt, ok := u.Anon.(*ast.MapType); ok {
+				kt, err := e.resolveTypeRef(u, mt.Key)
+				if err == nil && kt != nil {
+					return kt, false, nil
+				}
+			}
+			return nil, false, nil
+		case runtime.KindChan:
+			etd, err := e.elemOf(u)
+			if err != nil || etd == nil {
+				return nil, false, err
+			}
+			return etd, false, nil
+		}
+		return td, false, nil
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {

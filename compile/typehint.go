@@ -480,7 +480,7 @@ func (c *compiler) identOpTyp(id *ast.Ident) opTyp {
 				// by the call's i-th result; a comma-ok second name is
 				// bool, the first carries the operand's static type.
 				if len(vs.Values) == 1 && len(vs.Names) > 1 {
-					if t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx); t.te != nil {
+					if t := c.nthResultOpTyp(vs.Values[0], vd.NameIdx); t.te != nil || t.deferred {
 						return t
 					}
 					if vd.NameIdx == 1 && commaOkStatic(vs.Values[0]) {
@@ -1038,7 +1038,10 @@ func (c *compiler) calleeFuncTyp(x *ast.CallExpr) *ast.FuncType {
 // nthResultOpTyp resolves the static type a multi-result call binds at
 // position i — `a, b := f()` types a by result 0, b by result 1, like
 // gc's signature-based typing. A non-call RHS, an opaque callee, or a
-// result that spells a declared type parameter reports unknown.
+// result that spells a declared type parameter reports unknown. A call
+// whose callee cannot be resolved reports deferred — without a dexpr,
+// because re-emitting the call would run its side effects again; the
+// bind sites self-defer the names instead.
 func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	x, ok := ast.Unparen(e).(*ast.CallExpr)
 	if !ok || c.conversionCall(x) {
@@ -1046,6 +1049,9 @@ func (c *compiler) nthResultOpTyp(e ast.Expr, i int) opTyp {
 	}
 	ft := c.calleeFuncTyp(x)
 	if ft == nil || ft.Results == nil {
+		if t := c.staticOpTyp(x); t.deferred {
+			return opTyp{deferred: true}
+		}
 		return opTyp{}
 	}
 	if i == 0 && len(ft.Results.List) == 1 {
