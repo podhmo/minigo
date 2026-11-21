@@ -1371,6 +1371,45 @@ func (td *TypeDef) InstArgs() (outer, own []InstArg) {
 // DisplayName returns the name Go's reflect.Type.String would print for
 // td, such as "main.T", "[]int" or "*main.T", qualifying declared names
 // by package name. A nil td gives "<nil>".
+// hostElemTypedef finds the typedef carrying a host type identity in
+// an element chain — a slice's Elem may be a pointer typedef whose own
+// Elem holds the HostIdent ([]*inspect.File).
+func hostElemTypedef(td *TypeDef) *TypeDef {
+	for td != nil {
+		if td.HostIdent != nil {
+			return td
+		}
+		td = td.Elem
+	}
+	return nil
+}
+
+// AnonEltQualified reports whether an anonymous-composite element
+// expression is already package-qualified ([]pkg.T, []*pkg.T, chan
+// pkg.T) — a bare ast.Ident loses the package, a SelectorExpr (or any
+// other shape) keeps it. Bound facades stamp their script-visible
+// spelling ([]reflect.Value) while the element's host identity is an
+// internal type (*minireflect.RValue): a qualified anon wins over
+// that identity, a bare one loses to it.
+func AnonEltQualified(e ast.Expr) bool {
+	for {
+		switch x := e.(type) {
+		case *ast.StarExpr:
+			e = x.X
+		case *ast.ParenExpr:
+			e = x.X
+		case *ast.Ident:
+			// a facade's anon keeps the script-visible dotted name
+			// inside a single ident ("reflect.Value" stands for the
+			// internal *minireflect.RValue): a dotted ident already
+			// names its package, a plain one needs the element's.
+			return strings.Contains(x.Name, ".")
+		default:
+			return true
+		}
+	}
+}
+
 func DisplayName(td *TypeDef) string {
 	if td == nil {
 		return "<nil>"
@@ -1426,6 +1465,36 @@ func DisplayName(td *TypeDef) string {
 			elem = withInstArgs(elem)
 		}
 		return "*" + DisplayName(elem)
+	}
+	// a host element's identity outranks the bare anon spelling:
+	// AnonExprOf spells a named element unqualified ([]DirEntry where
+	// gc prints []fs.DirEntry) while Elem keeps the host package's
+	// name — through a pointer wrapper too ([]*inspect.File, not
+	// []*File). Maps stay on the anon spelling — only it carries the
+	// key.
+	if td.Elem != nil && hostElemTypedef(td.Elem) != nil {
+		switch td.Kind {
+		case KindChan:
+			pre := "chan "
+			qualified := false
+			if ct, isChan := td.Anon.(*ast.ChanType); isChan {
+				qualified = AnonEltQualified(ct.Value)
+				switch ct.Dir {
+				case ast.RECV:
+					pre = "<-chan "
+				case ast.SEND:
+					pre = "chan<- "
+				}
+			}
+			if !qualified {
+				return pre + DisplayName(td.Elem)
+			}
+		case KindSlice:
+			at, isArr := td.Anon.(*ast.ArrayType)
+			if !isArr || (at.Len == nil && !AnonEltQualified(at.Elt)) {
+				return "[]" + DisplayName(td.Elem)
+			}
+		}
 	}
 	anon := td.TypeExpr()
 	if anon != nil {
