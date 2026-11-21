@@ -276,6 +276,20 @@ func (v *VM) resolveArgHints(cf *frame, hints []bytecode.ArgHint) []*runtime.Typ
 					statics[i] = c.Typ
 				}
 			}
+		case bytecode.HintLocalTypElem:
+			if td := cf.localTyp(int(h.A)); td != nil {
+				statics[i] = td.Elem
+			}
+		case bytecode.HintUpvalTypElem:
+			if h.A >= 0 && int(h.A) < len(cf.upvals) && cf.upvals[h.A].Typ != nil {
+				statics[i] = cf.upvals[h.A].Typ.Elem
+			}
+		case bytecode.HintGlobalTypElem:
+			if old, ok := cf.fn.Pkg.Globals.Get(consts[h.A].(string)); ok {
+				if c, isCell := old.(*runtime.Cell); isCell && c.Typ != nil {
+					statics[i] = c.Typ.Elem
+				}
+			}
 		case bytecode.HintDeferredTyp:
 			site := cf.ch.CallSites[h.A]
 			td, err := v.deferredType(cf, site)
@@ -356,7 +370,14 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 					srcTd = st[0]
 				}
 			}
-			return v.convertFrom(c, args[0], srcTd)
+			// an Elem hint marks a `*p` operand: even when the operand's
+			// declared typedef is unknown, its value reads as the
+			// pointee — gc's `T(*p)` converts, `T(p)` does not.
+			argIsDeref := len(hints) == 1 &&
+				(hints[0].Kind == bytecode.HintLocalTypElem ||
+					hints[0].Kind == bytecode.HintUpvalTypElem ||
+					hints[0].Kind == bytecode.HintGlobalTypElem)
+			return v.convertFrom(c, args[0], srcTd, argIsDeref)
 		case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 			// calling a nil function value panics like a nil deref in Go
 			panic(runtime.NilDerefPanic())

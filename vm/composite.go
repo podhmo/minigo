@@ -972,12 +972,18 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 		// gives it only the promoted method set — fields plus the
 		// anonymous field's methods — so the host type's own declared
 		// methods must not resolve here (gc: Wrap.M yes, Wrap.Q no —
-		// M4-2c).
-		if td != nil && td.Kind == runtime.KindNamedBasic && td.HostNew == nil &&
-			hostbridge.HostMemberInner(gv.V, name, false) < 0 &&
-			hostbridge.HostPromotedMethodInner(gv.V, name) < 0 {
+		// M4-2c). Fields (direct or promoted through embedding) answer
+		// first — with no methods of its own, `Tpl(*t).Name` is the
+		// embedded Tree.Name field, not the host Name() method.
+		if td != nil && td.Kind == runtime.KindNamedBasic && td.HostNew == nil {
 			if u := v.peelNamed(td); u != nil && u.HostNew != nil {
-				f.trap("%s has no field or method %s", tdName(n.Typ), name)
+				if fv, _, fok := hostField(gv.V, name, framePkgPath(f)); fok {
+					return hostbridge.GoSlotValueOf(fv), nil
+				}
+				if hostbridge.HostPromotedMethodInner(gv.V, name) < 0 {
+					f.trap("%s has no field or method %s", tdName(n.Typ), name)
+				}
+				// a promoted method falls through to hostMember.
 			}
 		}
 		if mv, ok := v.hostMember(f, gv.V, name); ok {

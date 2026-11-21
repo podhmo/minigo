@@ -2127,6 +2127,24 @@ func (c *compiler) argHint(e ast.Expr) bytecode.ArgHint {
 		}
 		return bytecode.ArgHint{Kind: bytecode.HintNil}
 	}
+	if st, ok := ast.Unparen(e).(*ast.StarExpr); ok {
+		// `*p` — the static type is the pointee: the element typedef of
+		// the operand's declared type (a `*T` var's T).
+		if id, ok := ast.Unparen(st.X).(*ast.Ident); ok {
+			isUp, idx, found := c.fs.find(id.Name)
+			switch {
+			case found && !isUp:
+				return bytecode.ArgHint{Kind: bytecode.HintLocalTypElem, A: int32(idx)}
+			case found && isUp:
+				return bytecode.ArgHint{Kind: bytecode.HintUpvalTypElem, A: int32(idx)}
+			default:
+				if _, bound := c.binds[id.Name]; !bound {
+					return bytecode.ArgHint{Kind: bytecode.HintGlobalTypElem, A: int32(c.nameIdx(id.Name))}
+				}
+			}
+		}
+		return bytecode.ArgHint{Kind: bytecode.HintNil}
+	}
 	id, ok := e.(*ast.Ident)
 	if !ok {
 		return bytecode.ArgHint{Kind: bytecode.HintNil}
