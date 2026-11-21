@@ -43,6 +43,7 @@ import (
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/assetaudit"
 	"github.com/podhmo/minigo/internal/bind"
+	"github.com/podhmo/minigo/internal/execution"
 	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/resolve"
@@ -85,7 +86,7 @@ type sharedAssets struct {
 	ixcache *source.IndexCache
 
 	initMode   InitMode
-	specials   map[runtime.SymbolID]runtime.SpecialFunc
+	specials   *execution.Registry[runtime.SymbolID, runtime.SpecialFunc]
 	hostPolicy func(importPath, symbol string) bool // nil = allow all bound intrinsics
 	pkgModes   map[string]PackageMode               // per-path import mode; nil = ModeAuto everywhere
 	out        io.Writer                            // print/println/fmt.Print* destination; nil = io.Discard
@@ -280,7 +281,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			fset:     token.NewFileSet(),
 			pcache:   source.NewParseCache(),
 			ixcache:  source.NewIndexCache(),
-			specials: map[runtime.SymbolID]runtime.SpecialFunc{},
+			specials: execution.NewRegistry[runtime.SymbolID, runtime.SpecialFunc](),
 		},
 		sessionState: sessionState{
 			pkgs:         map[string]*runtime.Package{},
@@ -325,7 +326,7 @@ func (e *Engine) newVM() *vm.VM {
 		Special: func(id runtime.SymbolID) (runtime.SpecialFunc, bool) {
 			e.mu.Lock()
 			defer e.mu.Unlock()
-			h, ok := e.specials[id]
+			h, ok := e.specials.Lookup(id)
 			return h, ok
 		},
 		MethodsOf:       e.methodsOfValue,
@@ -641,7 +642,7 @@ func assignReflect(dst reflect.Value, v runtime.Value) error {
 func (e *Engine) RegisterSpecial(id runtime.SymbolID, h runtime.SpecialFunc) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.specials[id] = h
+	e.specials.Register(id, h)
 }
 
 // WithResolver replaces the resolver in place and returns e.

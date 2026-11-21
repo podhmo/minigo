@@ -22,7 +22,7 @@ import (
 // registered special form (importIdent.Name matching a canonical symbol
 // in the engine's registry). The arguments stay quoted for the handler.
 func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
-	if c.pkg == nil || len(c.pkg.Specials) == 0 || c.file == nil {
+	if c.pkg == nil || c.pkg.Specials.Len() == 0 || c.file == nil {
 		return false
 	}
 	id, ok := sel.X.(*ast.Ident)
@@ -34,7 +34,7 @@ func (c *compiler) trySpecial(x *ast.CallExpr, sel *ast.SelectorExpr) bool {
 		return false
 	}
 	sym := runtime.SymbolID{PackagePath: ref.Path, Name: sel.Sel.Name}
-	if _, ok := c.pkg.Specials[sym]; !ok {
+	if !c.pkg.Specials.Has(sym) {
 		return false
 	}
 	q := &runtime.QuotedCall{Call: x, File: c.file, Locals: map[string]int{}, Upvals: map[string]int{}}

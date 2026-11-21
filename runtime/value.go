@@ -30,7 +30,6 @@ package runtime
 import (
 	"errors"
 	"fmt"
-	"github.com/podhmo/minigo/special"
 	"go/ast"
 	"go/constant"
 	"go/token"
@@ -43,6 +42,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/podhmo/minigo/special"
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/syntax"
