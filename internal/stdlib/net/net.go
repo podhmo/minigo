@@ -33,6 +33,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, unwrapFile func(any) *os.File) 
 		"Interface":        stdlib.HostType("net.Interface", func() any { return net.Interface{} }),
 		"HardwareAddr":     stdlib.HostType("net.HardwareAddr", func() any { return net.HardwareAddr{} }),
 		"IP":               stdlib.HostType("net.IP", func() any { return net.IP{} }),
+		"IPMask":           stdlib.HostType("net.IPMask", func() any { return net.IPMask{} }),
 		"IPAddr":           stdlib.HostType("net.IPAddr", func() any { return &net.IPAddr{} }),
 		"IPNet":            stdlib.HostType("net.IPNet", func() any { return &net.IPNet{} }),
 		"TCPAddr":          stdlib.HostType("net.TCPAddr", func() any { return &net.TCPAddr{} }),
@@ -106,6 +107,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, unwrapFile func(any) *os.File) 
 			ip, ipn, err := net.ParseCIDR(stdlib.Str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(ip), stdlib.ScriptVal(ipn), stdlib.ErrVal(err)}}, nil
 		}),
+		"ParseMAC": h.Fn("net.ParseMAC", func(a []any) (any, error) { return stdlib.RetErr2(net.ParseMAC(stdlib.Str(a[0]))) }),
 		"IPv4": h.Fn("net.IPv4", func(a []any) (any, error) {
 			return net.IPv4(byte(stdlib.IntOf(a[0])), byte(stdlib.IntOf(a[1])), byte(stdlib.IntOf(a[2])), byte(stdlib.IntOf(a[3]))), nil
 		}),
