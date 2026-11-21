@@ -35,6 +35,32 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 	if td == nil {
 		return "?"
 	}
+	// the key is stable once minted: a td's spec, host identity and
+	// instantiation binds are fixed at construction, and the memo is
+	// per-engine so a re-parse (a new *syntax.File) keys fresh anyway.
+	if s, ok := e.tidMemo.Load(td); ok {
+		return s.(runtime.TypeID)
+	}
+	id := e.typeIDOfSlow(td)
+	// transient clones of one identity (a generic instantiation mints
+	// a fresh descriptor per call) must not each hold a memo slot:
+	// register the first under its identity and key the memo on that
+	// canonical descriptor, so later clones dedupe instead of growing
+	// the map for the engine's lifetime.
+	if e.typeIntern != nil && id != "" && id != "?" {
+		if got, ok := e.typeIntern.Lookup(id); ok {
+			e.tidMemo.Store(got, id)
+			return id
+		}
+		got := e.typeIntern.Of(id, td)
+		e.tidMemo.Store(got, id)
+		return id
+	}
+	e.tidMemo.Store(td, id)
+	return id
+}
+
+func (e *Engine) typeIDOfSlow(td *runtime.TypeDef) runtime.TypeID {
 	var args string
 	// Spell arguments only for a named instantiation (TParams, or a
 	// declared type whose TParams a copy dropped). An anonymous typedef
