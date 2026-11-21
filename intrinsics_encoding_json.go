@@ -717,7 +717,7 @@ func jsonMarshalerErr(c runtime.TypeMemberCaller, se *jsonScriptErr) error {
 	}
 	// the script error stays the cause — errors.Is/As reach it like
 	// MarshalerError's Unwrap.
-	me := &json.MarshalerError{Type: scriptReflectType{name: name}, Err: hostErrOf(c, se.sv)}
+	me := &json.MarshalerError{Type: scriptReflectType{name: name}, Err: hostbridge.HostErrOf(c, se.sv)}
 	if se.method == "MarshalJSON" {
 		return me
 	}

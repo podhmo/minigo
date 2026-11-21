@@ -67,7 +67,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 			if !ok {
 				return nil, fmt.Errorf("context.WithDeadlineCause needs a time.Time, got %T", a[1])
 			}
-			nc, cancel := context.WithDeadlineCause(c, d, hostErrOf(vc, raw[2]))
+			nc, cancel := context.WithDeadlineCause(c, d, hostbridge.HostErrOf(vc, raw[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
 		"WithTimeout": h.fn("context.WithTimeout", func(a []any) (any, error) {
@@ -83,7 +83,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 			if err != nil {
 				return nil, err
 			}
-			nc, cancel := context.WithTimeoutCause(c, durOf(a[1]), hostErrOf(vc, raw[2]))
+			nc, cancel := context.WithTimeoutCause(c, durOf(a[1]), hostbridge.HostErrOf(vc, raw[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{scriptVal(nc), scriptVal(cancel)}}, nil
 		}),
 		"WithoutCancel": h.fn("context.WithoutCancel", func(a []any) (any, error) {

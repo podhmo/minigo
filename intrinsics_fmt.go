@@ -794,8 +794,8 @@ func scriptTypeString(x runtime.Value) string {
 		}
 		return "unsafe.Pointer"
 	case *runtime.GoValue:
-		if se, ok := t.V.(*scriptError); ok {
-			return scriptTypeString(se.v)
+		if se, ok := t.V.(*hostbridge.ScriptError); ok {
+			return scriptTypeString(se.V)
 		}
 		switch t.V.(type) {
 		case *jsonEncoder:

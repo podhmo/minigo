@@ -95,7 +95,7 @@ func (v *VM) chanSendValue(val runtime.Value, elemT reflect.Type) (reflect.Value
 		}
 		return out, nil
 	}
-	return toReflectValue(val, elemT, v)
+	return marshalHost.ToReflect(val, elemT, v)
 }
 
 // chanSend sends sv on chRV, blocking as in Go — including panicking on a

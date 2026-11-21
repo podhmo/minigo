@@ -95,7 +95,7 @@ func testTwinDef(name string, fields ...string) *runtime.TypeDef {
 func TestTwinStructConversion(t *testing.T) {
 	pair := &runtime.Struct{Def: testTwinDef("testPair", "a", "b"),
 		Fields: []runtime.Value{"x", int64(3)}}
-	rv, err := toReflectValue(pair, reflect.TypeOf(testPair{}), nil)
+	rv, err := marshalHost.ToReflect(pair, reflect.TypeOf(testPair{}), nil)
 	if err != nil {
 		t.Fatalf("twin convert: %v", err)
 	}
@@ -106,14 +106,14 @@ func TestTwinStructConversion(t *testing.T) {
 	// `type P testPair` is not a twin — a Named tag of a different
 	// declared type must not convert, like gc's unassignability.
 	aliased := &runtime.Named{Typ: testTwinDef("notPair", "a", "b"), V: pair}
-	if _, err := toReflectValue(aliased, reflect.TypeOf(testPair{}), nil); err == nil {
+	if _, err := marshalHost.ToReflect(aliased, reflect.TypeOf(testPair{}), nil); err == nil {
 		t.Fatal("differently-named struct converted; want unassignable")
 	}
 
 	// a cyclic twin must error, not recurse until the stack gives out.
 	cyc := &runtime.Struct{Def: testTwinDef("testCyc", "next"), Fields: []runtime.Value{nil}}
 	cyc.Fields[0] = &runtime.Cell{Elem: cyc}
-	if _, err := toReflectValue(&runtime.Cell{Elem: cyc}, reflect.TypeOf((*testCyc)(nil)), nil); err == nil {
+	if _, err := marshalHost.ToReflect(&runtime.Cell{Elem: cyc}, reflect.TypeOf((*testCyc)(nil)), nil); err == nil {
 		t.Fatal("cyclic twin converted; want depth error")
 	}
 }
