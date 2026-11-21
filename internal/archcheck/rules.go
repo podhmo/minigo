@@ -11,7 +11,7 @@ package archcheck
 // A pkg_test file importing its own package does not count as an edge,
 // so self-edges never appear.
 var Rules = map[string][]string{
-	".":                            {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "internal/stdlib", "internal/stdlib/context", "internal/stdlib/errors", "internal/stdlib/html", "internal/stdlib/htmltemplate", "internal/stdlib/texttemplate", "internal/stdlib/time", "internal/stdlib/utf8", "minireflect", "repl", "resolve", "runtime", "special", "syntax", "vm"},
+	".":                            {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "internal/stdlib", "internal/stdlib/context", "internal/stdlib/errors", "internal/stdlib/math", "internal/stdlib/regexp", "internal/stdlib/html", "internal/stdlib/htmltemplate", "internal/stdlib/texttemplate", "internal/stdlib/time", "internal/stdlib/utf8", "minireflect", "repl", "resolve", "runtime", "special", "syntax", "vm"},
 	"builtin":                      {"compile", "internal/hostbridge", "internal/source", "runtime", "vm"},
 	"bytecode":                     {"syntax"},
 	"cmd/minigo":                   {".", "index", "repl", "resolve", "runtime"},
@@ -35,6 +35,8 @@ var Rules = map[string][]string{
 	"internal/stdlib":              {"internal/hostbridge", "runtime"},
 	"internal/stdlib/context":      {"internal/hostbridge", "internal/stdlib", "runtime", "vm"},
 	"internal/stdlib/errors":       {"internal/hostbridge", "internal/stdlib", "runtime"},
+	"internal/stdlib/math":         {"internal/stdlib", "runtime"},
+	"internal/stdlib/regexp":       {"internal/stdlib", "runtime"},
 	"internal/stdlib/html":         {"internal/stdlib", "runtime"},
 	"internal/stdlib/htmltemplate": {"internal/stdlib", "runtime"},
 	"internal/stdlib/texttemplate": {"internal/stdlib", "runtime", "vm"},

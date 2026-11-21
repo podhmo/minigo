@@ -5,6 +5,8 @@ import (
 	stdliberrors "github.com/podhmo/minigo/internal/stdlib/errors"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
+	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
+	stdlibregexp "github.com/podhmo/minigo/internal/stdlib/regexp"
 	stdlibtexttemplate "github.com/podhmo/minigo/internal/stdlib/texttemplate"
 	stdlibtime "github.com/podhmo/minigo/internal/stdlib/time"
 	stdlibutf8 "github.com/podhmo/minigo/internal/stdlib/utf8"
@@ -21,8 +23,8 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("bytes", func() { e.installBytes(h) })
 	e.pending.Register("unicode", func() { e.installUnicode(h) })
 	e.pending.Register("unicode/utf8", func() { stdlibutf8.Install(e.bindBound) })
-	e.pending.Register("math", func() { e.installMath(h) })
-	e.pending.Register("regexp", func() { e.installRegexp(h) })
+	e.pending.Register("math", func() { stdlibmath.Install(e.bindBound, h) })
+	e.pending.Register("regexp", func() { stdlibregexp.Install(e.bindBound, h) })
 	e.pending.Register("encoding/base64", func() { e.installEncodingBase64(h) })
 	e.pending.Register("encoding/hex", func() { e.installEncodingHex(h) })
 	e.pending.Register("encoding/json", func() { e.installEncodingJson(h) })
