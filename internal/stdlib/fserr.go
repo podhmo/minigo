@@ -20,6 +20,12 @@ func ScriptPathOf(sp, ap, p string) string {
 	if p == ap {
 		return sp
 	}
+	// a trailing separator is the only difference (EvalSymlinks cleans
+	// the spelled path before the lstat that fails) — the error still
+	// spells the script's own path, cleaned.
+	if ap != string(filepath.Separator) && p == strings.TrimRight(ap, string(filepath.Separator)) {
+		return filepath.Clean(sp)
+	}
 	if rest, ok := cutPathPrefix(p, ap); ok {
 		return filepath.Join(sp, rest)
 	}
@@ -50,10 +56,12 @@ func ScriptPathOf(sp, ap, p string) string {
 		if base, ok := strings.CutSuffix(ap, string(filepath.Separator)+csp); ok {
 			if rap, err := filepath.EvalSymlinks(base); err == nil && rap != base {
 				if rest, ok := cutPathPrefix(p, rap); ok {
-					return filepath.Join(filepath.Dir(sp), rest)
+					// rest is already relative to the spelled base —
+					// it IS the script spelling, not a child of sp.
+					return rest
 				}
 				if p == rap {
-					return filepath.Dir(sp)
+					return "."
 				}
 			}
 		}
