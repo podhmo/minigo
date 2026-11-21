@@ -10,7 +10,6 @@
 package minigo
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"go/ast"
@@ -41,24 +40,6 @@ var (
 // hostType delegates to the shared binding machinery in internal/stdlib.
 func hostType(name string, new func() any) *runtime.TypeDef {
 	return stdlib.HostType(name, new)
-}
-
-// hostSplitFunc binds one of bufio's stock split funcs: a script call
-// returns the (advance, token, err) triple, and Target hands the host
-// func itself to Scanner.Split.
-func hostSplitFunc(name string, f bufio.SplitFunc) *runtime.BuiltinFunc {
-	// the Target is the unnamed func type: gc's stock split funcs are
-	// declared as plain funcs (%T spells the signature), and an unnamed
-	// func still assigns to a SplitFunc parameter.
-	var target func([]byte, bool) (int, []byte, error) = f
-	return &runtime.BuiltinFunc{Name: name, Target: target, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) != 2 {
-			return nil, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
-		}
-		atEOF, _ := runtime.Unwrap(args[1]).(bool)
-		adv, tok, err := f(byteSlice(hostbridge.GoNative(args[0])), atEOF)
-		return &runtime.Tuple{Elems: []runtime.Value{int64(adv), scriptVal(tok), errVal(err)}}, nil
-	}}
 }
 
 // hostHelpers builds BuiltinFuncs whose Fn marshals arguments to Go natives
@@ -155,10 +136,6 @@ func (h *hostHelpers) FnvcRaw(name string, arity int, f func(runtime.VMCaller, [
 // variants satisfy stdlib.Helpers for the moved installers (P2-12c).
 func (h *hostHelpers) fn(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
 	return h.Fn(name, f, target...)
-}
-
-func (h *hostHelpers) fnvcRaw(name string, arity int, f func(runtime.VMCaller, []any, []runtime.Value) (any, error), target ...any) *runtime.BuiltinFunc {
-	return h.FnvcRaw(name, arity, f, target...)
 }
 
 func (h *hostHelpers) fn1(name string, f func([]any) (any, error), target ...any) *runtime.BuiltinFunc {
@@ -1161,23 +1138,15 @@ func (h *hostHelpers) asReaderVM(vc runtime.MemberCaller, v any) (io.Reader, err
 	return h.ioAdapters().AsReaderVM(vc, v)
 }
 
-func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
-	return defaultIOAdapters.AsWriterVM(vc, v)
-}
-
-func asWriter(v any) (io.Writer, error) {
-	return defaultIOAdapters.AsWriter(v)
-}
-
-func asReader(v any) (io.Reader, error) {
-	return stdio.AsReader(unwrapFmtArg(v))
-}
-
 func unwrapFmtArg(v any) any {
 	if fv, ok := v.(*fmtValue); ok {
 		return fv.x
 	}
 	return v
+}
+
+func asWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error) {
+	return defaultIOAdapters.AsWriterVM(vc, v)
 }
 
 var defaultIOAdapters = &stdio.Adapters{UnwrapArg: unwrapFmtArg}
