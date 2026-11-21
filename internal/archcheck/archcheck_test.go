@@ -3,6 +3,7 @@ package archcheck_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -346,5 +347,48 @@ func TestCheckBannedImportsViolation(t *testing.T) {
 	want := []string{"vm/v.go imports reflect, which is banned here (host-value work goes through internal/hostbridge)"}
 	if diff := cmp.Diff(want, msgs); diff != "" {
 		t.Error(diff)
+	}
+}
+
+func TestCheckBudgetGrowth(t *testing.T) {
+	base := map[string]int{"a.go": 100, "gone.go": 50}
+	// shrink, same size, a new path and a removed path all pass.
+	if vs := archcheck.CheckBudgetGrowth(base, map[string]int{"a.go": 90, "new.go": 10}, nil); len(vs) != 0 {
+		t.Fatalf("unexpected violations: %v", vs)
+	}
+	// a raise on an existing path is rejected...
+	cur := map[string]int{"a.go": 120}
+	vs := archcheck.CheckBudgetGrowth(base, cur, nil)
+	if len(vs) != 1 || !strings.Contains(vs[0].Message, "a.go") {
+		t.Fatalf("expected one budget-growth violation for a.go, got %v", vs)
+	}
+	// ...unless the path is listed as an explicit exception.
+	if vs := archcheck.CheckBudgetGrowth(base, cur, map[string]string{"a.go": "generated table regen"}); len(vs) != 0 {
+		t.Fatalf("exception not honored: %v", vs)
+	}
+}
+
+func TestParseFileBudgetsFile(t *testing.T) {
+	dir := t.TempDir()
+	src := `package archcheck
+
+var FileBudgets = map[string]int{
+	"a.go": 100,
+	"dir/b.go": 42,
+}
+
+var FileBudgetExceptions = map[string]string{}
+`
+	path := filepath.Join(dir, "budgets.go")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := archcheck.ParseFileBudgetsFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{"a.go": 100, "dir/b.go": 42}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("budgets mismatch (-want +got):\n%s", diff)
 	}
 }

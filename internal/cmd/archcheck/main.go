@@ -21,6 +21,7 @@ func main() {
 	root := flag.String("root", ".", "module root")
 	printGraph := flag.Bool("print", false, "print the live graph in rules.go form and exit")
 	printSizes := flag.Bool("print-sizes", false, "print live file line counts in rules.go form and exit")
+	budgetBase := flag.String("budget-base", "", "path to a budgets.go revision (e.g. the base branch's); the current FileBudgets table must not grow existing entries vs it (M1-4)")
 	flag.Parse()
 
 	if *printSizes {
@@ -62,6 +63,15 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "archcheck:", err)
 		os.Exit(2)
+	}
+
+	if *budgetBase != "" {
+		base, err := archcheck.ParseFileBudgetsFile(*budgetBase)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "archcheck:", err)
+			os.Exit(2)
+		}
+		violations = append(violations, archcheck.CheckBudgetGrowth(base, archcheck.FileBudgets, archcheck.FileBudgetExceptions)...)
 	}
 
 	if len(violations) > 0 {

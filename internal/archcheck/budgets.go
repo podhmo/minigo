@@ -2,6 +2,9 @@ package archcheck
 
 // FileBudgets records the M1-4 line-count ratchet for each Go file.
 // Use `go run ./internal/cmd/archcheck -print-sizes` after a file shrinks.
+// The table is monotonic across merges: CI compares it with the merge
+// base's revision, so bumping an existing entry fails — split the file,
+// or record a justified raise in FileBudgetExceptions.
 var FileBudgets = map[string]int{
 	"asmimpl.go":                                   279,
 	"bindenv.go":                                   52,
@@ -46,14 +49,14 @@ var FileBudgets = map[string]int{
 	"inspect/stub.go":                              382,
 	"installbound.go": 120,
 	"internal/archcheck/all.go":                    57,
-	"internal/archcheck/archcheck.go": 569,
-	"internal/archcheck/budgets.go": 222,
+	"internal/archcheck/archcheck.go":              643,
+	"internal/archcheck/budgets.go":                236,
 	"internal/archcheck/rules.go":                  100,
 	"internal/assetaudit/assetaudit.go":            112,
 	"internal/bind/env.go":                         48,
 	"internal/bind/install.go":                     102,
 	"internal/bind/names.go":                       88,
-	"internal/cmd/archcheck/main.go":               86,
+	"internal/cmd/archcheck/main.go":               96,
 	"internal/cmd/genbind/main.go":                 262,
 	"internal/cmd/genbind/table.go":                56,
 	"internal/cmd/genifaces/main.go":               41,
@@ -218,4 +221,15 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/texttemplate/texttemplate.go": 56,
 	"internal/stdlib/time/time.go":                 504,
 	"internal/stdlib/utf8/utf8.go":                 116,
+}
+
+// FileBudgetExceptions records paths whose budget may grow vs the merge
+// base — path → the reason the raise is justified. An empty map is the
+// steady state: prefer splitting a file over recording an exception.
+var FileBudgetExceptions = map[string]string{
+	// M1-4 itself: the merge-base growth check, its CLI flag, and the
+	// budgets table entry are the feature — these raises land once.
+	"internal/archcheck/archcheck.go": "M1-4: ParseFileBudgetsFile + CheckBudgetGrowth",
+	"internal/archcheck/budgets.go":   "M1-4: FileBudgetExceptions + doc comments",
+	"internal/cmd/archcheck/main.go":  "M1-4: -budget-base flag wiring",
 }

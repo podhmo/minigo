@@ -225,8 +225,82 @@ func CheckSizes(sizes map[string]int, budget map[string]int) []Violation {
 	return out
 }
 
-// pkgDecls is one parsed package: named type declarations keyed by
-// name.
+// ParseFileBudgetsFile parses a Go source file holding a `FileBudgets`
+// map literal — a budgets.go revision such as the base branch's — and
+// returns the recorded table (M1-4).
+func ParseFileBudgetsFile(path string) (map[string]int, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	for _, decl := range f.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, name := range vs.Names {
+				if name.Name != "FileBudgets" || i >= len(vs.Values) {
+					continue
+				}
+				lit, ok := vs.Values[i].(*ast.CompositeLit)
+				if !ok {
+					return nil, fmt.Errorf("%s: FileBudgets is not a map literal", path)
+				}
+				out := map[string]int{}
+				for _, elt := range lit.Elts {
+					kv, ok := elt.(*ast.KeyValueExpr)
+					if !ok {
+						return nil, fmt.Errorf("%s: FileBudgets entry %T is not a key/value", path, elt)
+					}
+					key, ok := kv.Key.(*ast.BasicLit)
+					val, ok2 := kv.Value.(*ast.BasicLit)
+					if !ok || !ok2 {
+						return nil, fmt.Errorf("%s: FileBudgets entry is not literal key/value", path)
+					}
+					k, err := strconv.Unquote(key.Value)
+					if err != nil {
+						return nil, fmt.Errorf("%s: FileBudgets key: %w", path, err)
+					}
+					n, err := strconv.Atoi(val.Value)
+					if err != nil {
+						return nil, fmt.Errorf("%s: FileBudgets value %q: %w", path, val.Value, err)
+					}
+					out[k] = n
+				}
+				return out, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("%s: no FileBudgets declaration", path)
+}
+
+// CheckBudgetGrowth is the M1-4 monotonicity check: a path the merge
+// base already recorded may not raise its budget — the table is a
+// ratchet, so "both sides grow" does not pass. New paths are new files
+// and dropped paths are deletions or renames; a justified raise goes in
+// exceptions (FileBudgetExceptions, path → reason).
+func CheckBudgetGrowth(base, current map[string]int, exceptions map[string]string) []Violation {
+	var out []Violation
+	for path, cur := range current {
+		b, ok := base[path]
+		if !ok || cur <= b {
+			continue
+		}
+		if _, exempt := exceptions[path]; exempt {
+			continue
+		}
+		out = append(out, Violation{path, "", fmt.Sprintf("%s's budget grew %d → %d vs the base branch — split the file, or record the raise in FileBudgetExceptions", path, b, cur)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Pkg < out[j].Pkg })
+	return out
+}
+
+// pkgDecls is one parsed package's named type declarations.
 type pkgDecls struct {
 	types map[string]typeDecl
 }
