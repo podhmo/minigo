@@ -1132,14 +1132,20 @@ func UConstNative(u *UConst) (Value, error) {
 	case constant.String:
 		return constant.StringVal(u.V), nil
 	case constant.Int:
+		if u.Wrap {
+			// a non-constant shift's result — and any ops deferred on
+			// it — replays in the int64 domain the default int is.
+			i, ok := WrapReplay(u, nil)
+			if !ok {
+				return nil, fmt.Errorf("constant %s: integer divide by zero", u.V)
+			}
+			return i, nil
+		}
 		if i, ok := constant.Int64Val(u.V); ok {
 			return i, nil
 		}
 		if uv, ok := constant.Uint64Val(u.V); ok && uv <= math.MaxInt64 {
 			return int64(uv), nil
-		}
-		if u.Wrap {
-			return WrapInt64(u.V), nil
 		}
 		return nil, fmt.Errorf("constant %s overflows int", u.V)
 	case constant.Float:
@@ -2875,6 +2881,10 @@ type UConst struct {
 	// "shifted operand must be integer" error: an unproven count may
 	// still be a constant the compiler's walk could not resolve.
 	WrapSure bool
+
+	// WrapOps carries the ops a Wrap value rode through in source
+	// order, replayed at the width it materializes at (wrapops.go).
+	WrapOps []WrapOp
 
 	// memo caches the last operand-typed conversion (see Memo): a chunk
 	// constant is one shared *UConst, re-adapted on every execution of

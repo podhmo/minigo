@@ -131,6 +131,12 @@ func constTruthy(u *runtime.UConst) bool {
 	case constant.Bool:
 		return constant.BoolVal(u.V)
 	case constant.Int, constant.Float, constant.Complex:
+		if u.Wrap && len(u.WrapOps) > 0 {
+			// the deferred ops decide the value — `if (1<<n)/999` is
+			// false although the base payload is nonzero.
+			i, _ := runtime.WrapReplay(u, nil)
+			return i != 0
+		}
 		return constant.Sign(u.V) != 0
 	case constant.String:
 		return constant.StringVal(u.V) != ""
@@ -677,17 +683,32 @@ func (v *VM) wrapConstBinary(f *frame, op bytecode.BinOp, a, b *runtime.Value) (
 	if !aOK || !bOK || (!ua.Wrap && !ub.Wrap) {
 		return nil, false
 	}
-	switch op {
-	case bytecode.BinAdd, bytecode.BinSub, bytecode.BinMul,
-		bytecode.BinAnd, bytecode.BinOr, bytecode.BinXor, bytecode.BinAndNot:
-		if ua.V.Kind() == constant.Int && ub.V.Kind() == constant.Int {
-			if r, ok := constBinary(op, ua, ub); ok {
+	if ua.V.Kind() == constant.Int && ub.V.Kind() == constant.Int {
+		switch op {
+		case bytecode.BinAdd, bytecode.BinSub, bytecode.BinMul,
+			bytecode.BinAnd, bytecode.BinOr, bytecode.BinXor, bytecode.BinAndNot:
+			if len(ua.WrapOps) > 0 || len(ub.WrapOps) > 0 {
+				// a Wrap with deferred ops can't fold a further op
+				// into its payload — the op defers behind them and
+				// the whole chain replays at materialization width.
+				if r, ok := deferWrapOp(ua, ub, op); ok {
+					return r, true
+				}
+			} else if r, ok := constBinary(op, ua, ub); ok {
 				if ru, isConst := r.(*runtime.UConst); isConst {
 					ru.V = wrapReduce(ru.V)
 					ru.Wrap = true
 					ru.WrapSure = ua.WrapSure || ub.WrapSure
 					return ru, true
 				}
+			}
+		case bytecode.BinQuo, bytecode.BinRem:
+			// division and remainder do not commute with truncation:
+			// `int8(1<<n)/3` is -42 where the int the Wrap once
+			// settled at reads 42 — ride the op on the Wrap value so
+			// it replays at the materialization width.
+			if r, ok := deferWrapOp(ua, ub, op); ok {
+				return r, true
 			}
 		}
 	}
@@ -698,6 +719,29 @@ func (v *VM) wrapConstBinary(f *frame, op bytecode.BinOp, a, b *runtime.Value) (
 		*b = v.materialize(f, ub)
 	}
 	return nil, false
+}
+
+// deferWrapOp rides one more integer operation on a Wrap operand's
+// deferred list (see runtime.UConst.WrapOps), which replays when the
+// constant takes a concrete width. It reports false when neither
+// operand is a lone Wrap value — two Wrap values meeting settle the
+// way they always have.
+func deferWrapOp(ua, ub *runtime.UConst, op bytecode.BinOp) (*runtime.UConst, bool) {
+	var w, arg *runtime.UConst
+	var argFirst bool
+	switch {
+	case ua.Wrap && !ub.Wrap:
+		w, arg = ua, ub
+	case ub.Wrap && !ua.Wrap:
+		w, arg, argFirst = ub, ua, true
+	default:
+		return nil, false
+	}
+	nu := &runtime.UConst{V: w.V, Rune: w.Rune, Wrap: true, WrapSure: w.WrapSure}
+	nu.WrapOps = make([]runtime.WrapOp, len(w.WrapOps)+1)
+	copy(nu.WrapOps, w.WrapOps)
+	nu.WrapOps[len(w.WrapOps)] = runtime.WrapOp{Op: op, Arg: arg.V, ArgFirst: argFirst}
+	return nu, true
 }
 
 // constInKind reads a constant payload in the kind of the numeric
@@ -739,7 +783,12 @@ func toIntConst(cv constant.Value) (i constant.Value, ok bool) {
 // failing the representability check.
 func fitsUConst(u *runtime.UConst, name string) (int64, bool) {
 	if u.Wrap && u.V.Kind() == constant.Int {
-		return maskInt(runtime.WrapInt64(u.V), name), true
+		if len(u.WrapOps) == 0 {
+			return maskInt(runtime.WrapInt64(u.V), name), true
+		}
+		// deferred ops replay in the named width's domain — a divide
+		// by zero reports unrepresentable like an out-of-range value.
+		return runtime.WrapReplay(u, func(x int64) int64 { return maskInt(x, name) })
 	}
 	return fitsIntConst(u.V, name)
 }
