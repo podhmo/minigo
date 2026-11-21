@@ -302,7 +302,11 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 				var ok bool
 				switch bv := b.(type) {
 				case *runtime.UConst:
-					bi, ok = constant.Int64Val(constant.ToInt(bv.V))
+					// a wrapped UConst still owes its deferred runtime
+					// ops (non-constant shift) — V is not the result.
+					if !bv.Wrap && len(bv.WrapOps) == 0 {
+						bi, ok = constant.Int64Val(constant.ToInt(bv.V))
+					}
 				case *runtime.Named:
 					if iv, isInt := bv.V.(int64); isInt && sameTypeDef(v.peelAlias(na.Typ), v.peelAlias(bv.Typ)) {
 						bi, ok = iv, true
