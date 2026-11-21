@@ -130,7 +130,7 @@
 
 - [ ] **M5-1 `PackageImage` を具体化する**: 不変で共有できる定義（AST、index、宣言位置、import spec、言語バージョン、ビルド設定）として切り出す。完了条件: archcheck が、イメージの中に実行状態が入らないことを保証している。[references/ownership.md](./references/ownership.md)
   - [x] **M5-1a 不変の定義を組み立てる**: P2-14b の index 結果から AST・index・宣言位置・import spec をまとめる。共有資産に実行時の `ImportRef` や cell が入る負例を `archcheck` で検出する。
-  - [ ] **M5-1b ソースのロード経路を切り替える**: M5-1a に言語バージョンとビルド設定を持たせ、通常ロードと inspect 用の lenient ロードから参照する。両経路の宣言・診断と遅延初期化の挙動を照合する。
+  - [x] **M5-1b ソースのロード経路を切り替える**: M5-1a に言語バージョンとビルド設定を持たせ、通常ロードと inspect 用の lenient ロードから参照する。両経路の宣言・診断と遅延初期化の挙動を照合する。
 - [ ] **M5-2 `PackageInstance` を具体化する**: globals、初期化状態、実行時の `ImportRef`、materialize した関数と型を持たせる。`runtime.Package` は互換の窓口として残す。完了条件: 同じイメージから作った 2 つのインスタンスが独立している。
   - [ ] **M5-2a Session ごとの globals と初期化状態**: P2-14c と M5-1 のあと、共有イメージからそれぞれの実行状態を作る。同じソースの 2 つの Session で globals が独立し、初期化がそれぞれ一度だけ走ることを確認する。
   - [ ] **M5-2b import と materialize の所有**: M5-2a のあと、実行時 `ImportRef` と関数・型の materialize キャッシュを各インスタンスに移す。並行した最初の参照、別 Session への漏出、既存 `runtime.Package` API との互換性を検証する。
