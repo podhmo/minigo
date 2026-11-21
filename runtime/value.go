@@ -2920,6 +2920,10 @@ type VMCaller interface {
 	// parallel to td.Fields; an entry is nil when its declaration does
 	// not resolve.
 	FieldTypes(td *TypeDef) ([]*TypeDef, error)
+	// Underlying resolves a named/alias typedef to its underlying
+	// typedef — used by intrinsics that need the layout of a declared
+	// type (append's growth sizing).
+	Underlying(td *TypeDef) (*TypeDef, error)
 	// ElemOf returns the element typedef of a container typedef
 	// ([]T->T, map[K]V->V, chan T->T) or the pointee typedef of a
 	// pointer typedef — named pointer types included.
