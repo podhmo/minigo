@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
 )
@@ -74,7 +75,7 @@ func (e *Engine) installTime(h *hostHelpers) {
 			// the callback from ever running.
 			t := &afterFuncTimer{note: func() func() { return vm.NoteExternalWait(vc) }}
 			t.hold()
-			t.Timer = time.AfterFunc(durOf(goNative(args[0])), func() {
+			t.Timer = time.AfterFunc(durOf(hostbridge.GoNative(args[0])), func() {
 				t.drop()
 				// the timer fires on a host goroutine — run the
 				// callback like `go f()`: a panic inside fails the

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -48,7 +49,7 @@ func UnboxHostSlice(x runtime.Value) (runtime.Value, bool) {
 	if rv.Type().Name() != "" {
 		rv = rv.Convert(reflect.SliceOf(rv.Type().Elem()))
 	}
-	return goValueOf(rv), true
+	return hostbridge.GoValueOf(rv), true
 }
 
 // hostSliceLike boxes hv, a host slice derived from host, the way host was

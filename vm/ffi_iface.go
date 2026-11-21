@@ -395,7 +395,7 @@ func (s *scriptFile) Read(p []byte) (int, error) { return s.inner.Read(p) }
 
 func (s *scriptFile) Close() error { return s.inner.Close() }
 
-// ScriptValue lets goValueOf hand the original script file back when
+// ScriptValue lets hostbridge.GoValueOf hand the original script file back when
 // host code carries the proxy through an fs.File return — declared on
 // scriptFile so every wrapper variant promotes it (scriptDirFile
 // embeds fs.File, which hides it, so it declares its own).

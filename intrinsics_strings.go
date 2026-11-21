@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -153,7 +154,7 @@ func (e *Engine) installStrings(h *hostHelpers) {
 			mapping := func(r rune) rune {
 				res := callOrPanic(v, args[0], []runtime.Value{int64(r)})
 				// a negative result drops the rune in Go
-				return rune(int64Of(goNative(res)))
+				return rune(int64Of(hostbridge.GoNative(res)))
 			}
 			out := strings.Map(mapping, str(args[1]))
 			return out, nil

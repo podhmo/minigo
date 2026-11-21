@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/podhmo/minigo/compile"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/vm"
@@ -1111,7 +1112,7 @@ func numericConst(u *runtime.UConst) bool {
 // namedFloat32 reports whether x carries a float32 typedef.
 func namedFloat32(x runtime.Value) bool {
 	n, ok := x.(*runtime.Named)
-	return ok && float32Tag(n.Typ)
+	return ok && hostbridge.Float32Tag(n.Typ)
 }
 
 func display(vc runtime.CallerRef, v runtime.Value) any {

@@ -13,9 +13,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
-	"github.com/podhmo/minigo/vm"
 )
 
 func (e *Engine) installFmt(h *hostHelpers) {
@@ -1225,7 +1225,7 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 	case float64, string, bool:
 		return x
 	case *runtime.UConst:
-		nv := mustNativeConst(x)
+		nv := hostbridge.MustNativeConst(x)
 		if i, ok := nv.(int64); ok {
 			return int(i)
 		}
@@ -1234,15 +1234,15 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 		if rv, ok := x.V.(*minireflect.RValue); ok {
 			return fmtRValue(v, rv)
 		}
-		return goNative(x)
+		return hostbridge.GoNative(x)
 	case *runtime.TypedNil, *runtime.IfaceNil:
 		// a nil named host slice (net.IP) crosses as the host nil so
 		// fmt runs its String method on the nil receiver ("<nil>")
-		if rt := vm.HostNilType(runtime.BoxedNilTyp(x)); rt != nil {
+		if rt := hostbridge.HostNilType(runtime.BoxedNilTyp(x)); rt != nil {
 			return reflect.Zero(rt).Interface()
 		}
 		if tn, ok := x.(*runtime.TypedNil); ok {
-			if rt := vm.HostNilType(tn.Typ); rt != nil {
+			if rt := hostbridge.HostNilType(tn.Typ); rt != nil {
 				return reflect.Zero(rt).Interface()
 			}
 		}
@@ -1271,7 +1271,7 @@ func fmtRValue(c runtime.MemberCaller, rv *minireflect.RValue) any {
 		if inner, ok := u.V.(*minireflect.RValue); ok {
 			return inner
 		}
-		return goNative(u)
+		return hostbridge.GoNative(u)
 	case runtime.Value:
 		return fmtArg(c, u)
 	default:
@@ -1429,7 +1429,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		// rounded value, not the wider box's digits. A payload still
 		// riding the constant domain reads at float32 width the same
 		// way (`float32(c)` conversions keep UConst).
-		if float32Tag(v.Typ) {
+		if hostbridge.Float32Tag(v.Typ) {
 			if fv, ok := v.V.(float64); ok {
 				return fmt.Sprintf(formatOf(f, verb), float32(fv))
 			}
@@ -1443,8 +1443,8 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		// a complex128 carrying a complex64 tag rounds each half to
 		// float32 — same gap as float32, one level wider.
-		if complex64Tag(v.Typ) {
-			if cv, ok := complex64Value(v.V); ok {
+		if hostbridge.Complex64Tag(v.Typ) {
+			if cv, ok := hostbridge.Complex64Value(v.V); ok {
 				return fmt.Sprintf(formatOf(f, verb), cv)
 			}
 		}
@@ -1600,7 +1600,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
-		if rt := vm.HostNilType(v.Typ); rt != nil {
+		if rt := hostbridge.HostNilType(v.Typ); rt != nil {
 			// a nil named host slice (net.IP) renders as the host nil
 			// would — its String method on the nil receiver
 			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
@@ -1621,7 +1621,7 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'T' {
 			return typedefSpelling(v.Typ)
 		}
-		if rt := vm.HostNilType(v.Typ); rt != nil {
+		if rt := hostbridge.HostNilType(v.Typ); rt != nil {
 			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
 		}
 		return s.nilTyp(verb, f, v.Typ)
@@ -1705,7 +1705,7 @@ func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
 // spelled with the declared element type when the leaf has one.
 func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
 	if u, ok := x.(*runtime.UConst); ok {
-		x = mustNativeConst(u)
+		x = hostbridge.MustNativeConst(u)
 	}
 	if leafBadVerb(x, verb) {
 		name := ""

@@ -25,6 +25,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -202,7 +203,7 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 				if !val.IsValid() {
 					continue // removed before being reached: not produced
 				}
-				push(goValueOf(k), goValueOf(val))
+				push(hostbridge.GoValueOf(k), hostbridge.GoValueOf(val))
 				return true
 			}
 			return false
@@ -210,7 +211,7 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		if it.Idx >= it.Limit {
 			return false
 		}
-		push(int64(it.Idx), goValueOf(it.HostRV.Index(it.Idx)))
+		push(int64(it.Idx), hostbridge.GoValueOf(it.HostRV.Index(it.Idx)))
 		it.Idx++
 		return true
 	case 'i':

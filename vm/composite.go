@@ -28,6 +28,7 @@ import (
 	"unsafe"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -323,7 +324,7 @@ func framePkgPath(f *frame) string {
 // to their declaring package, the same gate Go applies.
 func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 	if fv, ok := hostField(hv, name, framePkgPath(f)); ok {
-		return goSlotValueOf(fv), true
+		return hostbridge.GoSlotValueOf(fv), true
 	}
 	m := reflect.ValueOf(hv).MethodByName(name)
 	if sm, ok := hv.(runtime.ScriptMethoder); ok {
@@ -1201,11 +1202,11 @@ func (v *VM) hostIndex(f *frame, b *runtime.GoValue, idx runtime.Value) (val run
 	case reflect.Map:
 		ev := rv.MapIndex(v.hostMapKey(f, rv, idx))
 		if !ev.IsValid() {
-			return goValueOf(reflect.Zero(rv.Type().Elem())), false, true
+			return hostbridge.GoValueOf(reflect.Zero(rv.Type().Elem())), false, true
 		}
-		return goValueOf(ev), true, true
+		return hostbridge.GoValueOf(ev), true, true
 	case reflect.Slice, reflect.Array, reflect.String:
-		return goValueOf(rv.Index(v.hostIndexInt(f, rv, idx))), true, true
+		return hostbridge.GoValueOf(rv.Index(v.hostIndexInt(f, rv, idx))), true, true
 	}
 	return nil, false, false
 }
@@ -1389,12 +1390,12 @@ func (v *VM) hostSlice(f *frame, b *runtime.GoValue, lo, hi, max runtime.Value, 
 			if r := sliceBoundsReason(l, h, m, cp, true, "capacity"); r != "" {
 				panic(runtime.SliceBoundsPanic(r))
 			}
-			return goValueOf(rv.Slice3(int(l.i), int(h.i), int(m.i))), true
+			return hostbridge.GoValueOf(rv.Slice3(int(l.i), int(h.i), int(m.i))), true
 		}
 		if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, "capacity"); r != "" {
 			panic(runtime.SliceBoundsPanic(r))
 		}
-		return goValueOf(rv.Slice(int(l.i), int(h.i))), true
+		return hostbridge.GoValueOf(rv.Slice(int(l.i), int(h.i))), true
 	case reflect.String:
 		if three {
 			f.trap("cannot slice a string with 3 indices")
@@ -1404,7 +1405,7 @@ func (v *VM) hostSlice(f *frame, b *runtime.GoValue, lo, hi, max runtime.Value, 
 		if r := sliceBoundsReason(l, h, boundOperand{}, n, false, "length"); r != "" {
 			panic(runtime.SliceBoundsPanic(r))
 		}
-		return goValueOf(rv.Slice(int(l.i), int(h.i))), true
+		return hostbridge.GoValueOf(rv.Slice(int(l.i), int(h.i))), true
 	}
 	return nil, false
 }

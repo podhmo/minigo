@@ -11,7 +11,7 @@ func (e *Engine) installHtmlTemplate(h *hostHelpers) {
 	// html/template is bound like text/template rather than interpreted:
 	// its source walks text/template's parse trees and FuncMap, which the
 	// bound text/template does not expose. Script data marshals through
-	// goNative the same way, and the content types (template.HTML, ...)
+	// hostbridge.GoNative the same way, and the content types (template.HTML, ...)
 	// are host scalars so a script value of them skips escaping.
 	htmlContent := func(name string, zero any) *runtime.TypeDef {
 		return &runtime.TypeDef{Name: "html/template." + name, Kind: runtime.KindNamedBasic, Anon: ast.NewIdent("string"), HostScalar: zero}
