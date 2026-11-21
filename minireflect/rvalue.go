@@ -3217,9 +3217,19 @@ func (v *RValue) Convert(t *RType) *RValue {
 			}
 			// the result keeps the target's declared type so a named
 			// slice type (`type RS []rune`, `[]R` with `type R rune`)
-			// survives Interface()/type assertions
+			// survives Interface()/type assertions — and the elements
+			// ride the target's element tag so an element read assigns
+			// to a declared `Octet`/`R` slot.
 			if t.td != nil {
 				s.Typ = t.td
+				// an alias element (`type B = byte`) is the same type
+				// as its spelling — tag with the peeled typedef so the
+				// elements DeepEqual a plain `[]byte`.
+				if etd := v.e.peelAlias(v.e.elemOf(t.td)); etd != nil {
+					for i, e := range s.Elems {
+						s.Elems[i] = runtime.Tag(etd, runtime.Unwrap(e))
+					}
+				}
 			}
 			out = s
 		} else {
@@ -3576,14 +3586,10 @@ func normVal(v any) runtime.Value {
 	return &runtime.GoValue{V: v}
 }
 
-// strToBytes builds a script []byte from a string.
+// strToBytes builds a script []byte from a string — the shared shape
+// every string->[]byte projection produces (runtime.BytesOf).
 func strToBytes(s string) *runtime.Slice {
-	elems := make([]runtime.Value, len(s))
-	for i := 0; i < len(s); i++ {
-		elems[i] = int64(s[i])
-	}
-	return &runtime.Slice{Elems: elems, Typ: &runtime.TypeDef{
-		Kind: runtime.KindSlice, Elem: &runtime.TypeDef{Name: "byte"}}}
+	return runtime.BytesOf(s)
 }
 
 // strToRunes builds a script []rune from a string, decoding UTF-8 like

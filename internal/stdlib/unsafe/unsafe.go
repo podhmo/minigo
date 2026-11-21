@@ -330,13 +330,11 @@ func unsafeFieldOffset(hooks minireflect.Hooks, base runtime.Value, name string)
 	return 0, fmt.Errorf("unsafe.Offsetof is not supported for %T", base)
 }
 
-// unsafeBytes copies str into a script []byte backing for StringData.
+// unsafeBytes copies str into a script []byte backing for StringData —
+// the shared shape every string->[]byte projection produces
+// (runtime.BytesOf).
 func unsafeBytes(str string) *runtime.Slice {
-	el := make([]runtime.Value, len(str))
-	for i := 0; i < len(str); i++ {
-		el[i] = runtime.ByteValue(str[i])
-	}
-	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
+	return runtime.BytesOf(str)
 }
 
 // sizeDeclTyp is the operand's declared type for unsafe.Sizeof/Alignof
