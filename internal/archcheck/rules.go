@@ -12,6 +12,7 @@ package archcheck
 // so self-edges never appear.
 var Rules = map[string][]string{
 	".": {"builtin", "bytecode", "compile", "index", "inspect", "internal/assetaudit", "internal/bind", "internal/execution", "internal/hostbridge", "internal/replhooks", "internal/source", "internal/spike", "internal/stdlib", "internal/stdlib/context", "internal/stdlib/bytes", "internal/stdlib/bytealg", "internal/stdlib/errors", "internal/stdlib/godebug",
+		"internal/stdlib/io",
 		"internal/stdlib/math", "internal/stdlib/netip", "internal/stdlib/path", "internal/stdlib/race",
 		"internal/stdlib/regexp", "internal/stdlib/sha256", "internal/stdlib/strconv", "internal/stdlib/stringslite",
 		"internal/stdlib/sync", "internal/stdlib/syscall", "internal/stdlib/testenv", "internal/stdlib/unicode", "internal/stdlib/html", "internal/stdlib/htmltemplate", "internal/stdlib/texttemplate", "internal/stdlib/time", "internal/stdlib/utf8", "minireflect", "repl", "resolve", "runtime", "special", "syntax", "vm"},
@@ -41,6 +42,7 @@ var Rules = map[string][]string{
 	"internal/stdlib/bytes":        {"internal/stdlib", "runtime"},
 	"internal/stdlib/bytealg":      {"internal/stdlib", "runtime"},
 	"internal/stdlib/godebug":      {"internal/stdlib", "runtime"},
+	"internal/stdlib/io":           {"internal/hostbridge", "internal/stdlib", "runtime"},
 	"internal/stdlib/race":         {"internal/stdlib", "runtime"},
 	"internal/stdlib/stringslite":  {"internal/stdlib", "runtime"},
 	"internal/stdlib/testenv":      {"internal/stdlib", "runtime"},

@@ -8,6 +8,7 @@ import (
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
+	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdlibmath "github.com/podhmo/minigo/internal/stdlib/math"
 	stdlibnetip "github.com/podhmo/minigo/internal/stdlib/netip"
 	stdlibpath "github.com/podhmo/minigo/internal/stdlib/path"
@@ -68,7 +69,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("context", func() { stdlibcontext.Install(e.bindBound, h) })
 	e.pending.Register("net", func() { e.installNet(h) })
 	e.pending.Register("net/netip", func() { stdlibnetip.Install(e.bindBound) })
-	e.pending.Register("io", func() { e.installIo(h) })
+	e.pending.Register("io", func() { stdio.Install(e.bindBound, h, h.ioAdapters()) })
 	e.pending.Register("crypto/rand", func() { e.installCryptoRand(h) })
 	e.pending.Register("crypto/sha256", func() { stdlibsha256.Install(e.bindBound) })
 	e.pending.Register("encoding/csv", func() { e.installEncodingCsv(h) })
