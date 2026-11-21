@@ -743,6 +743,13 @@ func ifaceDynKey(x runtime.Value) (key ifaceKey, ok bool) {
 	case *runtime.IfaceNil:
 		return ifaceKey{dyn: t.Typ, nilIface: true}, t.Typ != nil
 	case *runtime.Cell:
+		// `&x` keys on the pointee's declared type, not the stored
+		// value's: `(&w).(io.Writer)` on an interface var is *W (empty
+		// set) while `(&s).(io.Writer)` on a struct is *T — sharing the
+		// payload's key would leak one result into the other.
+		if t.Typ != nil {
+			return ifaceKey{dyn: t.Typ, ptr: true}, true
+		}
 		switch e := t.Elem.(type) {
 		case *runtime.Struct:
 			return ifaceKey{dyn: e.Def, ptr: true}, e.Def != nil

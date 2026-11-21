@@ -92,7 +92,11 @@ type Hooks struct {
 // anonymous types intern by structure. Entries are never evicted, so a
 // type redeclared under the same name keeps its first RType.
 type Env struct {
-	h         Hooks
+	h Hooks
+	// valueTD is the reflect.Value typedef — bound function results
+	// boxing a *RValue tag it so `v := reflect.ValueOf(x)` carries the
+	// declared type the way a source-level `reflect.Value` return would.
+	valueTD   *runtime.TypeDef
 	types     sync.Map                          // canonical key -> *RType
 	vc        atomic.Value                      // runtime.VMCaller — the engine that bound this Env
 	facadeTyp map[reflect.Type]*runtime.TypeDef // facade host type -> public typedef
@@ -126,6 +130,12 @@ func Symbols(h Hooks) map[string]runtime.Value {
 	// bottoms out in internal/abi and unsafe.Pointer reinterpretation,
 	// which the host-object value model cannot execute.
 	e := &Env{h: h}
+	valueTD := &runtime.TypeDef{
+		Name:    "reflect.Value",
+		Kind:    runtime.KindStruct,
+		HostNew: func() any { return &RValue{} },
+	}
+	e.valueTD = valueTD
 	syms := map[string]runtime.Value{
 		"ValueOf":         e.fn("reflect.ValueOf", e.valueOf),
 		"TypeOf":          e.fn("reflect.TypeOf", e.typeOf),
@@ -157,11 +167,7 @@ func Symbols(h Hooks) map[string]runtime.Value {
 		// The two public shell types. `var v reflect.Value` produces a
 		// host-boxed zero facade value; `var t reflect.Type` is an
 		// interface typedef so `t == nil` and method checks behave.
-		"Value": &runtime.TypeDef{
-			Name:    "reflect.Value",
-			Kind:    runtime.KindStruct,
-			HostNew: func() any { return &RValue{} },
-		},
+		"Value": valueTD,
 		"Type": &runtime.TypeDef{
 			Name: "reflect.Type",
 			Kind: runtime.KindInterface,
@@ -485,7 +491,15 @@ func (e *Env) valueOf(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if len(args) != 1 {
 		return nil, fmt.Errorf("reflect.ValueOf needs 1 arg, got %d", len(args))
 	}
-	return &runtime.GoValue{V: e.valueOfValue(vc, args[0])}, nil
+	return e.boxValue(e.valueOfValue(vc, args[0])), nil
+}
+
+// boxValue wraps an RValue as a script reflect.Value: tagging the box
+// with the Value typedef keeps the declared type on an inferred slot
+// (`v := reflect.ValueOf(x)`), so `&v` reads as *reflect.Value — a
+// struct pointer with methods — not an anonymous pointer's pointer.
+func (e *Env) boxValue(rv *RValue) runtime.Value {
+	return &runtime.Named{Typ: e.valueTD, V: &runtime.GoValue{V: rv}}
 }
 
 // valueOfValue is ValueOf over a raw runtime value.
@@ -598,14 +612,14 @@ func (e *Env) new_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, er
 		return nil, fmt.Errorf("reflect.New: arg is %T, not a reflect.Type", args[0])
 	}
 	if t.rt != nil {
-		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.New(t.rt)}}, nil
+		return e.boxValue(&RValue{e: e, vc: vc, rv: reflect.New(t.rt)}), nil
 	}
 	// a pointer is a cell; New(t) is the cell holding t's zero, typed
 	// like new(T) so a store through it (`*p = []string{...}` in a
 	// pointer-receiver UnmarshalJSON) keeps T's identity and methods.
 	ptd := &runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td,
 		Anon: &ast.StarExpr{X: e.exprOf(t.td)}}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: &runtime.Cell{Elem: e.zeroOf(vc, t.td), Typ: t.td}, td: ptd}}, nil
+	return e.boxValue(&RValue{e: e, vc: vc, val: &runtime.Cell{Elem: e.zeroOf(vc, t.td), Typ: t.td}, td: ptd}), nil
 }
 
 func (e *Env) zero(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -617,9 +631,9 @@ func (e *Env) zero(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, er
 		return nil, fmt.Errorf("reflect.Zero: arg is %T, not a reflect.Type", args[0])
 	}
 	if t.rt != nil {
-		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.Zero(t.rt)}}, nil
+		return e.boxValue(&RValue{e: e, vc: vc, rv: reflect.Zero(t.rt)}), nil
 	}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: e.zeroOf(vc, t.td), td: t.td}}, nil
+	return e.boxValue(&RValue{e: e, vc: vc, val: e.zeroOf(vc, t.td), td: t.td}), nil
 }
 
 // zeroOf produces t's zero: delegate to the VM's zero when a caller is
@@ -974,7 +988,7 @@ func (e *Env) makeSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Valu
 		return nil, fmt.Errorf("reflect.MakeSlice: arg 0 is %T, not a reflect.Type", args[0])
 	}
 	if t.rt != nil {
-		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.MakeSlice(t.rt, l, c)}}, nil
+		return e.boxValue(&RValue{e: e, vc: vc, rv: reflect.MakeSlice(t.rt, l, c)}), nil
 	}
 	if t.Kind() != reflect.Slice {
 		panic(&runtime.Panic{Value: fmt.Sprintf("reflect.MakeSlice of non-slice type %s", t.String())})
@@ -994,7 +1008,7 @@ func (e *Env) makeSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Valu
 	for i := range elems {
 		elems[i] = e.zeroOf(vc, et)
 	}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: &runtime.Slice{Elems: elems, Typ: t.td}, td: t.td}}, nil
+	return e.boxValue(&RValue{e: e, vc: vc, val: &runtime.Slice{Elems: elems, Typ: t.td}, td: t.td}), nil
 }
 
 func (e *Env) makeMap(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1023,9 +1037,9 @@ func (e *Env) makeMapN(vc runtime.VMCaller, arg runtime.Value, n int) (runtime.V
 		} else {
 			rv = reflect.MakeMap(t.rt)
 		}
-		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: rv}}, nil
+		return e.boxValue(&RValue{e: e, vc: vc, rv: rv}), nil
 	}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: vc.NewMap(t.td), td: t.td}}, nil
+	return e.boxValue(&RValue{e: e, vc: vc, val: vc.NewMap(t.td), td: t.td}), nil
 }
 
 func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1060,7 +1074,7 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 			}
 			in[i] = rv
 		}
-		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.Append(s.rv, in...)}}, nil
+		return e.boxValue(&RValue{e: e, vc: vc, rv: reflect.Append(s.rv, in...)}), nil
 	}
 	// Go's MustBe(Slice) rejects every other kind — arrays included —
 	// with 'reflect: call of unknown method on X Value'.
@@ -1090,7 +1104,7 @@ func (e *Env) append_(vc runtime.VMCaller, args []runtime.Value) (runtime.Value,
 	if n, ok := s.get().(*runtime.Named); ok {
 		val = &runtime.Named{Typ: n.Typ, V: out}
 	}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: val, td: s.td}}, nil
+	return e.boxValue(&RValue{e: e, vc: vc, val: val, td: s.td}), nil
 }
 
 func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -1107,7 +1121,7 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 			// raise its own 'unknown method' panic.
 			reflect.AppendSlice(s.rv, t.rv)
 		}
-		return &runtime.GoValue{V: &RValue{e: e, vc: vc, rv: reflect.AppendSlice(s.rv, t.rv)}}, nil
+		return e.boxValue(&RValue{e: e, vc: vc, rv: reflect.AppendSlice(s.rv, t.rv)}), nil
 	}
 	// Go's MustBe(Slice) fires on either operand before copying —
 	// 'reflect: call of unknown method on X Value' names the bad kind.
@@ -1137,7 +1151,7 @@ func (e *Env) appendSlice(vc runtime.VMCaller, args []runtime.Value) (runtime.Va
 	if n, ok := s.get().(*runtime.Named); ok {
 		val = &runtime.Named{Typ: n.Typ, V: out}
 	}
-	return &runtime.GoValue{V: &RValue{e: e, vc: vc, val: val, td: s.td}}, nil
+	return e.boxValue(&RValue{e: e, vc: vc, val: val, td: s.td}), nil
 }
 
 func (e *Env) copy_(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
