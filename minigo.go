@@ -48,6 +48,9 @@ import (
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/source"
 	"github.com/podhmo/minigo/internal/spike"
+	stdlib "github.com/podhmo/minigo/internal/stdlib"
+	"github.com/podhmo/minigo/internal/typedef"
+	internalvet "github.com/podhmo/minigo/internal/vet"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
@@ -67,6 +70,7 @@ import (
 type Engine struct {
 	sharedAssets
 	sessionState
+	td *typedef.Resolver // typedef dispatch machinery (P2-14)
 }
 
 // sharedAssets is the source-derived part of an engine. [NewSession]
@@ -154,7 +158,6 @@ type sessionState struct {
 
 	// iterSeqTds caches the iter.Seq / iter.Seq2 instantiations intrinsic
 	// seqs are tagged with (see iterSeqTd).
-	iterSeqTds sync.Map
 }
 
 // Option configures an Engine.
@@ -343,6 +346,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		}
 	}
 	e.builtins = builtin.Env(bindEnv{e})
+	e.initTypedefResolver()
 	res, err := resolve.NewGoScanResolver(startDir, e.cfg)
 	if err != nil {
 		// fall back to GOPATH-less dir resolution only; Locate() will still
@@ -356,6 +360,36 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 }
 
 // newVM wires a VM to this engine's hooks.
+// initTypedefResolver wires the typedef-dispatch resolver with this
+// engine's deps — called by NewEngine and NewSession so forked sessions
+// get a resolver bound to their own caches, not the parent's.
+func (e *Engine) initTypedefResolver() {
+	e.td = typedef.New(typedef.Deps{
+		Materialize:   func(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) { return e.materialize(pkg, d) },
+		InternTypedef: e.internTypedef,
+		HostTwin:      e.hostTwin,
+		Builtins:      e.builtins,
+		LoadPath:      e.loadPath,
+	})
+}
+
+// VetResult is one [Engine.Vet] finding.
+type VetResult = internalvet.Result
+
+// Vet loads ref without initializing it and reports calls that would
+// fail at run time because nothing handles them (internal/vet).
+func (e *Engine) Vet(ctx context.Context, ref string) ([]VetResult, error) {
+	p, err := e.Package(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return internalvet.Scan(ctx, p, internalvet.Deps{
+		Package:    e.Package,
+		Position:   e.fset.Position,
+		Registered: e.registeredVetSymbol,
+	})
+}
+
 func (e *Engine) newVM() *vm.VM {
 	return &vm.VM{H: vm.Hooks{
 		Prof:              e.prof,
@@ -369,28 +403,28 @@ func (e *Engine) newVM() *vm.VM {
 			h, ok := e.specials.Lookup(id)
 			return h, ok
 		},
-		MethodsOf:        e.methodsOfValue,
-		MethodSetOf:      e.methodSetOfValue,
-		IfaceReqs:        e.ifaceReqs,
-		IfaceSigs:        e.ifaceSigReqs,
-		MethodFuncsOf:    e.methodFuncsOfValue,
-		MethodInfoOf:     e.methodInfoOfValue,
-		TypeMethodFuncs:  e.methodSet,
-		TypeMethodInfoOf: e.typeMethodInfoU,
+		MethodsOf:        e.td.MethodsOfValue,
+		MethodSetOf:      e.td.MethodSetOfValue,
+		IfaceReqs:        e.td.IfaceReqs,
+		IfaceSigs:        e.td.IfaceSigReqs,
+		MethodFuncsOf:    e.td.MethodFuncsOfValue,
+		MethodInfoOf:     e.td.MethodInfoOfValue,
+		TypeMethodFuncs:  e.td.MethodSet,
+		TypeMethodInfoOf: e.td.TypeMethodInfoU,
 		SigMemo:          &e.sigMemo,
 
-		ElemOf:           e.elemOf,
-		TypeMethods:      e.typeMethods,
-		Underlying:       e.underlying,
-		AliasOf:          e.aliasOf,
-		FieldTypes:       e.fieldTypes,
-		ResolveType:      e.resolveTypeRef,
+		ElemOf:           e.td.ElemOf,
+		TypeMethods:      e.td.TypeMethods,
+		Underlying:       e.td.Underlying,
+		AliasOf:          e.td.AliasOf,
+		FieldTypes:       e.td.FieldTypes,
+		ResolveType:      e.td.ResolveTypeRef,
 		FieldPath:        e.fieldPath,
 		InternTypedef:    e.internTypedef,
 		TypeIDOf:         e.typeIDOf,
-		DeferredType:     e.deferredTypeOf,
-		DeferredConst:    e.constExprOf,
-		DeferredValueTyp: e.valueTypOf,
+		DeferredType:     e.td.DeferredTypeOf,
+		DeferredConst:    e.td.ConstExprOf,
+		DeferredValueTyp: e.td.ValueTypOf,
 		HostTwin:         e.hostTwin,
 		Linkname:         e.linknameTarget,
 		HostErr:          hostbridge.HostErrOf,
@@ -550,7 +584,7 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	// may still be filling Index and the scopes
 	p.WaitIndexed()
 	if p.Index != nil {
-		td, err := e.resolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
+		td, err := e.td.ResolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
 		if err != nil || !runtime.HostNamedIs(rt, td) {
 			return nil
 		}
@@ -676,6 +710,7 @@ func (e *Engine) NewSession() *Engine {
 		},
 	}
 	s.builtins = builtin.Env(bindEnv{s})
+	s.initTypedefResolver()
 	s.fieldPaths = fieldPathService(s)
 	s.registerStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
@@ -1662,7 +1697,7 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 		// registered host impl materializes as the impl itself — the
 		// zero-return shim would silently drop every result.
 		if d.Func.Body == nil {
-			if v, ok := asmImpl(pkg, d.Name); ok {
+			if v, ok := stdlib.AsmImpl(pkg, d.Name); ok {
 				return v, nil
 			}
 			if pkg.Path == "runtime/debug" && d.Name == "modinfo" {
@@ -1672,8 +1707,8 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 			}
 		}
 		return &runtime.Function{Pkg: pkg, File: d.File, Decl: d.Func, Name: d.Name,
-			TParams:      typeParamNames(d.Func.Type.TypeParams),
-			TConstraints: typeParamConstraints(d.Func.Type.TypeParams),
+			TParams:      typedef.TypeParamNames(d.Func.Type.TypeParams),
+			TConstraints: typedef.TypeParamConstraints(d.Func.Type.TypeParams),
 			Compile:      e.compileFunc}, nil
 	case index.TypeDecl:
 		return e.typeDefOf(pkg, d)
@@ -1689,8 +1724,8 @@ func (e *Engine) materializeOne(pkg *runtime.Package, d *index.Decl) (runtime.Va
 func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, error) {
 	ts := d.Spec.(*ast.TypeSpec)
 	td := &runtime.TypeDef{Pkg: pkg, Name: d.Name, File: d.File, Spec: ts,
-		TParams:      typeParamNames(ts.TypeParams),
-		TConstraints: typeParamConstraints(ts.TypeParams),
+		TParams:      typedef.TypeParamNames(ts.TypeParams),
+		TConstraints: typedef.TypeParamConstraints(ts.TypeParams),
 		Anon:         ts.Type}
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
@@ -1734,7 +1769,7 @@ func (e *Engine) methodFunc(pkg *runtime.Package, recv string, md *index.Decl) *
 		Recv: recv, PtrRecv: ptrRecv, Compile: e.compileFunc,
 		// Go 1.27 generic methods: `func (l List[E]) Map[R any](...)`
 		// — the method's own type params ride alongside the receiver's.
-		TParams:      typeParamNames(md.Func.Type.TypeParams),
-		TConstraints: typeParamConstraints(md.Func.Type.TypeParams),
+		TParams:      typedef.TypeParamNames(md.Func.Type.TypeParams),
+		TConstraints: typedef.TypeParamConstraints(md.Func.Type.TypeParams),
 	}
 }

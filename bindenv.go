@@ -31,9 +31,9 @@ func (b bindEnv) Out() io.Writer {
 }
 
 func (b bindEnv) MethodSetOfValue(v runtime.Value) (map[string]bool, bool, error) {
-	return b.e.methodSetOfValue(v)
+	return b.e.td.MethodSetOfValue(v)
 }
 
 // PeelAliasTd doubles as the source.EmbedEnv seam for the //go:embed
 // builtin, which needs the engine's alias-peeler.
-func (b bindEnv) PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef { return b.e.peelAliasTd(td) }
+func (b bindEnv) PeelAliasTd(td *runtime.TypeDef) *runtime.TypeDef { return b.e.td.PeelAliasTd(td) }

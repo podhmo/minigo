@@ -54,8 +54,8 @@ import (
 func (e *Engine) registerStdlib() {
 	h := &hostHelpers{env: bindEnv{e}}
 	e.pending.Register("fmt", func() { stdfmt.Install(e.bindBound, h, h.ioAdapters(), h.out) })
-	e.pending.Register("errors", func() { stdliberrors.Install(e.bindBound, h, e.ifaceReqSet) })
-	e.pending.Register("strings", func() { stdlibstrings.Install(e.bindBound, h, e.typedSeq) })
+	e.pending.Register("errors", func() { stdliberrors.Install(e.bindBound, h, e.td.IfaceReqSet) })
+	e.pending.Register("strings", func() { stdlibstrings.Install(e.bindBound, h, e.td.TypedSeq) })
 	e.pending.Register("strconv", func() { stdlibstrconv.Install(e.bindBound) })
 	e.pending.Register("bytes", func() { stdlibbytes.Install(e.bindBound) })
 	e.pending.Register("unicode", func() { stdlibunicode.Install(e.bindBound) })
@@ -75,8 +75,8 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("path", func() { stdlibpath.Install(e.bindBound) })
 	e.pending.Register("reflect", func() { stdreflect.Install(e.bindBound, e.reflectHooks()) })
 	e.pending.Register("sort", func() { stdlibsort.Install(e.bindBound, h) })
-	e.pending.Register("slices", func() { stdlibslices.Install(e.bindBound, h, e.typedSeq) })
-	e.pending.Register("maps", func() { stdlibmaps.Install(e.bindBound, h, e.typedSeq) })
+	e.pending.Register("slices", func() { stdlibslices.Install(e.bindBound, h, e.td.TypedSeq) })
+	e.pending.Register("maps", func() { stdlibmaps.Install(e.bindBound, h, e.td.TypedSeq) })
 	e.pending.Register("os", func() { stdlibos.Install(e.bindBound, h, h.env) })
 	e.pending.Register("path/filepath", func() { stdlibfilepath.Install(e.bindBound, h, h.env) })
 	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })

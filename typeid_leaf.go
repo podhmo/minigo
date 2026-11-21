@@ -147,7 +147,7 @@ func (e *Engine) anonLeafSpelling(td *runtime.TypeDef, s string) string {
 					ids[n+"="+string(e.typeIDOf(lt))] = true
 					continue
 				}
-				if tgt := e.peelAliasTd(lt); tgt != nil {
+				if tgt := e.td.PeelAliasTd(lt); tgt != nil {
 					ctx.LocalTypes[n] = tgt
 				}
 				continue
@@ -203,7 +203,7 @@ func (e *Engine) anonLeafSpelling(td *runtime.TypeDef, s string) string {
 				// declared type is already pinned by
 				// name+pkg — one name per package.
 				if ts, isTs := info.Decl.Spec.(*ast.TypeSpec); isTs && ts.Assign.IsValid() && ts.TypeParams == nil {
-					if tgt, err := e.resolveTypeRef(td, ts.Type); err == nil && tgt != nil {
+					if tgt, err := e.td.ResolveTypeRef(td, ts.Type); err == nil && tgt != nil {
 						ids[q+"="+string(e.typeIDOf(tgt))] = true
 					} else {
 						ids[q] = true

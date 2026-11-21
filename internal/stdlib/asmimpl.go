@@ -1,4 +1,4 @@
-package minigo
+package stdlib
 
 import (
 	"math/bits"
@@ -99,7 +99,7 @@ func mapsClone(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) 
 // asmImpl resolves a bodiless func declaration to a registered host
 // implementation, keyed by package path + name. Called at materialize
 // time so the name never reaches a caller as a zero-return Function.
-func asmImpl(pkg *runtime.Package, name string) (runtime.Value, bool) {
+func AsmImpl(pkg *runtime.Package, name string) (runtime.Value, bool) {
 	impl, ok := asmImpls[pkg.Path+"."+name]
 	if !ok {
 		return nil, false

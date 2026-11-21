@@ -1,4 +1,4 @@
-package minigo
+package typedef
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func sharedTd(td *runtime.TypeDef) bool {
 // the element type back off it. nil when an element is unknown or iter
 // does not load (a deny policy, no GOROOT) — the seq then stays an
 // untyped callable.
-func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
+func (r *Resolver) IterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 	key := iterSeqKey{}
 	switch len(elems) {
 	case 1:
@@ -41,11 +41,11 @@ func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 	}
 	cacheable := sharedTd(key.a) && (key.b == nil || sharedTd(key.b))
 	if cacheable {
-		if td, ok := e.iterSeqTds.Load(key); ok {
+		if td, ok := r.iterSeqTds.Load(key); ok {
 			return td.(*runtime.TypeDef)
 		}
 	}
-	base := e.iterSeqBase(len(elems))
+	base := r.IterSeqBase(len(elems))
 	if base == nil {
 		return nil
 	}
@@ -53,9 +53,9 @@ func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 	for i, tp := range base.TParams {
 		binds[tp] = elems[i]
 	}
-	td := e.instantiateBinds(base, binds)
+	td := r.InstantiateBinds(base, binds)
 	if cacheable {
-		if prev, loaded := e.iterSeqTds.LoadOrStore(key, td); loaded {
+		if prev, loaded := r.iterSeqTds.LoadOrStore(key, td); loaded {
 			return prev.(*runtime.TypeDef)
 		}
 	}
@@ -65,19 +65,19 @@ func (e *Engine) iterSeqTd(elems ...*runtime.TypeDef) *runtime.TypeDef {
 // iterSeqBase is the generic iter.Seq (n=1) or iter.Seq2 (n=2) typedef,
 // loaded from the iter package once per engine; nil when it does not
 // load.
-func (e *Engine) iterSeqBase(n int) *runtime.TypeDef {
+func (r *Resolver) IterSeqBase(n int) *runtime.TypeDef {
 	name := "Seq"
 	if n == 2 {
 		name = "Seq2"
 	}
-	if td, ok := e.iterSeqTds.Load(iterSeqBaseKey(name)); ok {
+	if td, ok := r.iterSeqTds.Load(iterSeqBaseKey(name)); ok {
 		return td.(*runtime.TypeDef)
 	}
-	p, err := e.loadPath(context.Background(), "iter")
+	p, err := r.loadPath(context.Background(), "iter")
 	if err != nil {
 		return nil
 	}
-	m, err := p.Member(name, e.materialize)
+	m, err := p.Member(name, r.materialize)
 	if err != nil {
 		return nil
 	}
@@ -85,7 +85,7 @@ func (e *Engine) iterSeqBase(n int) *runtime.TypeDef {
 	if !ok || len(base.TParams) != n {
 		return nil
 	}
-	e.iterSeqTds.Store(iterSeqBaseKey(name), base)
+	r.iterSeqTds.Store(iterSeqBaseKey(name), base)
 	return base
 }
 
@@ -95,8 +95,8 @@ func (e *Engine) iterSeqBase(n int) *runtime.TypeDef {
 
 // typedSeq tags an intrinsic seq callable with its iter.Seq / Seq2 type
 // when the element typedefs are known.
-func (e *Engine) typedSeq(fn *runtime.BuiltinFunc, elems ...*runtime.TypeDef) runtime.Value {
-	if td := e.iterSeqTd(elems...); td != nil {
+func (r *Resolver) TypedSeq(fn *runtime.BuiltinFunc, elems ...*runtime.TypeDef) runtime.Value {
+	if td := r.IterSeqTd(elems...); td != nil {
 		return runtime.Tag(td, fn)
 	}
 	return fn

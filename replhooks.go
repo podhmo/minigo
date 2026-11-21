@@ -40,11 +40,11 @@ func (e *Engine) ReplHooks() *replhooks.Hooks {
 		Materialize:     e.materialize,
 
 		MethodFunc:     e.methodFunc,
-		MethodFuncs:    e.methodFuncs,
-		FieldTypes:     e.fieldTypes,
-		ElemOf:         e.elemOf,
-		PeelAliasTd:    e.peelAliasTd,
-		ResolveTypeRef: e.resolveTypeRef,
+		MethodFuncs:    e.td.MethodFuncs,
+		FieldTypes:     e.td.FieldTypes,
+		ElemOf:         e.td.ElemOf,
+		PeelAliasTd:    e.td.PeelAliasTd,
+		ResolveTypeRef: e.td.ResolveTypeRef,
 
 		BindCompiles: e.bindCompiles,
 		FormatValue: func(c runtime.VMCaller, x runtime.Value) fmt.Formatter {

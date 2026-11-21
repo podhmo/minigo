@@ -1,4 +1,4 @@
-package minigo
+package typedef
 
 import (
 	"go/ast"
@@ -13,11 +13,11 @@ import (
 // package's typedefs (`time.Second` binds a bare int64 but time
 // declares Duration), or — for source packages — the declaration's
 // written or inferred type read in the declaring file's scope.
-func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runtime.TypeDef, bool, error) {
+func (r *Resolver) MemberTypOf(p *runtime.Package, name string, depth int) (*runtime.TypeDef, bool, error) {
 	if depth > 8 {
 		return nil, false, nil
 	}
-	m, err := p.Member(name, e.materialize)
+	m, err := p.Member(name, r.materialize)
 	if err != nil {
 		return nil, false, nil
 	}
@@ -58,10 +58,10 @@ func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runti
 		effType = p.Index.BuiltinMakeType(val)
 	}
 	if effType != nil {
-		td, err := e.resolveTypeRef(mctx, effType)
+		td, err := r.ResolveTypeRef(mctx, effType)
 		return td, false, err
 	}
-	return e.valueTypDepth(mctx, val, depth+1)
+	return r.valueTypDepth(mctx, val, depth+1)
 }
 
 // hostScalarTypedef finds the package typedef whose HostScalar Go type
