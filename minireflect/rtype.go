@@ -1858,3 +1858,14 @@ func (r reflectResolver) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
 	}
 	return r.e.h.ElemOf(td)
 }
+
+func (r reflectResolver) Underlying(td *runtime.TypeDef) *runtime.TypeDef {
+	for i := 0; td != nil && (td.Kind == runtime.KindAlias || td.Kind == runtime.KindNamedBasic) && r.e.h.Underlying != nil && i < 32; i++ {
+		u, err := r.e.h.Underlying(td)
+		if err != nil || u == nil || u == td {
+			break
+		}
+		td = u
+	}
+	return td
+}

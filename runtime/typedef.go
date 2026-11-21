@@ -753,6 +753,9 @@ type TypeResolver interface {
 	// ElemOf resolves the element typedef of a container carrying no
 	// AST; (nil, nil) means "unresolvable".
 	ElemOf(td *TypeDef) (*TypeDef, error)
+	// Underlying follows declared chains (`type C B`, alias links) to
+	// the shape-giving typedef; resolvers without it return td.
+	Underlying(td *TypeDef) *TypeDef
 }
 
 // SigTypEq reports whether two typedefs appearing in signatures denote
@@ -816,6 +819,7 @@ func (noResolver) IfaceReqs(*TypeDef) (map[string]bool, error)      { return nil
 func (noResolver) IfaceSigs(*TypeDef) (map[string]*Function, error) { return nil, errNoResolver }
 func (noResolver) ResolveType(*TypeDef, ast.Expr) (*TypeDef, error) { return nil, nil }
 func (noResolver) ElemOf(*TypeDef) (*TypeDef, error)                { return nil, nil }
+func (noResolver) Underlying(td *TypeDef) *TypeDef                  { return td }
 
 var errNoResolver = fmt.Errorf("no type resolver")
 

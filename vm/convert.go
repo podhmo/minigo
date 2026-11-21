@@ -23,7 +23,6 @@ import (
 	"go/ast"
 	"math"
 	"reflect"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/podhmo/minigo/runtime"
@@ -841,7 +840,7 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 		if et, err := v.H.ElemOf(v.peelNamed(td)); err == nil && et != nil && !sameTypeDef(pt, et) && !sameTypeDef(pt, v.peelAlias(et)) {
 			pe, pp := v.peelNamed(et), v.peelNamed(pt)
 			if pe == nil || pp == nil || pe.Kind != pp.Kind ||
-				(pe.Kind == runtime.KindStruct && !structFieldsEq(pe, pp)) ||
+				(pe.Kind == runtime.KindStruct && !runtime.StructFieldsEq(pe, pp)) ||
 				(pe.Kind != runtime.KindStruct && !v.convShapeEq(pe, pp)) {
 				return nil, fmt.Errorf("cannot convert *%s to %s", tdName(pt), tdName(td))
 			}
@@ -909,7 +908,7 @@ func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value) (runtime.Value,
 	if !ok {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 	}
-	if s.Def != nil && s.Def != td && !structFieldsEq(s.Def, td) {
+	if s.Def != nil && s.Def != td && !runtime.StructFieldsEq(s.Def, td) {
 		return nil, fmt.Errorf("cannot convert %s to %s", tdName(s.Def), tdName(td))
 	}
 	return &runtime.Struct{Def: td, Fields: append([]runtime.Value{}, s.Fields...)}, nil
@@ -921,62 +920,14 @@ func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value) (runtime.Value,
 // []int — while element positions compare by written identity, so []MyInt
 // does not spell []int.
 func (v *VM) convShapeEq(a, b *runtime.TypeDef) bool {
-	sa, sb := v.underlyingShape(a), v.underlyingShape(b)
-	return sa != "" && sa == sb
+	return runtime.NewShapeEq(sigResolver{v}).Conv(a, b)
 }
 
 // underlyingShape spells a typedef's underlying shape. Declared chain
 // heads (type C B, aliases) peel away; composite shapes spell their type
 // expression with generic binds substituted.
 func (v *VM) underlyingShape(td *runtime.TypeDef) string {
-	u := v.peelNamed(td)
-	if u == nil {
-		return ""
-	}
-	if s := runtime.TypUnderlyingSpelling(u); s != "" {
-		return s
-	}
-	// a typedef synthesized at a boundary (`&x` yields
-	// {Kind: KindPointer, Elem: pointee}) carries its shape as Kind+Elem
-	// with no Anon/Spec/Name to spell — rebuild it from those.
-	return v.synthShape(u)
-}
-
-// synthShape spells a typedef that has no AST or name: only Kind and the
-// resolved Elem chain. Element positions keep the declared identity, the
-// same way TypSpelling renders a bound type argument (`*N`, not `*int`).
-func (v *VM) synthShape(td *runtime.TypeDef) string {
-	if td == nil {
-		return ""
-	}
-	if td.Name != "" {
-		if td.Pkg != nil {
-			if strings.HasPrefix(td.Name, td.Pkg.Path+".") {
-				return td.Name
-			}
-			return td.Pkg.Path + "." + td.Name
-		}
-		return runtime.CanonicalBasicName(td.Name)
-	}
-	// an anonymous element still spells its own AST — *struct{a int}
-	// and *struct{b string} must not collapse to the same "*".
-	src := td.TypeExpr()
-	if src != nil {
-		return runtime.TypSpelling(src, td)
-	}
-	var elem string
-	if td.Elem != nil {
-		elem = v.synthShape(td.Elem)
-	}
-	switch td.Kind {
-	case runtime.KindPointer:
-		return "*" + elem
-	case runtime.KindSlice:
-		return "[]" + elem
-	case runtime.KindChan:
-		return "chan " + elem
-	}
-	return ""
+	return runtime.NewShapeEq(sigResolver{v}).UnderlyingShape(td)
 }
 
 // elemFamily classifies a slice element typedef for the special string
