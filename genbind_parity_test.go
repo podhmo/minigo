@@ -169,23 +169,30 @@ func TestGeneratedBindCallParity(t *testing.T) {
 	calls := []struct {
 		path, name string
 		args       []any
+		wantErr    bool // the call is expected to fail on BOTH engines
 	}{
-		{"encoding/hex", "EncodeToString", []any{[]byte{0xde, 0xad}}},
-		{"encoding/hex", "DecodeString", []any{"dead"}},
-		{"html", "EscapeString", []any{"<a>"}},
-		{"path", "Join", []any{"a", "b"}},
-		{"strconv", "Itoa", []any{int64(-42)}},
-		{"strconv", "Quote", []any{"a\nb"}},
-		{"unicode/utf8", "RuneCountInString", []any{"héllo"}},
-		{"unicode/utf8", "ValidString", []any{"ok"}},
-		{"path/filepath", "Base", []any{"a/b/c"}},
-		{"unicode", "IsDigit", []any{int64('5')}},
-		{"unicode", "ToUpper", []any{int64('a')}},
-		{"bytes", "Contains", []any{[]byte("haystack"), []byte("stack")}},
-		// netip and bytes.Join are absent: netip's source init runs
-		// unique.Make through unsafe.Pointer, and the source-interpreted
-		// bytes.Join rejects an []any argument as [][]byte — both are
-		// exercised bound-side in TestGeneratedBindExtras instead.
+		{"encoding/hex", "EncodeToString", []any{[]byte{0xde, 0xad}}, false},
+		{"encoding/hex", "DecodeString", []any{"dead"}, false},
+		{"html", "EscapeString", []any{"<a>"}, false},
+		{"path", "Join", []any{"a", "b"}, false},
+		{"strconv", "Itoa", []any{int64(-42)}, false},
+		{"strconv", "Quote", []any{"a\nb"}, false},
+		{"unicode/utf8", "RuneCountInString", []any{"héllo"}, false},
+		{"unicode/utf8", "ValidString", []any{"ok"}, false},
+		{"path/filepath", "Base", []any{"a/b/c"}, false},
+		{"unicode", "IsDigit", []any{int64('5')}, false},
+		{"unicode", "ToUpper", []any{int64('a')}, false},
+		{"bytes", "Contains", []any{[]byte("haystack"), []byte("stack")}, false},
+		{"crypto/sha256", "Sum256", []any{[]byte("x")}, false},
+		// expected-error entries: both engines must reject — an
+		// error on either side of a success case fails instead.
+		{"encoding/base64", "NewEncoding", []any{"++"}, true},
+		{"context", "WithValue", []any{nil, "k", int64(1)}, true},
+		// netip is absent: its source init runs unique.Make through
+		// unsafe.Pointer and traps — tracked in TODO.md. context's
+		// own values are opaque handles whose bound/source shapes
+		// differ by construction, and base64.NewEncoding's *Encoding
+		// renders differently — so only their error paths compare.
 	}
 	for _, c := range calls {
 		be := NewEngine(".")
@@ -205,7 +212,11 @@ func TestGeneratedBindCallParity(t *testing.T) {
 			continue
 		}
 		if berr != nil {
-			t.Logf("%s.%s: both engines erred (%v)", c.path, c.name, berr)
+			if !c.wantErr {
+				t.Errorf("%s.%s: expected success, both engines erred (%v)", c.path, c.name, berr)
+			} else {
+				t.Logf("%s.%s: both engines erred (%v)", c.path, c.name, berr)
+			}
 			continue
 		}
 		if diff := cmp.Diff(norm(sg), norm(bg)); diff != "" {
