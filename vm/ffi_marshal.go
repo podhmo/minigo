@@ -783,7 +783,11 @@ func toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtime.VMCaller, d
 		} else if t.Kind() == reflect.Struct {
 			hst = t
 		}
-		if hst == nil || !runtime.HostNamedIs(hst, x.Def) || (namedTyp != nil && namedTyp != x.Def) {
+		hostNamedIs := runtime.HostNamedIs
+		if tw, ok := vc.(runtime.HostNamedTwinner); ok {
+			hostNamedIs = tw.HostNamedTwin
+		}
+		if hst == nil || !hostNamedIs(hst, x.Def) || (namedTyp != nil && namedTyp != x.Def) {
 			av = reflect.ValueOf(x)
 			break
 		}

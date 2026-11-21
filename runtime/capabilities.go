@@ -1,6 +1,9 @@
 package runtime
 
-import "go/ast"
+import (
+	"go/ast"
+	"reflect"
+)
 
 // Capability interfaces (P2-1): the optional powers a caller may have
 // beyond VMCaller. *vm.VM implements all of them; thinner callers —
@@ -26,6 +29,13 @@ type HostClearer interface {
 // distinguish.
 type HostNilTwiner interface {
 	HostNilTwin(a, b *TypeDef) bool
+}
+
+// HostNamedTwinner reports whether td is the typedef the host type rt
+// resolves to — the interned-descriptor answer an engine with a type
+// intern table gives where [HostNamedIs] only compares name and path.
+type HostNamedTwinner interface {
+	HostNamedTwin(rt reflect.Type, td *TypeDef) bool
 }
 
 // ConstMaterializer converts an untyped constant to a value of type td,

@@ -521,7 +521,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			if et.HostNew != nil {
 				return reflect.TypeOf(gv.V) == et.HostType()
 			}
-			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && runtime.HostNamedIs(rt.Elem(), et) {
+			if rt := reflect.TypeOf(gv.V); rt.Kind() == reflect.Pointer && v.hostTypedefIs(rt.Elem(), et) {
 				return true
 			}
 			return reflect.TypeOf(gv.V).String() == tdName(td)
@@ -605,7 +605,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 				return rt.String() == runtime.TypGoSpelling(ft, td)
 			}
 		}
-		if runtime.HostTwinOf(rt, td) {
+		if v.hostTypedefIs(rt, td) {
 			return true
 		}
 		return rt.String() == tdName(td)
@@ -1230,6 +1230,71 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 // interning cannot resolve — a host-minted tag carrying only a name
 // (Spec == nil), or two source-anonymous descriptors whose spellings
 // agree in different resolution contexts.
+// hostTypedefIs reports whether td denotes the host type rt: a bare
+// HostIdent stamp canonicalizes to rt's bound or source twin, so
+// interned descriptors agree exactly when td is that twin —
+// [runtime.HostTwinOf] remains the fallback for typedefs the intern
+// table cannot key.
+func (v *VM) hostTypedefIs(rt reflect.Type, td *runtime.TypeDef) bool {
+	if rt == nil || td == nil {
+		return false
+	}
+	// resolve rt's twin through the hook, never a minted stamp: a bare
+	// HostIdent stamp interned here would land a hollow descriptor in
+	// the table before the real typedef resolves — the table answers
+	// whichever descriptor registered first. An unnamed pointer rt is
+	// the exception: canonicalization resolves its named element's real
+	// typedef and mints an anon *T, so no hollow key is stored — this
+	// covers `x.(**T)` where rt.Elem() has no name for the hook.
+	if v.H.HostTwin != nil {
+		if twin := v.H.HostTwin(rt); twin != nil && v.sameTypedef(twin, td) {
+			return true
+		}
+	}
+	if rt.Kind() == reflect.Pointer && rt.Name() == "" {
+		// `x.(**T)` hands an unnamed *T: resolve the element's twin
+		// and mint the *T typedef directly — interning a HostIdent
+		// stamp could park a hollow descriptor in the table, and a
+		// NAMED pointer type (`type P *T`) is not *T.
+		if ert := rt.Elem(); ert.Name() != "" && ert.PkgPath() != "" {
+			var want *runtime.TypeDef
+			if v.H.HostTwin != nil {
+				if et := v.H.HostTwin(ert); et != nil {
+					want = runtime.AnonPtrTypedefOf(et)
+				}
+			}
+			if want == nil {
+				// the element's package is not loaded — no twin, no
+				// descriptor to stamp. Compare by import-path spelling
+				// only: sameTypedef would intern the minted td and park
+				// it under the spelled key the real *T resolves to,
+				// leaving a hollow descriptor behind.
+				want := &runtime.TypeDef{
+					Kind: runtime.KindPointer,
+					Anon: &ast.StarExpr{X: &ast.SelectorExpr{
+						X:   ast.NewIdent(ert.PkgPath()),
+						Sel: ast.NewIdent(ert.Name()),
+					}},
+				}
+				if td.Anon != nil {
+					if gs := runtime.TypGoSpelling(td.Anon, td); gs != "" && gs == runtime.TypSpelling(want.Anon, want) {
+						return true
+					}
+				}
+			} else if v.sameTypedef(want, td) {
+				return true
+			}
+		}
+	}
+	return runtime.HostTwinOf(rt, td)
+}
+
+// HostNamedTwin is [VM.hostTypedefIs] for intrinsics holding only a
+// [runtime.VMCaller] (see [runtime.HostNamedTwinner]).
+func (v *VM) HostNamedTwin(rt reflect.Type, td *runtime.TypeDef) bool {
+	return v.hostTypedefIs(rt, td)
+}
+
 func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 	if a == nil || b == nil {
 		return a == b
