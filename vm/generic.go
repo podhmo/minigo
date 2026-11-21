@@ -23,7 +23,6 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -416,7 +415,7 @@ func bindArgs(binds map[string]runtime.Value, names []string, args []runtime.Val
 // specializeType clones a generic typedef with its methods re-bound to the
 // concrete type arguments. A function-local generic instantiating inside
 // a generic function captures the enclosing type arguments too — they are
-// part of the closure type's identity and render in reflect.Type.String
+// part of the closure type's identity and render in hostbridge.Type.String
 // as `pkg.T[outerArgs;ownArgs]`.
 func (v *VM) specializeType(f *frame, g *runtime.TypeDef, targs []runtime.Value) *runtime.TypeDef {
 	binds := map[string]runtime.Value{}
@@ -857,7 +856,7 @@ func (v *VM) argTypedef(x runtime.Value) *runtime.TypeDef {
 		// binds T=*strings.Reader at this call site, and the typedef
 		// only has to pin T (spell through DisplayName, satisfy the
 		// constraint check), not type-check members.
-		return v.hostTypedefOf(reflect.TypeOf(xv.V))
+		return v.hostTypedefOf(hostbridge.TypeOf(xv.V))
 	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
 		return v.funcTypedefOf(x)
 	}
@@ -891,11 +890,11 @@ func (v *VM) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 // and the constraint check passes. Composites wrap the element so a
 // `*T`/`[]T` host value binds the same-shaped T. The result is the
 // session's canonical descriptor (M4-3c).
-func (v *VM) hostTypedefOf(rt reflect.Type) *runtime.TypeDef {
+func (v *VM) hostTypedefOf(rt hostbridge.Type) *runtime.TypeDef {
 	return v.internTypedef(v.hostTypedefOfNew(rt))
 }
 
-func (v *VM) hostTypedefOfNew(rt reflect.Type) *runtime.TypeDef {
+func (v *VM) hostTypedefOfNew(rt hostbridge.Type) *runtime.TypeDef {
 	if rt == nil {
 		return nil
 	}
@@ -909,30 +908,30 @@ func (v *VM) hostTypedefOfNew(rt reflect.Type) *runtime.TypeDef {
 		}
 		td := &runtime.TypeDef{Name: rt.String(), Kind: hostbridge.HostNamedKind(rt)}
 		switch rt.Kind() {
-		case reflect.Func:
+		case hostbridge.KindFunc:
 			// carry the declared signature, like the unnamed walk —
 			// generic inference reads the FuncType to bind tparams.
 			if ft := v.reflectFuncTypedef(rt); ft != nil {
 				td.Anon = ft.Anon
 			}
-		case reflect.Slice, reflect.Array, reflect.Chan, reflect.Map, reflect.Pointer:
+		case hostbridge.KindSlice, hostbridge.KindArray, hostbridge.KindChan, hostbridge.KindMap, hostbridge.KindPointer:
 			td.Elem = v.hostTypedefOf(rt.Elem())
 		}
 		// a HostNew box like the bound typedefs' — reflect.New hands
 		// the pointer-shaped host value the method-set walk reads.
-		td.HostNew = func() any { return reflect.New(rt).Interface() }
+		td.HostNew = func() any { return hostbridge.NewRV(rt).Interface() }
 		return td
 	}
 	switch rt.Kind() {
-	case reflect.Pointer:
+	case hostbridge.KindPointer:
 		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.hostTypedefOf(rt.Elem())}
-	case reflect.Slice, reflect.Array:
+	case hostbridge.KindSlice, hostbridge.KindArray:
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Elem: v.hostTypedefOf(rt.Elem())}
-	case reflect.Map:
+	case hostbridge.KindMap:
 		return &runtime.TypeDef{Kind: runtime.KindMap, Elem: v.hostTypedefOf(rt.Elem())}
-	case reflect.Chan:
+	case hostbridge.KindChan:
 		return &runtime.TypeDef{Kind: runtime.KindChan, Elem: v.hostTypedefOf(rt.Elem())}
-	case reflect.Func:
+	case hostbridge.KindFunc:
 		// the same signature walk host builtins use — an unnamed
 		// func argument still teaches inference its declared shape.
 		if td := v.reflectFuncTypedef(rt); td != nil {
@@ -956,7 +955,7 @@ func (v *VM) funcTypedefOf(x runtime.Value) *runtime.TypeDef {
 		}
 		return &runtime.TypeDef{Kind: runtime.KindFunc}
 	case *runtime.BuiltinFunc:
-		if rt := reflect.TypeOf(xv.Target); rt != nil && rt.Kind() == reflect.Func {
+		if rt := hostbridge.TypeOf(xv.Target); rt != nil && rt.Kind() == hostbridge.KindFunc {
 			if td := v.reflectFuncTypedef(rt); td != nil {
 				return td
 			}
@@ -972,7 +971,7 @@ func (v *VM) funcTypedefOf(x runtime.Value) *runtime.TypeDef {
 // `mapper[F, T]([]F, func(F) T)`. Any component type the translator
 // cannot render conservatively aborts the whole signature (unifying on a
 // partial shape would bind tparams wrongly).
-func (v *VM) reflectFuncTypedef(rt reflect.Type) *runtime.TypeDef {
+func (v *VM) reflectFuncTypedef(rt hostbridge.Type) *runtime.TypeDef {
 	params := &ast.FieldList{}
 	for i := 0; i < rt.NumIn(); i++ {
 		e := reflectTypeExpr(rt.In(i))
@@ -1000,71 +999,71 @@ func (v *VM) reflectFuncTypedef(rt reflect.Type) *runtime.TypeDef {
 // array, map and chan shapes, empty interface and error. Named or
 // structural types return nil: spelling them from reflect would fabricate
 // a name the caller's file never declared.
-func reflectTypeExpr(rt reflect.Type) ast.Expr {
+func reflectTypeExpr(rt hostbridge.Type) ast.Expr {
 	switch rt.Kind() {
-	case reflect.Bool:
+	case hostbridge.KindBool:
 		return &ast.Ident{Name: "bool"}
-	case reflect.Int:
+	case hostbridge.KindInt:
 		return &ast.Ident{Name: "int"}
-	case reflect.Int8:
+	case hostbridge.KindInt8:
 		return &ast.Ident{Name: "int8"}
-	case reflect.Int16:
+	case hostbridge.KindInt16:
 		return &ast.Ident{Name: "int16"}
-	case reflect.Int32:
+	case hostbridge.KindInt32:
 		return &ast.Ident{Name: "int32"}
-	case reflect.Int64:
+	case hostbridge.KindInt64:
 		return &ast.Ident{Name: "int64"}
-	case reflect.Uint:
+	case hostbridge.KindUint:
 		return &ast.Ident{Name: "uint"}
-	case reflect.Uint8:
+	case hostbridge.KindUint8:
 		return &ast.Ident{Name: "uint8"}
-	case reflect.Uint16:
+	case hostbridge.KindUint16:
 		return &ast.Ident{Name: "uint16"}
-	case reflect.Uint32:
+	case hostbridge.KindUint32:
 		return &ast.Ident{Name: "uint32"}
-	case reflect.Uint64:
+	case hostbridge.KindUint64:
 		return &ast.Ident{Name: "uint64"}
-	case reflect.Uintptr:
+	case hostbridge.KindUintptr:
 		return &ast.Ident{Name: "uintptr"}
-	case reflect.Float32:
+	case hostbridge.KindFloat32:
 		return &ast.Ident{Name: "float32"}
-	case reflect.Float64:
+	case hostbridge.KindFloat64:
 		return &ast.Ident{Name: "float64"}
-	case reflect.Complex64:
+	case hostbridge.KindComplex64:
 		return &ast.Ident{Name: "complex64"}
-	case reflect.Complex128:
+	case hostbridge.KindComplex128:
 		return &ast.Ident{Name: "complex128"}
-	case reflect.String:
+	case hostbridge.KindString:
 		return &ast.Ident{Name: "string"}
-	case reflect.Pointer:
+	case hostbridge.KindPointer:
 		if e := reflectTypeExpr(rt.Elem()); e != nil {
 			return &ast.StarExpr{X: e}
 		}
-	case reflect.Slice:
+	case hostbridge.KindSlice:
 		if e := reflectTypeExpr(rt.Elem()); e != nil {
 			return &ast.ArrayType{Elt: e}
 		}
-	case reflect.Array:
+	case hostbridge.KindArray:
 		if e := reflectTypeExpr(rt.Elem()); e != nil {
 			return &ast.ArrayType{Len: &ast.BasicLit{Kind: token.INT, Value: strconv.Itoa(rt.Len())}, Elt: e}
 		}
-	case reflect.Map:
+	case hostbridge.KindMap:
 		k, e := reflectTypeExpr(rt.Key()), reflectTypeExpr(rt.Elem())
 		if k != nil && e != nil {
 			return &ast.MapType{Key: k, Value: e}
 		}
-	case reflect.Chan:
+	case hostbridge.KindChan:
 		if e := reflectTypeExpr(rt.Elem()); e != nil {
 			var dir ast.ChanDir
 			switch rt.ChanDir() {
-			case reflect.RecvDir:
+			case hostbridge.KindRecvDir:
 				dir = ast.RECV
-			case reflect.SendDir:
+			case hostbridge.KindSendDir:
 				dir = ast.SEND
 			}
 			return &ast.ChanType{Dir: dir, Value: e}
 		}
-	case reflect.Interface:
+	case hostbridge.KindInterface:
 		if rt.Name() == "error" {
 			return &ast.Ident{Name: "error"}
 		}

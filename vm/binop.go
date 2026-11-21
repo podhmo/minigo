@@ -22,7 +22,6 @@ import (
 	"go/constant"
 	"go/token"
 	"math"
-	"reflect"
 	"time"
 
 	"github.com/podhmo/minigo/bytecode"
@@ -226,7 +225,7 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
 		return v.eqlValue(a, b)
 	}
-	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+	if hostbridge.TypeOf(a) != hostbridge.TypeOf(b) {
 		return false
 	}
 	return v.eqlValue(a, b)
@@ -608,21 +607,21 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	// re-boxes so formatting keeps the unsigned domain.
 	var ubox bool
 	// numTag remembers the named host int an operand was unwrapped from
-	// (reflect.Kind and friends) so an arithmetic result can be re-boxed
-	// into the same type — `reflect.Int + 1` stays a reflect.Kind.
-	var numTag reflect.Type
-	var strTag reflect.Type
+	// (hostbridge.Kind and friends) so an arithmetic result can be re-boxed
+	// into the same type — `hostbridge.KindInt + 1` stays a hostbridge.Kind.
+	var numTag hostbridge.Type
+	var strTag hostbridge.Type
 	var strBoxed bool
 	if g, ok := a.(*runtime.GoValue); ok {
 		if u, isU := g.V.(uint64); isU {
 			a = int64(u)
 			ubox = true
 		} else if iv, ok := runtime.SmallIntOf(g.V); ok {
-			// a GoValue carrying an ordered numeric (reflect.Kind and
+			// a GoValue carrying an ordered numeric (hostbridge.Kind and
 			// other named host ints) unwraps for arithmetic and
 			// comparisons like an ordinary named int.
 			a = iv
-			numTag = reflect.TypeOf(g.V)
+			numTag = hostbridge.TypeOf(g.V)
 		}
 	}
 	if g, ok := b.(*runtime.GoValue); ok {
@@ -631,9 +630,9 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 			ubox = true
 		} else if iv, ok := runtime.SmallIntOf(g.V); ok {
 			b = iv
-			if bt := reflect.TypeOf(g.V); numTag != nil && bt != numTag {
+			if bt := hostbridge.TypeOf(g.V); numTag != nil && bt != numTag {
 				// Go rejects arithmetic on differently-named ints
-				// (reflect.Kind + time.Weekday) at compile time.
+				// (hostbridge.Kind + time.Weekday) at compile time.
 				f.trap("invalid operation: mismatched types %s and %s", numTag, bt)
 			} else {
 				numTag = bt
@@ -662,7 +661,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	if s, ok := a.(string); ok {
 		res := stringBinOp(f, op, s, b)
 		if rs, isStr := res.(string); isStr && strBoxed {
-			return &runtime.GoValue{V: reflect.ValueOf(rs).Convert(strTag).Interface()}
+			return &runtime.GoValue{V: hostbridge.RVOf(rs).Convert(strTag).Interface()}
 		}
 		return res
 	}
@@ -690,10 +689,10 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 				return time.Duration(iv)
 			case numTag != nil:
 				// re-box into the unwrapped operand's named host type —
-				// `reflect.Int + 1` is a reflect.Kind, not an int.
-				rv := reflect.New(numTag).Elem()
+				// `hostbridge.KindInt + 1` is a hostbridge.Kind, not an int.
+				rv := hostbridge.NewRV(numTag).Elem()
 				switch numTag.Kind() {
-				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				case hostbridge.KindInt, hostbridge.KindInt8, hostbridge.KindInt16, hostbridge.KindInt32, hostbridge.KindInt64:
 					rv.SetInt(iv)
 				default:
 					rv.SetUint(uint64(iv))
@@ -1221,7 +1220,7 @@ func (v *VM) unaryOp(f *frame, op bytecode.UnOp, a runtime.Value) runtime.Value 
 // host-boxed strings keep comparing by contents (hostStringOperand).
 // hostNamedEql decides a == b when either side is a boxed host named
 // basic (io/fs's FileMode from the host os, a go/token Token off
-// inspect.AST, reflect.Kind): Go compares (type, value), so it equals a
+// inspect.AST, hostbridge.Kind): Go compares (type, value), so it equals a
 // box of the same host type holding the same value, or a value tagged
 // with its source twin or bound typedef ([runtime.HostTwinOf]) holding
 // the same payload — never a look-alike of another type. ok is false
@@ -1242,7 +1241,7 @@ func (v *VM) hostNamedEql(a, b runtime.Value) (eq, ok bool) {
 
 // twinPayloadEql reports whether x is a value of the host type rt whose
 // payload is p: a Named of rt's twin typedef, or a raw host scalar of rt.
-func (v *VM) twinPayloadEql(p runtime.Value, rt reflect.Type, x runtime.Value) bool {
+func (v *VM) twinPayloadEql(p runtime.Value, rt hostbridge.Type, x runtime.Value) bool {
 	n, ok := x.(*runtime.Named)
 	if !ok {
 		// an untagged script scalar is another type; a raw host
@@ -1529,7 +1528,7 @@ func (v *VM) eqlValue(a, b runtime.Value) bool {
 			if av.V == nil || bg.V == nil {
 				return av.V == bg.V
 			}
-			t := reflect.TypeOf(av.V)
+			t := hostbridge.TypeOf(av.V)
 			if !t.Comparable() {
 				panic(runtime.ComparingUncomparablePanic(t.String()))
 			}

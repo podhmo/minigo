@@ -308,3 +308,32 @@ func TestBannedSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// BannedImports on the real repo: vm/ must never import reflect — host
+// value work goes through internal/hostbridge (P2-7).
+func TestBannedImportsRealRepo(t *testing.T) {
+	root := filepath.Join("..", "..")
+	if vs := archcheck.CheckBannedImports(root, archcheck.BannedImports); len(vs) > 0 {
+		for _, v := range vs {
+			t.Error(v.Message)
+		}
+	}
+}
+
+// Negative: a vm file importing reflect is a violation.
+func TestCheckBannedImportsViolation(t *testing.T) {
+	dir := gentest.WriteFiles(t, map[string]string{
+		"go.mod":   "module example.com/m\n\ngo 1.26\n",
+		"vm/v.go":  "package vm\nimport \"reflect\"\nvar _ = reflect.ValueOf\n",
+		"vm/ok.go": "package vm\nvar _ = 0\n",
+	})
+	vs := archcheck.CheckBannedImports(dir, map[string][]string{"vm": {"reflect"}})
+	var msgs []string
+	for _, v := range vs {
+		msgs = append(msgs, v.Message)
+	}
+	want := []string{"vm/v.go imports reflect, which is banned here (host-value work goes through internal/hostbridge)"}
+	if diff := cmp.Diff(want, msgs); diff != "" {
+		t.Error(diff)
+	}
+}

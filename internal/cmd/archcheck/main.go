@@ -74,6 +74,9 @@ func main() {
 	}
 	violations = append(violations, archcheck.CheckSizes(sizes, archcheck.FileBudgets)...)
 
+	// P2-7: banned imports (reflect outside internal/hostbridge).
+	violations = append(violations, archcheck.CheckBannedImports(*root, archcheck.BannedImports)...)
+
 	if len(violations) > 0 {
 		for _, v := range violations {
 			fmt.Fprintln(os.Stderr, "archcheck:", v.Message)

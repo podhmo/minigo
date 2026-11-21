@@ -53,6 +53,14 @@ var BannedCalls = map[string][]string{
 	"compile": {"Materialize", "EnsureReady", "EnsureReadyRun"},
 }
 
+// BannedImports lists import paths a package directory must never
+// import — the P2-7 ratchet that all reflect-driven host-value work
+// lives behind internal/hostbridge so vm/ stays reflect-free. Keyed by
+// package dir under the module root.
+var BannedImports = map[string][]string{
+	"vm": {"reflect"},
+}
+
 // SharedStateTypes are the execution-state types that must never appear
 // in shared assets or their cache entries (M1-3): script cells,
 // functions, type definitions and import refs are per-session runtime

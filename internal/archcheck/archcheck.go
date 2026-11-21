@@ -533,3 +533,36 @@ func exists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
 }
+
+// CheckBannedImports returns one violation per file in a banned-ruled
+// package that imports a banned path.
+func CheckBannedImports(root string, banned map[string][]string) []Violation {
+	var out []Violation
+	for dir, paths := range banned {
+		banned := map[string]bool{}
+		for _, p := range paths {
+			banned[p] = true
+		}
+		ents, err := os.ReadDir(filepath.Join(root, dir))
+		if err != nil {
+			continue
+		}
+		for _, ent := range ents {
+			name := ent.Name()
+			if ent.IsDir() || !strings.HasSuffix(name, ".go") {
+				continue
+			}
+			f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, dir, name), nil, parser.ImportsOnly)
+			if err != nil {
+				continue
+			}
+			for _, spec := range f.Imports {
+				p, _ := strconv.Unquote(spec.Path.Value)
+				if banned[p] {
+					out = append(out, Violation{dir, p, fmt.Sprintf("%s imports %s, which is banned here (host-value work goes through internal/hostbridge)", dir+"/"+name, p)})
+				}
+			}
+		}
+	}
+	return out
+}
