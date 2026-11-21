@@ -2411,11 +2411,19 @@ func litKeysRefer(cl *Node) bool {
 // litType is a type expression together with the scope its names
 // resolve in: the literal's func body at pos (local), or the package
 // scope of a package-level spec, whose own type parameters are tparams.
+// subst maps a resolved generic spec's parameter names to the
+// argument's own litType — the argument expression plus the scope it
+// was spelled in (the literal's local scope at the call site, the
+// package scope inside a spec); foreign marks a type expr read from an
+// imported package's index, whose inner names this file's scopes
+// cannot resolve.
 type litType struct {
 	t       ast.Expr
 	local   bool
 	pos     token.Pos
 	tparams map[string]bool
+	subst   map[string]litType
+	foreign bool
 }
 
 // litTypeOf returns the type of the composite literal at n. An elided
@@ -2468,6 +2476,15 @@ func (n *Node) litTypeOf() (litType, bool) {
 	default:
 		return litType{}, false
 	}
+	if id, ok := ast.Unparen(u.t).(*ast.Ident); ok {
+		if sub, ok := u.subst[id.Name]; ok {
+			// an element or key typed by a generic spec's parameter:
+			// substitute the argument — it carries the scope it was
+			// spelled in, so a call-site arg resolves locally and a
+			// spec-level arg stays at package scope.
+			u = sub
+		}
+	}
 	if st, ok := ast.Unparen(u.t).(*ast.StarExpr); ok {
 		u.t = st.X
 	}
@@ -2484,21 +2501,49 @@ func (n *Node) litTypeOf() (litType, bool) {
 func (n *Node) litUnderlying(lt litType) (litType, bool) {
 	for fuel := 8; fuel > 0; fuel-- {
 		t := ast.Unparen(lt.t)
+		var args []ast.Expr
 		switch x := t.(type) {
 		case *ast.IndexExpr:
 			t = ast.Unparen(x.X)
+			args = []ast.Expr{x.Index}
 		case *ast.IndexListExpr:
 			t = ast.Unparen(x.X)
+			args = x.Indices
 		}
 		var id *ast.Ident
 		switch x := t.(type) {
 		case *ast.Ident:
 			id = x
 		case *ast.SelectorExpr:
+			if lt.foreign {
+				// a foreign spec's inner selector names a package in
+				// ITS file's imports, not this file's — under-resolve.
+				return litType{}, false
+			}
+			// an imported named type: read its spec only off an
+			// already-materialized package's index — never trigger a
+			// load here. Its inner names resolve in that package's
+			// scope, not this file's (foreign).
+			if pid, ok := ast.Unparen(x.X).(*ast.Ident); ok {
+				if lt.local && n.locals[pid.Name] {
+					// a local binding named like the import makes
+					// `imp.Sel` a field or method select — under-resolve.
+					return litType{}, false
+				}
+				if ts := n.foreignTypeSpec(pid.Name, x.Sel.Name); ts != nil {
+					lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams), subst: litSubst(ts.TypeParams, args, lt), foreign: true}
+					continue
+				}
+			}
 			return litType{}, false
 		default:
 			lt.t = t
 			return lt, true
+		}
+		if lt.foreign {
+			// a foreign spec's inner name would resolve against this
+			// file's scopes — under-resolve instead.
+			return litType{}, false
 		}
 		if lt.tparams[id.Name] {
 			return litType{}, false
@@ -2521,9 +2566,78 @@ func (n *Node) litUnderlying(lt litType) (litType, bool) {
 			lt.t = id
 			return lt, true
 		}
-		lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams)}
+		lt = litType{t: ts.Type, tparams: typeParamNames(ts.TypeParams), subst: litSubst(ts.TypeParams, args, lt)}
 	}
 	return litType{}, false
+}
+
+// litSubst maps a generic spec's parameter names to the instantiation's
+// argument expressions, or nil when the spelling is not a matching
+// instantiation. Each entry keeps the scope the argument was spelled
+// in — the enclosing litType's — and an argument spelled with an outer
+// parameter (Outer[K] = Inner[K]) resolves through the enclosing
+// substitution, so chained generics keep the call site's answer.
+func litSubst(pl *ast.FieldList, args []ast.Expr, prev litType) map[string]litType {
+	if pl == nil {
+		return nil
+	}
+	n := 0
+	for _, f := range pl.List {
+		n += len(f.Names)
+	}
+	if len(args) != n {
+		return nil
+	}
+	m := make(map[string]litType, n)
+	for _, f := range pl.List {
+		for _, nm := range f.Names {
+			a := args[0]
+			lt := litType{t: a, local: prev.local, pos: prev.pos, tparams: prev.tparams}
+			if id, ok := ast.Unparen(a).(*ast.Ident); ok {
+				if sub, ok := prev.subst[id.Name]; ok {
+					lt = sub
+				}
+			}
+			m[nm.Name] = lt
+			args = args[1:]
+		}
+	}
+	return m
+}
+
+// foreignTypeSpec reads the `type sel` spec out of the package imported
+// under impName — only when that package is already materialized, so
+// inspect never loads a package just to classify a literal. nil when
+// the import is missing, unloaded, or the name has no source decl.
+func (n *Node) foreignTypeSpec(impName, sel string) *ast.TypeSpec {
+	if n.pkg == nil || n.file == nil {
+		return nil
+	}
+	refs := n.pkg.Imports[n.file]
+	for i, imp := range n.file.Imports {
+		if i >= len(refs) {
+			break
+		}
+		name := imp.LocalName()
+		if imp.Alias == "" {
+			name = refs[i].PackageName()
+		}
+		if name != impName {
+			continue
+		}
+
+		pk, ok := refs[i].Peek()
+		if !ok || pk.Index == nil {
+			return nil
+		}
+		td, ok := pk.Index.Types[sel]
+		if !ok || td.Decl == nil {
+			return nil
+		}
+		ts, _ := td.Decl.Spec.(*ast.TypeSpec)
+		return ts
+	}
+	return nil
 }
 
 // localTypeSpec finds the `type name` decl in scope at pos, walking the

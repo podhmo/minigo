@@ -709,17 +709,31 @@ func TestLitKeySymbolIDs(t *testing.T) {
 		t.Fatal(err)
 	}
 	pkg := p.Path
+	// resolve the materialized-import case: load net/url's index only,
+	// so url.Values classifies while http.Header stays unresolved.
+	for _, refs := range p.Imports {
+		for _, ref := range refs {
+			if ref.Path == "net/url" {
+				if _, err := ref.Materialize(); err != nil {
+					t.Fatalf("materialize net/url: %v", err)
+				}
+			}
+		}
+	}
 	want := map[string][]string{
 		"GenericMap":        {"KeyA=" + pkg + ".KeyA"},
 		"ElidedInner":       {"KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA", "KeyB=" + pkg + ".KeyB", "KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA", "Idx=" + pkg + ".Idx"},
 		"LocalNamed":        {"KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA"},
 		"Aliases":           {"KeyA=" + pkg + ".KeyA", "KeyA=" + pkg + ".KeyA"},
-		"Imported":          {"KeyA=nil"},
-		"GenericElem":       {"KeyA=" + pkg + ".KeyA", "KeyB=nil"},
+		"Imported":          {"KeyA=" + pkg + ".KeyA"},
+		"ImportedCold":      {"KeyA=nil"},
+		"GenericElem":       {"KeyA=" + pkg + ".KeyA", "KeyB=" + pkg + ".KeyB"},
 		"Structs":           {"KeyA=nil", "KeyA=nil", "KeyA=nil", "KeyB=" + pkg + ".KeyB", "KeyA=nil", "KeyA=nil", "KeyA=nil", "KeyA=nil"},
 		"LocalShadow":       {"KeyA=nil"},
 		"SiblingScopes":     {"KeyA=" + pkg + ".KeyA", "KeyA=nil"},
 		"LocalElidedStruct": {"KeyA=nil"},
+		"SpecArgShadow":     {"K=" + pkg + ".K", "KeyA=nil"},
+		"AliasLocalShadow":  {"KeyA=" + pkg + ".KeyA"},
 	}
 	got := map[string][]string{}
 	for name := range want {

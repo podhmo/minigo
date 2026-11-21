@@ -5,7 +5,10 @@
 // the KeyA const instead of reporting no SymbolID.
 package litkeys
 
-import "net/url"
+import (
+	"net/http"
+	"net/url"
+)
 
 const (
 	KeyA = "a"
@@ -65,14 +68,22 @@ func Aliases() int {
 	return len(a) + len(b)
 }
 
-// Imported: an imported type stays unresolved — under-resolution.
+// Imported: an imported type resolves when the imported package is
+// already materialized — the test materializes net/url first.
 func Imported() int {
 	v := url.Values{KeyA: nil}
 	return len(v)
 }
 
-// GenericElem: an element whose type is a type parameter of the generic
-// decl stays unresolved — under-resolution.
+// ImportedCold: an imported type whose package is not materialized
+// stays unresolved — inspect never loads a package for this.
+func ImportedCold() int {
+	h := http.Header{KeyA: nil}
+	return len(h)
+}
+
+// GenericElem: an element whose type is a type parameter resolves
+// through the instantiation's argument at the call site.
 func GenericElem() int {
 	m := Pair[string, map[string]int]{KeyA: {KeyB: 1}}
 	return len(m)
@@ -118,3 +129,25 @@ func LocalElidedStruct() int {
 	type LS []struct{ KeyA int }
 	return len(LS{{KeyA: 1}})
 }
+
+type StB struct{ KeyA int }
+
+// SpecArgShadow: the alias's type argument is spelled inside the
+// package-level spec — a same-named local type in this func must not
+// reach into the spec's resolution (the func precedes the spec so the
+// local's position would shadow a scope-oblivious lookup).
+func SpecArgShadow() {
+	type StB map[string]int
+	_ = SpecArgAlias{K: {KeyA: 1}}
+}
+
+type SpecArgAlias = Pair[string, StB]
+
+// AliasLocalShadow: the alias resolves url.Values at package scope;
+// this func's local `url` type must not refuse the foreign lookup.
+func AliasLocalShadow() {
+	type url map[string]int
+	_ = AliasURL{KeyA: nil}
+}
+
+type AliasURL = url.Values
