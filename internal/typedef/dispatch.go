@@ -192,6 +192,14 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 		if !ok {
 			break
 		}
+		// `&x` is a *T where T is x's declared type: `&i` on an
+		// interface var is a *interface{} and `&p` on a *T slot is a
+		// **T — both carry an empty method set no matter what the
+		// pointee itself would report (gc: a pointer to interface has
+		// no methods, and an assert like `(&w).(io.Writer)` fails).
+		if refOpaque(v, dv) {
+			return &runtime.MethodSet{}, nil
+		}
 		// reached through a pointer: the pointee's method set includes
 		// pointer receivers — `var _ Stringer = &c` sees c's (*C).String.
 		v = dv
@@ -226,6 +234,32 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 	default:
 		return nil, nil
 	}
+}
+
+// refOpaque reports whether the ref `&x` is a pointer whose own method
+// set is empty: the pointee's declared type is an unnamed pointer (`&p`
+// on a *T slot is a **T) or an interface (`&i` is a *interface{}), or —
+// for an unstamped `p := host(...)` slot — the stored value is itself a
+// host pointer box. A Named payload keeps its own declared walk, and a
+// field/index ref only counts when the stored value carries an
+// interface tag.
+func refOpaque(ref, dv runtime.Value) bool {
+	if c, ok := ref.(*runtime.Cell); ok {
+		if td := c.Typ; td != nil {
+			return td.Kind == runtime.KindInterface || td.IfaceBase ||
+				(td.Kind == runtime.KindPointer && td.Spec == nil)
+		}
+		if gv, ok := dv.(*runtime.GoValue); ok {
+			if rv := reflect.ValueOf(hostbridge.GoNative(gv)); rv.IsValid() && rv.Kind() == reflect.Pointer {
+				return true
+			}
+		}
+		return false
+	}
+	if n, ok := dv.(*runtime.Named); ok && n.Typ != nil {
+		return n.Typ.Kind == runtime.KindInterface || n.Typ.IfaceBase
+	}
+	return false
 }
 
 // hostMethodSet reports a host value's reflect method names — the empty
