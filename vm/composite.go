@@ -1141,9 +1141,9 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 			f.trap("index on nil %s", tdName(b.Typ))
 		}
 	case *runtime.Slice:
-		i, ok := indexSmallInt(idx)
+		i, ok := hostbridge.IndexSmallInt(idx)
 		if !ok {
-			if u, isU := uintOperand(idx); isU {
+			if u, isU := hostbridge.UintOperand(idx); isU {
 				panic(runtime.BoundsPanic(u, int(b.Len())))
 			}
 			f.trap("slice index is %T", idx)
@@ -1168,9 +1168,9 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		}
 		return v.elemRead(f, b.Typ, val)
 	case string:
-		i, ok := indexSmallInt(idx)
+		i, ok := hostbridge.IndexSmallInt(idx)
 		if !ok {
-			if u, isU := uintOperand(idx); isU {
+			if u, isU := hostbridge.UintOperand(idx); isU {
 				panic(runtime.BoundsPanic(u, len(b)))
 			}
 			f.trap("string index is %T", idx)
@@ -1183,7 +1183,7 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 		// a boxed host named map or slice (url.Values, http.Header,
 		// net.IP) keeps its box for method dispatch; index the host
 		// value itself.
-		if val, _, ok := v.hostIndex(f, b, rawIdx); ok {
+		if val, _, ok := marshalHost.HostIndex(v.indexHooks(f), b, rawIdx); ok {
 			return val
 		}
 		f.trap("index on %T", base)
@@ -1196,107 +1196,36 @@ func (v *VM) index(f *frame, base, idx runtime.Value) runtime.Value {
 
 // hostIndex reads b[idx] on a boxed host map, slice, array or string. ok
 // is false when b holds none of those; found is the map comma-ok.
-func (v *VM) hostIndex(f *frame, b *runtime.GoValue, idx runtime.Value) (val runtime.Value, found, ok bool) {
-	rv := reflect.ValueOf(b.V)
-	switch rv.Kind() {
-	case reflect.Map:
-		ev := rv.MapIndex(v.hostMapKey(f, rv, idx))
-		if !ev.IsValid() {
-			return hostbridge.GoValueOf(reflect.Zero(rv.Type().Elem())), false, true
-		}
-		return hostbridge.GoValueOf(ev), true, true
-	case reflect.Slice, reflect.Array, reflect.String:
-		return hostbridge.GoValueOf(rv.Index(v.hostIndexInt(f, rv, idx))), true, true
-	}
-	return nil, false, false
-}
-
 // hostIndexInt reads idx as an in-range index into the host slice, array
 // or string rv, panicking like a script slice index when it is out of
 // range (wide unsigned indices included).
-func (v *VM) hostIndexInt(f *frame, rv reflect.Value, idx runtime.Value) int {
-	ix := runtime.Unwrap(v.materialize(f, idx))
-	i, isInt := indexSmallInt(ix)
-	if !isInt {
-		if u, isU := uintOperand(ix); isU {
-			panic(runtime.BoundsPanic(u, rv.Len()))
-		}
-		f.trap("%s index is %T", rv.Type(), idx)
-	}
-	if i < 0 && v.boundUnsigned(idx) {
-		panic(runtime.BoundsPanic(uint64(i), rv.Len()))
-	}
-	if i < 0 || i >= int64(rv.Len()) {
-		panic(runtime.BoundsPanic(i, rv.Len()))
-	}
-	return int(i)
-}
-
 // hostMapKey converts idx to the key type of the host map rv.
-func (v *VM) hostMapKey(f *frame, rv reflect.Value, idx runtime.Value) reflect.Value {
-	kv, err := marshalHost.ToReflect(v.materialize(f, idx), rv.Type().Key(), v)
-	if err != nil {
-		f.trap("index %s with %T: %v", rv.Type(), idx, err)
-	}
-	return kv
-}
-
 // hostSetIndex writes b[idx] = val on a boxed host map or slice
 // (http.Header, url.Values, net.IP), converting val to the element type.
 // ok is false when b holds neither; a host array value is a copy, so
 // writing it is not offered.
-func (v *VM) hostSetIndex(f *frame, b *runtime.GoValue, idx, val runtime.Value) bool {
-	rv := reflect.ValueOf(b.V)
-	var dst reflect.Value
-	var key reflect.Value
-	switch rv.Kind() {
-	case reflect.Map:
-		key = v.hostMapKey(f, rv, idx)
-		if rv.IsNil() {
-			panic(runtime.NilMapAssignPanic())
-		}
-	case reflect.Slice:
-		dst = rv.Index(v.hostIndexInt(f, rv, idx))
-	default:
-		return false
-	}
-	ev, err := marshalHost.ToReflect(v.materialize(f, val), rv.Type().Elem(), v)
-	if err != nil {
-		f.trap("cannot use %T as %s value in assignment: %v", val, rv.Type().Elem(), err)
-	}
-	if rv.Kind() == reflect.Map {
-		rv.SetMapIndex(key, ev)
-	} else {
-		dst.Set(ev)
-	}
-	return true
-}
-
 // hostElemRef returns b[idx] as a box over the host value itself when
 // the element is a slice or map, so a nested write (q["tag"][0] = v,
 // h[k][i] = v) reaches host storage the way Go's shared backing does. ok
 // is false for any other base or element shape.
-func (v *VM) hostElemRef(f *frame, b *runtime.GoValue, idx runtime.Value) (runtime.Value, bool) {
-	rv := reflect.ValueOf(b.V)
-	var ev reflect.Value
-	switch rv.Kind() {
-	case reflect.Map:
-		if k := rv.Type().Elem().Kind(); k != reflect.Slice && k != reflect.Map {
-			return nil, false
-		}
-		ev = rv.MapIndex(v.hostMapKey(f, rv, idx))
-		if !ev.IsValid() {
-			ev = reflect.Zero(rv.Type().Elem()) // missing key: the nil element
-		}
-	case reflect.Slice:
-		if k := rv.Type().Elem().Kind(); k != reflect.Slice && k != reflect.Map {
-			return nil, false
-		}
-		ev = rv.Index(v.hostIndexInt(f, rv, idx))
-	default:
-		return nil, false
+// indexHooks bundles the frame-side operations the hostbridge host
+// index/slice ops need: trap position, constant materialization, and the
+// unsigned-domain bound checks.
+func (v *VM) indexHooks(f *frame) *hostbridge.IndexHooks {
+	return &hostbridge.IndexHooks{
+		VC:   v,
+		Trap: f.trap,
+		Materialize: func(x runtime.Value) runtime.Value {
+			return v.materialize(f, x)
+		},
+		BoundUnsigned: v.boundUnsigned,
+		Bounds: func(lo, hi runtime.Value, n int64) (hostbridge.BoundOperand, hostbridge.BoundOperand) {
+			return v.bounds(f, lo, hi, n)
+		},
+		MaxBound: func(max runtime.Value, capN int64) hostbridge.BoundOperand {
+			return v.maxBound(f, max, capN)
+		},
 	}
-	return &runtime.GoValue{V: ev.Interface()}, true
 }
 
 // hostBoxOf peels the pointers, refs and names off v to the boxed host
@@ -1328,7 +1257,7 @@ func hostBoxOf(v runtime.Value) (*runtime.GoValue, bool) {
 // other base reads as v.index does.
 func (v *VM) indexAlias(f *frame, base, idx runtime.Value) runtime.Value {
 	if gv, ok := hostBoxOf(base); ok {
-		if ev, ok := v.hostElemRef(f, gv, idx); ok {
+		if ev, ok := marshalHost.HostElemRef(v.indexHooks(f), gv, idx); ok {
 			return ev
 		}
 	}
@@ -1352,64 +1281,20 @@ func (v *VM) readElemRef(f *frame, ptr runtime.Value) (runtime.Value, bool) {
 // HostMapDelete runs the delete builtin on a boxed host map; ok is false
 // when m does not hold a map.
 func (v *VM) HostMapDelete(m *runtime.GoValue, key runtime.Value) (ok bool) {
-	rv := reflect.ValueOf(m.V)
-	if rv.Kind() != reflect.Map {
-		return false
-	}
-	f := v.topFrame()
-	kv := v.hostMapKey(f, rv, key)
-	if !rv.IsNil() {
-		rv.SetMapIndex(kv, reflect.Value{})
-	}
-	return true
+	return marshalHost.HostMapDelete(v.indexHooks(v.topFrame()), m, key)
 }
 
 // HostClear runs the clear builtin on a boxed host map or slice; ok is
 // false when m holds neither.
 func (v *VM) HostClear(m *runtime.GoValue) (ok bool) {
-	rv := reflect.ValueOf(m.V)
-	switch rv.Kind() {
-	case reflect.Map, reflect.Slice:
-		rv.Clear()
-		return true
-	}
-	return false
+	return marshalHost.HostClear(m)
 }
-
+// when m does not hold a map.
+// HostClear runs the clear builtin on a boxed host map or slice; ok is
+// false when m holds neither.
 // hostSlice evaluates b[lo:hi(:max)] on a boxed host slice or string. The
 // result keeps the host type (net.IP's ip[:2] is a net.IP), so a named
 // slice stays boxed for its methods.
-func (v *VM) hostSlice(f *frame, b *runtime.GoValue, lo, hi, max runtime.Value, three bool) (runtime.Value, bool) {
-	rv := reflect.ValueOf(b.V)
-	switch rv.Kind() {
-	case reflect.Slice:
-		l, h := v.bounds(f, lo, hi, int64(rv.Len()))
-		cp := int64(rv.Cap())
-		if three {
-			m := v.maxBound(f, max, cp)
-			if r := sliceBoundsReason(l, h, m, cp, true, "capacity"); r != "" {
-				panic(runtime.SliceBoundsPanic(r))
-			}
-			return hostbridge.GoValueOf(rv.Slice3(int(l.i), int(h.i), int(m.i))), true
-		}
-		if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, "capacity"); r != "" {
-			panic(runtime.SliceBoundsPanic(r))
-		}
-		return hostbridge.GoValueOf(rv.Slice(int(l.i), int(h.i))), true
-	case reflect.String:
-		if three {
-			f.trap("cannot slice a string with 3 indices")
-		}
-		n := int64(rv.Len())
-		l, h := v.bounds(f, lo, hi, n)
-		if r := sliceBoundsReason(l, h, boundOperand{}, n, false, "length"); r != "" {
-			panic(runtime.SliceBoundsPanic(r))
-		}
-		return hostbridge.GoValueOf(rv.Slice(int(l.i), int(h.i))), true
-	}
-	return nil, false
-}
-
 // fieldTypedefs returns declared field types for a struct typedef (nil
 // when the hook is unset or resolution fails — coerce passes through).
 func (v *VM) fieldTypedefs(td *runtime.TypeDef) []*runtime.TypeDef {
@@ -1554,13 +1439,13 @@ func (v *VM) promotedMemberEx(f *frame, s *runtime.Struct, name string, allowPtr
 					if idx >= len(st.Fields) {
 						continue
 					}
-					inner := hostMemberInner(embTd.HostNew(), name, embTd == raw)
+					inner := hostbridge.HostMemberInner(embTd.HostNew(), name, embTd == raw)
 					if inner < 0 {
 						continue
 					}
 					abs := depth + 1 + inner
 					recv := st.Fields[idx]
-					if ptr && hostNilEmbed(recv) && !v.hostNilCallable(embTd.HostNew(), name) {
+					if ptr && hostbridge.HostNilEmbed(recv) && !hostbridge.HostNilCallable(embTd.HostNew(), name) {
 						// reachable only through a nil embedded
 						// pointer — same accounting as a nil
 						// script-embed path.
@@ -1766,36 +1651,10 @@ type hostHit struct {
 // nil still resolves; only actual member access dereferences the stored
 // value. methods is false for a defined type over a host type: it
 // carries fields, not the method set.
-func hostMemberInner(zero any, name string, methods bool) int {
-	t := reflect.TypeOf(zero)
-	if t == nil {
-		return -1
-	}
-	st := t
-	for st.Kind() == reflect.Pointer {
-		st = st.Elem()
-	}
-	if st.Kind() == reflect.Struct {
-		if sf, ok := st.FieldByName(name); ok && sf.PkgPath == "" {
-			return len(sf.Index) - 1 // 0 = a direct field
-		}
-	}
-	if methods {
-		if _, ok := t.MethodByName(name); ok {
-			return hostMethodInner(t, name)
-		}
-	}
-	return -1
-}
-
 // hostMethodInner counts the embed levels inside the host type that
 // name's method is promoted through — 0 when it is declared on t's own
 // method set. t is the slot's declared type: a *T slot contributes the
 // methods of *T, including pointer receivers of embedded values.
-func hostMethodInner(t reflect.Type, name string) int {
-	return methodInner(t, name, map[reflect.Type]bool{})
-}
-
 // methodInner: name is in t's method set — how deeply inside t it is
 // promoted. Each anonymous field contributes its own type's method set
 // — *E when the chain went through a pointer, an interface as itself —
@@ -1804,84 +1663,13 @@ func hostMethodInner(t reflect.Type, name string) int {
 // child's set counts via that child; contributed types are visited
 // once per path so a recursively-embedded host type (struct{ *T })
 // terminates instead of overflowing the stack.
-func methodInner(t reflect.Type, name string, seen map[reflect.Type]bool) int {
-	st := t
-	for st.Kind() == reflect.Pointer {
-		st = st.Elem()
-	}
-	if st.Kind() != reflect.Struct {
-		return 0 // non-struct types declare their methods
-	}
-	if seen[t] {
-		return -1
-	}
-	seen[t] = true
-	defer delete(seen, t)
-	underPtr := t.Kind() == reflect.Pointer
-	best := -1
-	for i := 0; i < st.NumField(); i++ {
-		sf := st.Field(i)
-		if !sf.Anonymous {
-			continue
-		}
-		ct := sf.Type
-		if ct.Kind() != reflect.Pointer && ct.Kind() != reflect.Interface && underPtr {
-			// a value embed contributes *E's method set when the
-			// embedding chain went through a pointer.
-			ct = reflect.PointerTo(ct)
-		}
-		if _, ok := ct.MethodByName(name); !ok {
-			continue
-		}
-		if d := methodInner(ct, name, seen); d >= 0 && (best < 0 || d+1 < best) {
-			best = d + 1
-		}
-	}
-	if best >= 0 {
-		return best
-	}
-	return 0
-}
-
 // hostNilCallable reports whether name is a pointer-receiver method on
 // the boxed type — the only member callable through a nil stored
 // pointer: Go passes the nil receiver straight to the method, while
 // fields and value-receiver methods must dereference it first.
-func (v *VM) hostNilCallable(zero any, name string) bool {
-	pt := reflect.TypeOf(zero)
-	if pt.Kind() != reflect.Pointer {
-		return false
-	}
-	if _, ok := pt.MethodByName(name); !ok {
-		return false // a field — reads and writes dereference
-	}
-	if _, ok := pt.Elem().MethodByName(name); ok {
-		return false // value receiver — evaluating it dereferences
-	}
-	return true
-}
-
 // hostNilEmbed reports whether an embedded host-typed field's stored
 // value is nil — a TypedNil/IfaceNil slot or a nil pointer box — so a
 // member resolved through it panics on the implicit dereference.
-func hostNilEmbed(v runtime.Value) bool {
-	v = runtime.Unwrap(v)
-	if dv, ok := runtime.Deref(v); ok {
-		v = dv
-	}
-	switch x := v.(type) {
-	case nil, runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
-		return true
-	case *runtime.GoValue:
-		rv := reflect.ValueOf(x.V)
-		switch rv.Kind() {
-		case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
-			return rv.IsNil()
-		}
-	}
-	return false
-}
-
 // embedTypeDepth answers for the type what a value search cannot when an
 // embedded pointer is nil: whether `name` is promoted through td's own
 // embedded fields, the shallowest relative depth at which it resolves
@@ -1916,7 +1704,7 @@ func (v *VM) embedTypeDepth(td *runtime.TypeDef, name string, seen map[*runtime.
 			// a host-typed leaf resolves name on the boxed type's
 			// exported field/method surface — plus the host's own
 			// internal embed depth.
-			if inner := hostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
+			if inner := hostbridge.HostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
 				d = 1 + inner
 			}
 		} else {
@@ -1985,7 +1773,7 @@ func (v *VM) embedTypeMethodDepth(td *runtime.TypeDef, name string, seen map[*ru
 				d = 1
 			}
 		case et.HostNew != nil:
-			if inner := hostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
+			if inner := hostbridge.HostMemberInner(et.HostNew(), name, et == raw); inner >= 0 {
 				d = 1 + inner
 			}
 		default:
@@ -2166,7 +1954,7 @@ func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) run
 			return k
 		}
 		u := runtime.Unwrap(k)
-		if n, ok := k.(*runtime.Named); ok && basicKeyPayload(u) {
+		if n, ok := k.(*runtime.Named); ok && hostbridge.BasicKeyPayload(u) {
 			// a named basic key (`map[K]V`, map[time.Month]V) keeps its
 			// tag: the map hashes the payload (runtime.CanonicalKey
 			// unwraps), while range, fmt and every reader of the
@@ -2201,17 +1989,6 @@ func (v *VM) mapKeyOperand(f *frame, td *runtime.TypeDef, idx runtime.Value) run
 // basicKeyPayload reports whether x, a [runtime.Named] key's payload, is a
 // basic scalar — a script int64/string/... or a bound host scalar such as
 // a raw time.Month — rather than a composite or a host box.
-func basicKeyPayload(x runtime.Value) bool {
-	switch x.(type) {
-	case int64, string, float64, bool:
-		return true
-	case nil, *runtime.GoValue, *runtime.UConst:
-		return false
-	}
-	k := reflect.TypeOf(x).Kind()
-	return k <= reflect.Complex128 || k == reflect.String
-}
-
 // ifaceKeyed reports whether the map typedef td declares an interface
 // key type — a map made of it keys by (dynamic type, value)
 // ([runtime.Map.IfaceKey]).
@@ -2311,7 +2088,7 @@ func (v *VM) indexOK(f *frame, base, idx runtime.Value) runtime.Value {
 		return &runtime.Tuple{Elems: []runtime.Value{val, found}}
 	}
 	if gv, ok := base.(*runtime.GoValue); ok {
-		if val, found, ok := v.hostIndex(f, gv, rawIdx); ok {
+		if val, found, ok := marshalHost.HostIndex(v.indexHooks(f), gv, rawIdx); ok {
 			return &runtime.Tuple{Elems: []runtime.Value{val, found}}
 		}
 	}
@@ -2347,9 +2124,9 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			f.trap("index assign on nil %s", tdName(b.Typ))
 		}
 	case *runtime.Slice:
-		i, ok := indexSmallInt(idx)
+		i, ok := hostbridge.IndexSmallInt(idx)
 		if !ok {
-			if u, isU := uintOperand(idx); isU {
+			if u, isU := hostbridge.UintOperand(idx); isU {
 				panic(runtime.BoundsPanic(u, int(b.Len())))
 			}
 			f.trap("slice index is %T", idx)
@@ -2397,7 +2174,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 			// host element's own backing, not the script copy
 			// v.index would hand back. A base reached through a
 			// pointer ((*p)["tag"][0] = v) peels to its box first.
-			if ev, ok := v.hostElemRef(f, gv, b.Key); ok {
+			if ev, ok := marshalHost.HostElemRef(v.indexHooks(f), gv, b.Key); ok {
 				v.setIndex(f, ev, rawIdx, val)
 				return
 			}
@@ -2426,7 +2203,7 @@ func (v *VM) setIndex(f *frame, base, idx, val runtime.Value) {
 		// a boxed host named map or slice (w.Header(), url.Values,
 		// net.IP) keeps its box for method dispatch; write the host
 		// value itself so the host sees the change.
-		if !v.hostSetIndex(f, b, rawIdx, val) {
+		if !marshalHost.HostSetIndex(v.indexHooks(f), b, rawIdx, val) {
 			f.trap("index assign on %T", base)
 		}
 	default:
@@ -2572,7 +2349,7 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 		// s[0:0] / s[:] on a nil slice is a valid empty result
 		l, h := v.bounds(f, lo, hi, 0)
 		m := v.maxBound(f, max, 0)
-		if r := sliceBoundsReason(l, h, m, 0, three, "capacity"); r != "" {
+		if r := hostbridge.SliceBoundsReason(l, h, m, 0, three, "capacity"); r != "" {
 			panic(runtime.SliceBoundsPanic(r))
 		}
 		return b
@@ -2589,15 +2366,15 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			l, h := v.bounds(f, lo, hi, b.Len())
 			if three {
 				m := v.maxBound(f, max, b.Cap())
-				if r := sliceBoundsReason(l, h, m, b.Cap(), true, word); r != "" {
+				if r := hostbridge.SliceBoundsReason(l, h, m, b.Cap(), true, word); r != "" {
 					panic(runtime.SliceBoundsPanic(r))
 				}
-				return &runtime.Slice{N: h.i - l.i, CapN: m.i - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+				return &runtime.Slice{N: h.I - l.I, CapN: m.I - l.I, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 			}
-			if r := sliceBoundsReason(l, h, boundOperand{}, b.Cap(), false, word); r != "" {
+			if r := hostbridge.SliceBoundsReason(l, h, boundOperand{}, b.Cap(), false, word); r != "" {
 				panic(runtime.SliceBoundsPanic(r))
 			}
-			return &runtime.Slice{N: h.i - l.i, CapN: b.Cap() - l.i, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
+			return &runtime.Slice{N: h.I - l.I, CapN: b.Cap() - l.I, Zero: b.Zero, Typ: sliceTypOf(b.Typ)}
 		}
 		n := int64(len(b.Elems))
 		l, h := v.bounds(f, lo, hi, n)
@@ -2612,19 +2389,19 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			m := v.maxBound(f, max, cp)
 			// unsigned operands evaluate in the uint64 domain — the
 			// host Elems[...] panic would print their int64 wrap.
-			if isArr || l.unsigned || h.unsigned || m.unsigned {
-				if r := sliceBoundsReason(l, h, m, cp, true, word); r != "" {
+			if isArr || l.Unsigned || h.Unsigned || m.Unsigned {
+				if r := hostbridge.SliceBoundsReason(l, h, m, cp, true, word); r != "" {
 					panic(runtime.SliceBoundsPanic(r))
 				}
 			}
-			return &runtime.Slice{Elems: b.Elems[l.i:h.i:m.i], Typ: sliceTypOf(b.Typ)}
+			return &runtime.Slice{Elems: b.Elems[l.I:h.I:m.I], Typ: sliceTypOf(b.Typ)}
 		}
-		if isArr || l.unsigned || h.unsigned {
-			if r := sliceBoundsReason(l, h, boundOperand{}, cp, false, word); r != "" {
+		if isArr || l.Unsigned || h.Unsigned {
+			if r := hostbridge.SliceBoundsReason(l, h, boundOperand{}, cp, false, word); r != "" {
 				panic(runtime.SliceBoundsPanic(r))
 			}
 		}
-		return &runtime.Slice{Elems: b.Elems[l.i:h.i], Typ: sliceTypOf(b.Typ)}
+		return &runtime.Slice{Elems: b.Elems[l.I:h.I], Typ: sliceTypOf(b.Typ)}
 	case string:
 		if three {
 			// a 3-index slice on a string is a compile reject in Go —
@@ -2632,14 +2409,14 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 			f.trap("cannot slice a string with 3 indices")
 		}
 		l, h := v.bounds(f, lo, hi, int64(len(b)))
-		if l.unsigned || h.unsigned {
-			if r := sliceBoundsReason(l, h, boundOperand{}, int64(len(b)), false, "length"); r != "" {
+		if l.Unsigned || h.Unsigned {
+			if r := hostbridge.SliceBoundsReason(l, h, boundOperand{}, int64(len(b)), false, "length"); r != "" {
 				panic(runtime.SliceBoundsPanic(r))
 			}
 		}
-		return b[l.i:h.i]
+		return b[l.I:h.I]
 	case *runtime.GoValue:
-		if r, ok := v.hostSlice(f, b, lo, hi, max, three); ok {
+		if r, ok := marshalHost.HostSlice(v.indexHooks(f), b, lo, hi, max, three); ok {
 			return r
 		}
 		f.trap("slice on %T", base)
@@ -2651,65 +2428,21 @@ func (v *VM) slice(f *frame, base, lo, hi, max runtime.Value) runtime.Value {
 }
 
 // boundOperand is one index/slice-bound operand: its int64 position,
+// uint64 magnitude and domain flag — defined in internal/hostbridge.
+type boundOperand = hostbridge.BoundOperand
+
+// boundOperand is one index/slice-bound operand: its int64 position,
 // its uint64 reading, and whether its domain is unsigned. Bounds
 // checks and error text evaluate in the operand's own domain so a
 // wide unsigned index reports 18446744073709551615, not the int64
 // wrap -1.
-type boundOperand struct {
-	i        int64
-	u        uint64
-	unsigned bool
-}
-
-func (b boundOperand) neg() bool { return !b.unsigned && b.i < 0 }
-
-func (b boundOperand) gt(x boundOperand) bool {
-	if b.unsigned || x.unsigned {
-		return b.u > x.u
-	}
-	return b.i > x.i
-}
-
-func (b boundOperand) gtc(cap int64) bool {
-	if b.unsigned {
-		return b.u > uint64(cap)
-	}
-	return b.i > cap
-}
-
-func (b boundOperand) disp() any {
-	if b.unsigned {
-		return b.u
-	}
-	return b.i
-}
-
 // indexSmallInt reads an index operand as int64, looking inside a
 // host GoValue's box — a host uint32(3) indexes like the constant 3,
 // while unsigned widths that cannot fit int64 keep the boxed-wide
 // out-of-bounds panic path.
-func indexSmallInt(v runtime.Value) (int64, bool) {
-	if g, ok := v.(*runtime.GoValue); ok {
-		return runtime.SmallIntOf(g.V)
-	}
-	return runtime.SmallIntOf(v)
-}
-
 // hostUint reads a host-boxed unsigned integer of any width as
 // uint64. Host values arrive carrying their concrete type — uint,
 // uint8..32, uintptr, uint64 — where script integers ride int64.
-func hostUint(v any) (uint64, bool) {
-	switch u := v.(type) {
-	case uint64:
-		return u, true
-	case uint:
-		return uint64(u), true
-	case uint8, uint16, uint32, uintptr:
-		return reflect.ValueOf(u).Uint(), true
-	}
-	return 0, false
-}
-
 // boundUnsigned reports whether the operand's declared domain is an
 // unsigned integer width — a Named tag's sized name or a boxed host
 // unsigned.
@@ -2718,7 +2451,7 @@ func (v *VM) boundUnsigned(x runtime.Value) bool {
 	case *runtime.Named:
 		return unsignedName(sizedNameOf(t.Typ))
 	case *runtime.GoValue:
-		_, isU := hostUint(t.V)
+		_, isU := hostbridge.HostUint(t.V)
 		return isU
 	}
 	return false
@@ -2727,59 +2460,30 @@ func (v *VM) boundUnsigned(x runtime.Value) bool {
 // boundOperand extracts one index/slice-bound operand: its int64
 // position (wrapped bits for a boxed wide uint64 — such an index is
 // always out of bounds) and its domain flag for the error text.
-func (v *VM) boundOperand(f *frame, x runtime.Value, def int64) boundOperand {
-	b := boundOperand{i: def, u: uint64(def)}
-	ux := runtime.Unwrap(v.materialize(f, x))
-	if iv, ok := runtime.SmallIntOf(ux); ok {
-		b.i = iv
-		b.u = uint64(iv)
-		b.unsigned = v.boundUnsigned(x)
-	} else if g, isG := ux.(*runtime.GoValue); isG {
-		if u, isU := hostUint(g.V); isU {
-			b.i = int64(u)
-			b.u = u
-			b.unsigned = true
-		}
-	}
-	return b
-}
-
 // sliceBoundsReason renders Go's boundsError text for a failed slice
 // operation — mirroring the check order and message shapes of the
 // runtime's goPanicSlice* family. Every operand evaluates in its own
 // domain: a negative signed index reports its bare form without the
 // capacity/length suffix (Go's boundsNegErrorFmts), an unsigned one
 // its uint64 magnitude. Returns "" when every index is in bounds.
-func sliceBoundsReason(l, h, m boundOperand, cap int64, three bool, word string) string {
-	const p = "slice bounds out of range"
-	if three {
-		switch {
-		case m.neg():
-			return fmt.Sprintf("%s [::%v]", p, m.disp())
-		case m.gtc(cap):
-			return fmt.Sprintf("%s [::%v] with %s %d", p, m.disp(), word, cap)
-		case h.neg():
-			return fmt.Sprintf("%s [:%v:]", p, h.disp())
-		case h.gt(m):
-			return fmt.Sprintf("%s [:%v:%v]", p, h.disp(), m.disp())
-		case l.neg():
-			return fmt.Sprintf("%s [%v::]", p, l.disp())
-		case l.gt(h):
-			return fmt.Sprintf("%s [%v:%v:]", p, l.disp(), h.disp())
+// boundOperand extracts one index/slice-bound operand: its int64
+// position (wrapped bits for a boxed wide uint64 — such an index is
+// always out of bounds) and its domain flag for the error text.
+func (v *VM) boundOperand(f *frame, x runtime.Value, def int64) boundOperand {
+	i, u, unsigned := def, uint64(def), false
+	ux := runtime.Unwrap(v.materialize(f, x))
+	if iv, ok := runtime.SmallIntOf(ux); ok {
+		i = iv
+		u = uint64(iv)
+		unsigned = v.boundUnsigned(x)
+	} else if g, isG := ux.(*runtime.GoValue); isG {
+		if uv, isU := hostbridge.HostUint(g.V); isU {
+			i = int64(uv)
+			u = uv
+			unsigned = true
 		}
-		return ""
 	}
-	switch {
-	case h.neg():
-		return fmt.Sprintf("%s [:%v]", p, h.disp())
-	case h.gtc(cap):
-		return fmt.Sprintf("%s [:%v] with %s %d", p, h.disp(), word, cap)
-	case l.neg():
-		return fmt.Sprintf("%s [%v:]", p, l.disp())
-	case l.gt(h):
-		return fmt.Sprintf("%s [%v:%v]", p, l.disp(), h.disp())
-	}
-	return ""
+	return hostbridge.BoundOperandOf(i, u, unsigned)
 }
 
 func (v *VM) bounds(f *frame, lo, hi runtime.Value, n int64) (boundOperand, boundOperand) {
