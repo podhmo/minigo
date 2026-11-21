@@ -140,6 +140,91 @@ type typeDecl struct {
 	imports map[string]string
 }
 
+// Sizes counts lines of every non-test, non-generated .go file in the
+// module (same directory rules as Build). Keys are slash paths relative
+// to root. Files whose head carries the standard
+// "// Code generated ... DO NOT EDIT." marker are skipped.
+func Sizes(root string) (map[string]int, error) {
+	sizes := map[string]int{}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root {
+				base := d.Name()
+				if strings.HasPrefix(base, ".") || base == "testdata" {
+					return fs.SkipDir
+				}
+				if exists(filepath.Join(path, "go.mod")) {
+					return fs.SkipDir
+				}
+			}
+			return nil
+		}
+		name := d.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if isGenerated(string(data)) {
+			return nil
+		}
+		sizes[rel(root, path)] = strings.Count(string(data), "\n") + 1
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sizes, nil
+}
+
+// isGenerated reports whether src carries the standard generated-file
+// marker: a whole line `// Code generated .* DO NOT EDIT.` before the
+// package clause. Matching as a substring would also hide hand-written
+// files that merely mention the marker in a string literal.
+func isGenerated(src string) bool {
+	for line := range strings.Lines(src) {
+		if strings.HasPrefix(line, "package ") {
+			return false
+		}
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "// Code generated ") && strings.HasSuffix(l, " DO NOT EDIT.") {
+			return true
+		}
+	}
+	return false
+}
+
+// CheckSizes is the file-size ratchet (M1-4). budget is the recorded
+// line count per file; violations fire when a file grew past its budget,
+// when a new file has no budget entry, and when the table is stale
+// (file shrank or disappeared — the budget may only move down).
+func CheckSizes(sizes map[string]int, budget map[string]int) []Violation {
+	var out []Violation
+	for path, n := range sizes {
+		b, ok := budget[path]
+		switch {
+		case !ok:
+			out = append(out, Violation{path, "", fmt.Sprintf("%s has no size budget (%d lines); record it in rules.go", path, n)})
+		case n > b:
+			out = append(out, Violation{path, "", fmt.Sprintf("%s grew to %d lines, budget is %d — split it instead of growing it", path, n, b)})
+		case n < b:
+			out = append(out, Violation{path, "", fmt.Sprintf("%s shrank to %d lines; lower the budget from %d", path, n, b)})
+		}
+	}
+	for path := range budget {
+		if _, ok := sizes[path]; !ok {
+			out = append(out, Violation{path, "", fmt.Sprintf("%s no longer exists; drop the stale budget entry", path)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Pkg < out[j].Pkg })
+	return out
+}
+
 // pkgDecls is one parsed package: named type declarations keyed by
 // name.
 type pkgDecls struct {
