@@ -109,7 +109,7 @@
   - [x] **M4-3d インスタンス化の typedef を切り替える**: M4-3b の表へコピーを集約する。型引数が異なる型、別宣言の同名型、別 Session の分離を確認する。
 - [x] **M4-4 host twin 系の helper を消す（1 つにつき 1 PR）**: 対象は `hostTwinIs`、`hostNilTwin`、`sameSpelledTwin`、`HostNamedIs`/`HostTwinOf`、`sourceTwinOf`。完了条件: 各 PR が pin 済みのリグレッションケースで裏付けられている。→ `HostNamedIs`/`HostTwinOf` を除く 4 つは除去済み（PR #1170〜#1172）。残りの2つは intern 表で一意化できない typedef への fallback として残留が正しいと判断（docs/open-questions.md、二段階の capability 注入は複雑化のため不採用）。除去は intern 拡張後の別タスクとした
 - [ ] **intern 表を拡張して `HostNamedIs`/`HostTwinOf` を除去する**: intern 表が一意化できない typedef（host-minted の name-only tag、無名ポインタ、HostScalar box）への fallback として `HostNamedIs`/`HostTwinOf` が残っている（runtime/value.go）。intern 表の coverage を広げたあと、minigo.go:491・vm/assert.go:1291・runtime/value.go:292・builtin/builtins.go:909・internal/hostbridge の各呼び出し点を移し替えて両 helper を消す。
-- [x] **M4-5 代入可能性と変換可能性を semantics に移す**: `tdShapeEq`、`underlyingShape`/`convShapeEq`、`structFieldsEq` を、`AssignableTo`/`ConvertibleTo`/`Identical` として移す（消すのではない）。`peelAlias` は `TypeOf` の解決に含める。
+- [x] **M4-5 代入可能性と変換可能性の配置**: 現行境界を採用し、比較器は `runtime` に残す。宣言側の呼び手が出た時点で `Service` に判定を足す（分割の記録は [semantics-api.md](./references/semantics-api.md#判定の配置m4-5-の決着)）。 [follow-up.md](./follow-up.md)
   - [x] **M4-5a 同一性とエイリアス**: `Identical` と `TypeOf` の alias 解決を先に導入する。定義型・エイリアス、構造体のタグ、パッケージ固有名の比較を固定する。
   - [x] **M4-5b 代入可能性**: M4-5a の結果を使って `AssignableTo` を移す。型なし定数、named/unnamed の組み合わせ、インタフェース充足を既存挙動と照合する。
   - [x] **M4-5c 変換可能性**: `ConvertibleTo` を移し、構造・タグや数値など、代入の規則と結果が異なるケースを分けて検証する。
