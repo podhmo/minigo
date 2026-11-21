@@ -8,6 +8,7 @@ import (
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
+	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -153,7 +154,23 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, typedSeq func(*runtime.BuiltinF
 			// uses. The old spare keeps its contents; the fresh spare
 			// holds zeros, as growslice clears it.
 			full := elems[:cap(elems)]
-			grown := append(full, make([]runtime.Value, int(n)-(cap(elems)-len(elems)))...)
+			// Grow goes through the plain growslice path — never the
+			// 32-byte stack buffer an individual-element append can take.
+			var es uintptr = 16
+			var noscan bool
+			if td != nil {
+				h := minireflect.CallerHooks(vc)
+				if e, err := vc.ElemOf(td); err == nil && e != nil {
+					if sz := minireflect.SizeOf(h, e); sz > 0 {
+						es = sz
+						noscan = !minireflect.HasPointers(h, e)
+					}
+				}
+			}
+			newLen := len(elems) + int(n)
+			grown := make([]runtime.Value, newLen,
+				runtime.GrowSliceCap(newLen, len(full), cap(full), es, noscan, true))
+			copy(grown, full)
 			// the grown array copies the live elements (gc's growslice
 			// memcpy): without it a struct element aliases the old
 			// backing, the same bug append's growth had.

@@ -1837,6 +1837,25 @@ func SizeOf(h Hooks, td *runtime.TypeDef) uintptr {
 	return e.rtypeOf(td).sizeOf()
 }
 
+// HasPointers reports whether a value of td contains pointers — the
+// scan/noscan split gc's growslice applies for the malloc header.
+func HasPointers(h Hooks, td *runtime.TypeDef) bool {
+	e := &Env{h: h}
+	return e.rtypeOf(td).hasPointers()
+}
+
+// CallerHooks builds the hooks a VMCaller already answers — ElemOf,
+// FieldTypes and ResolveType — so intrinsics in packages that cannot
+// reach the engine (builtin, internal/stdlib) can still size and scan
+// declared types.
+func CallerHooks(v runtime.VMCaller) Hooks {
+	return Hooks{
+		ElemOf:      v.ElemOf,
+		FieldTypes:  v.FieldTypes,
+		ResolveType: v.ResolveType,
+	}
+}
+
 // AlignOf reports the alignment of td as laid out on amd64, the layout
 // [OffsetOf] uses.
 func AlignOf(h Hooks, td *runtime.TypeDef) uintptr {
