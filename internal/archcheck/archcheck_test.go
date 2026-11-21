@@ -253,6 +253,9 @@ type CellChan chan *rt.Cell
 
 // Regression: a parenthesized named struct decl must still match
 // "Type.Field" exemptions — not the doubled "Type.Type.Field".
+
+// Regression: a parenthesized named struct decl must still match
+// "Type.Field" exemptions — not the doubled "Type.Type.Field".
 func TestSharedFieldsParenExempt(t *testing.T) {
 	dir := gentest.WriteFiles(t, map[string]string{
 		"go.mod":           "module example.com/m\n\ngo 1.26\n",

@@ -65,3 +65,19 @@ func TestSubcommandArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestHelpTopic(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"help"}, ""},
+		{[]string{"help", "run"}, "run"},
+		{[]string{"help", "-h"}, ""},
+		{[]string{"help", "--help"}, ""},
+	} {
+		if diff := cmp.Diff(tc.want, helpTopic(tc.args)); diff != "" {
+			t.Errorf("helpTopic(%v) mismatch (-want +got):\n%s", tc.args, diff)
+		}
+	}
+}

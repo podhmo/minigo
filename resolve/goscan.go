@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/podhmo/minigo/pkg/locator"
@@ -111,6 +112,85 @@ func (r *GoScanResolver) locateFile(abs string) (*PackageMeta, error) {
 		Name:       f.Name.Name,
 		Dir:        dir,
 		GoFiles:    []string{abs},
+		ModulePath: r.loc.ModulePath(),
+		Lang:       ModuleLang(dir),
+	}, nil
+}
+
+// LocateFiles resolves a go-run-style list of named .go files into a
+// single package meta, like `go run a.go b.go`: every file must live
+// in one directory and declare the same package, duplicates are
+// rejected, and build constraints are ignored. The import path is the
+// synthetic [FileImportPrefix] spelling of the shared directory, so
+// the file set never stands in for the directory's package.
+func (r *GoScanResolver) LocateFiles(ctx context.Context, files []string) (*PackageMeta, error) {
+	var dir, name string
+	seen := map[string]bool{}
+	var gofiles []string
+	for _, file := range files {
+		abs, err := filepath.Abs(file)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasSuffix(abs, ".go") {
+			return nil, fmt.Errorf("named files must be .go files: %s", file)
+		}
+		// the root check and stat read the link's target — a .go
+		// symlink inside an allowed root may name a file outside it.
+		// The directory and package checks keep the spelled path, like
+		// `go run`: a link still counts as living where it is listed.
+		resolved, err := resolveSymlinkNearest(abs)
+		if err != nil {
+			return nil, err
+		}
+		if err := r.cfg.CheckPath(resolved); err != nil {
+			return nil, err
+		}
+		st, err := os.Stat(resolved)
+		if err != nil {
+			return nil, fmt.Errorf("entry %q not found: %w", file, err)
+		}
+		if !st.Mode().IsRegular() {
+			return nil, fmt.Errorf("entry %q is not a .go file", file)
+		}
+		if seen[resolved] {
+			return nil, fmt.Errorf("duplicate file in list: %s", file)
+		}
+		seen[resolved] = true
+		f, err := parser.ParseFile(token.NewFileSet(), abs, nil, parser.PackageClauseOnly)
+		if err != nil {
+			return nil, fmt.Errorf("reading package clause: %w", err)
+		}
+		switch d := filepath.Dir(abs); {
+		case dir == "":
+			dir = d
+		case d != dir:
+			return nil, fmt.Errorf("named files must all be in one directory; have %s and %s", dir, d)
+		}
+		switch {
+		case name == "":
+			name = f.Name.Name
+		case f.Name.Name != name:
+			return nil, fmt.Errorf("found packages %s (%s) and %s (%s)", name, filepath.Base(files[0]), f.Name.Name, filepath.Base(file))
+		}
+		gofiles = append(gofiles, abs)
+	}
+	if len(gofiles) == 1 {
+		return r.locateFile(gofiles[0])
+	}
+	// the file list is part of the synthetic path: two lists over one
+	// directory are different programs and must not share the build
+	// cache entry.
+	names := make([]string, len(gofiles))
+	for i, g := range gofiles {
+		names[i] = filepath.Base(g)
+	}
+	sort.Strings(names)
+	return &PackageMeta{
+		ImportPath: FileImportPrefix + filepath.ToSlash(dir) + "#" + strings.Join(names, ","),
+		Name:       name,
+		Dir:        dir,
+		GoFiles:    gofiles,
 		ModulePath: r.loc.ModulePath(),
 		Lang:       ModuleLang(dir),
 	}, nil
