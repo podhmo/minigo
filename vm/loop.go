@@ -630,15 +630,29 @@ func (v *VM) loop(f *frame) {
 			f.push(r)
 		case bytecode.OpDefer:
 			// callee + args are evaluated now (Go semantics); the call itself
-			// runs at frame teardown, LIFO.
-			args, statics, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
+			// runs at frame teardown, LIFO. The site's arg recipes resolve
+			// at registration — the calling frame they read is gone by the
+			// time the deferred call runs.
+			site := f.ch.CallSites[ins.C]
+			args, hints, spreadTd := v.popArgsCallSite(f, int(ins.A), int(ins.B), ins.Pos, site)
 			fn := f.pop()
-			f.defers = append(f.defers, deferredCall{fn: fn, args: args, pos: ins.Pos, statics: statics, spreadTd: spreadTd})
+			var statics []*runtime.TypeDef
+			if len(hints) > 0 {
+				statics = v.resolveArgHints(f, hints)
+			}
+			f.defers = append(f.defers, deferredCall{fn: fn, args: args, pos: ins.Pos, typs: callTyps{statics: statics, spreadTd: spreadTd}})
 		case bytecode.OpGo:
 			// `go f(x)` spawns a real goroutine in this process: callee and
-			// args are evaluated now; the call runs concurrently.
-			args, statics, spreadTd := v.popArgs(f, int(ins.A), int(ins.B), ins.Pos)
+			// args are evaluated now; the call runs concurrently. Like
+			// OpDefer, the site's recipes resolve against this frame — the
+			// spawned frame cannot read them.
+			site := f.ch.CallSites[ins.C]
+			args, hints, spreadTd := v.popArgsCallSite(f, int(ins.A), int(ins.B), ins.Pos, site)
 			fn := f.pop()
+			var statics []*runtime.TypeDef
+			if len(hints) > 0 {
+				statics = v.resolveArgHints(f, hints)
+			}
 			v.spawn(fn, args, statics, spreadTd, true)
 		case bytecode.OpEvalAST:
 			frag := consts[ins.A].(*bytecode.ASTFragment)

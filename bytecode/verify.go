@@ -162,7 +162,8 @@ func effect(ch *Chunk, ip int, ins Instruction, d int, problems *[]string) (int,
 		// call site's ArgHint record (P4-4a), not the operand stack.
 		return one(d - int(ins.A))
 	case OpDefer, OpGo:
-		return one(d - 2*int(ins.A) - 1)
+		// [fn, arg1..argA] -> nothing: same site record (P4-4b).
+		return one(d - int(ins.A) - 1)
 	case OpPack:
 		return one(d - int(ins.A) + 1)
 	case OpUnpack:
@@ -261,7 +262,7 @@ func needed(ins Instruction) int {
 	case OpCall:
 		return int(ins.A) + 1
 	case OpDefer, OpGo:
-		return 2*int(ins.A) + 1
+		return int(ins.A) + 1
 	case OpPack:
 		return int(ins.A)
 	case OpMakeComposite:
