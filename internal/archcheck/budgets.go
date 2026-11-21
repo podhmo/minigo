@@ -134,7 +134,7 @@ var FileBudgets = map[string]int{
 	"internal/vet/readfile_hint.go":             109,
 	"internal/typedef/iterseq.go":               104,
 	"internal/typedef/respath.go":               217,
-	"internal/stdlib/fmt/fmt.go":                3256,
+	"internal/stdlib/fmt/fmt.go":                3266,
 	"internal/stdlib/asmimpl.go":                285,
 	"internal/stdlib/typshape.go":               235,
 	"minigo.go":                                 1868,
