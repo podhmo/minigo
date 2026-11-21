@@ -151,6 +151,7 @@ var strictLazyCorpus = []string{
 	"sizeof_ucall",
 	"sizeof_sideeffect",
 	"time_weekday_bound",
+	"gate_chanpkgmismatch",
 }
 
 // TestStrictLazyCompile runs the COMPILE_TIME_FACT-pinned cases under
