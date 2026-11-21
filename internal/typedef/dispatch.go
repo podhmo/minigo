@@ -248,6 +248,11 @@ func (r *Resolver) MethodInfoOfValue(v runtime.Value) (*runtime.MethodSet, error
 func (r *Resolver) refOpaque(ref, dv runtime.Value) bool {
 	if c, ok := ref.(*runtime.Cell); ok {
 		if td := c.Typ; td != nil {
+			if td.Kind == runtime.KindAlias {
+				// `type W = io.Writer` declares an interface slot —
+				// `&w` is a *iface the same as a direct iface decl.
+				td = r.PeelAliasTd(td)
+			}
 			return td.Kind == runtime.KindInterface || td.IfaceBase ||
 				(td.Kind == runtime.KindPointer && td.Spec == nil)
 		}
