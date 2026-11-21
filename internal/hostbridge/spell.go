@@ -10,13 +10,15 @@ import (
 )
 
 // Value is [reflect.Value]; Type is [reflect.Type]; Kind is
-// [reflect.Kind]; ChanDir is [reflect.ChanDir].
+// [reflect.Kind]; ChanDir is [reflect.ChanDir]; Method is
+// [reflect.Method].
 type (
 	Value     = reflect.Value
 	Type      = reflect.Type
 	Kind      = reflect.Kind
 	ChanDir   = reflect.ChanDir
 	StructTag = reflect.StructTag
+	Method    = reflect.Method
 )
 
 // Kind constants used by vm's host-value dispatch.

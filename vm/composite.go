@@ -295,7 +295,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		// method set — Go forbids a field and method sharing a name, so
 		// probing fields first is safe and keeps `cmd.Dir`-style access
 		// working on host structs like *exec.Cmd.
-		if mv, ok := v.hostMember(f, b.V, name); ok {
+		if mv, ok := v.hostMember(f, b.V, name, site); ok {
 			return mv
 		}
 		f.trap("no member %s on host value %T", name, b.V)
@@ -317,13 +317,74 @@ func framePkgPath(f *frame) string {
 	return f.fn.Pkg.Path
 }
 
+// hostSelSlot is the method-table replay a host-receiver select site
+// caches: the bound method's index and the boxing flags. Host method
+// sets are static, so the slot's reflect.Type guard is the whole key —
+// a site whose receiver type changes simply misses and resolves again.
+type hostSelSlot struct {
+	midx   int // rt's method-table index replayed via rv.Method(midx)
+	tm     *hostbridge.Method
+	opaque string // rt's string when it is an OpaqueContainers store
+}
+
 // hostMember resolves a field or method on a host value: fields first,
 // then the method set — Go forbids a field and method sharing a name.
 // (nil, false) reports that neither exists. f scopes unexported fields
-// to their declaring package, the same gate Go applies.
-func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
+// to their declaring package, the same gate Go applies — a site fixes
+// that package lexically, so a cached method/miss stays correct. The
+// resolutions ride the ordinary selectSlot so one site can alternate
+// between receiver kinds without an atomic.Value type panic.
+func (v *VM) hostMember(f *frame, hv any, name string, sites ...*bytecode.GlobalSite) (runtime.Value, bool) {
+	var site *bytecode.GlobalSite
+	if len(sites) > 0 {
+		site = sites[0]
+	}
+	// A ScriptMethoder's answers are instance-scoped — a same-type
+	// sibling can carry a different script method set — so it neither
+	// reads nor writes the type-level site cache.
+	_, isSM := hv.(runtime.ScriptMethoder)
+	if site != nil && !isSM {
+		rt := hostbridge.TypeOf(hv)
+		if slot, _ := site.Cache.Load().(*selectSlot); slot != nil && slot.rt == rt && slot.name == name && slot.res != nil {
+			switch slot.res.kind {
+			case selHostMiss:
+				return nil, false
+			case selHostMember:
+				return hostMethodBox(hv, name, hostbridge.RVOf(hv).Method(slot.res.hm.midx), slot.res.hm), true
+			}
+		}
+	}
+	val, res := v.hostMemberRes(f, hv, name)
+	if site != nil && res != nil && !isSM && !(res.kind == selHostMiss && hostNil(hv)) {
+		site.Cache.Store(&selectSlot{rt: hostbridge.TypeOf(hv), name: name, res: res})
+	}
+	return val, val != nil
+}
+
+// hostNil reports whether hv is a nil-able host value holding nil. A
+// member miss against it is value-dependent — a non-nil sibling of the
+// same type can still resolve the field — so the site must not record
+// it at type level.
+func hostNil(hv any) bool {
+	rv := hostbridge.RVOf(hv)
+	if !rv.IsValid() {
+		return true
+	}
+	switch rv.Kind() {
+	case hostbridge.KindPtr, hostbridge.KindUnsafePointer, hostbridge.KindInterface,
+		hostbridge.KindSlice, hostbridge.KindMap, hostbridge.KindChan, hostbridge.KindFunc:
+		return rv.IsNil()
+	}
+	return false
+}
+
+// hostMemberRes runs the full member resolution, reporting the
+// cacheable outcome beside the value: a method slot on the method
+// path, a miss slot on no-member, nil for the value-dependent paths
+// (a field hit or a ScriptMethoder answer) no cache can replay.
+func (v *VM) hostMemberRes(f *frame, hv any, name string) (runtime.Value, *selRes) {
 	if fv, ok := hostField(hv, name, framePkgPath(f)); ok {
-		return hostbridge.GoSlotValueOf(fv), true
+		return hostbridge.GoSlotValueOf(fv), nil
 	}
 	m := hostbridge.RVOf(hv).MethodByName(name)
 	if sm, ok := hv.(runtime.ScriptMethoder); ok {
@@ -332,16 +393,43 @@ func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 			if m.IsValid() {
 				bf.Target = m.Interface()
 			}
-			return bf, true
+			return bf, nil
 		}
 	}
 	if !m.IsValid() {
-		return nil, false
+		return nil, &selRes{kind: selHostMiss}
 	}
+	var tm *hostbridge.Method
+	// the method value's own PC is a thunk (reflect.methodValueCall)
+	// — the declared method's Func is the only handle that still
+	// points at the real code, so keep it for inspect. Its index is
+	// also the replay handle: without one the resolution cannot
+	// memoize (Value.Method(i) shares the type's method-table order).
+	if t, ok := hostbridge.TypeOf(hv).MethodByName(name); ok {
+		t := t
+		tm = &t
+	}
+	if tm == nil {
+		return hostMethodBox(hv, name, m, nil), nil
+	}
+	slot := &hostSelSlot{midx: tm.Index, tm: tm}
+	if rt := hostbridge.TypeOf(hv).String(); hostbridge.OpaqueContainers[rt] {
+		slot.opaque = rt
+	}
+	return hostMethodBox(hv, name, m, slot), &selRes{kind: selHostMember, hm: slot}
+}
+
+// hostMethodBox wraps a bound host method value in its script-callable
+// BuiltinFunc: the OpaqueContainers store path, the uncontended-lock
+// inline fast path, the receiver-less %T signature, and the declared
+// Func handle inspect keeps. A nil slot boxes the plain call — the
+// uncacheable path an absent type-level Method forces.
+func hostMethodBox(hv any, name string, m hostbridge.Value, slot *hostSelSlot) *runtime.BuiltinFunc {
 	call := func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		return callReflectFunc(name, m, vc, args)
 	}
-	if rt := hostbridge.TypeOf(hv).String(); hostbridge.OpaqueContainers[rt] {
+	if slot != nil && slot.opaque != "" {
+		rt := slot.opaque
 		call = func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return callOpaqueStore(rt, name, m, vc, args)
 		}
@@ -364,14 +452,10 @@ func (v *VM) hostMember(f *frame, hv any, name string) (runtime.Value, bool) {
 	// the bound method value spells the receiver-less signature
 	// (`func() int` for Len) under %T.
 	bf.Target = m.Interface()
-	// the method value's own PC is a thunk (reflect.methodValueCall)
-	// — the declared method's Func is the only handle that still
-	// points at the real code, so keep it for inspect.
-	if tm, ok := hostbridge.TypeOf(hv).MethodByName(name); ok {
-		tm := tm
-		bf.Method = &tm
+	if slot != nil {
+		bf.Method = slot.tm
 	}
-	return bf, true
+	return bf
 }
 
 // methodExprThunk builds a T.M/(*T).M method-expression value for a
