@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/mod/module"
 )
@@ -130,12 +131,12 @@ func New(startPath string, options ...Option) (*Locator, error) {
 	}
 
 	if l.UseGoModuleResolver {
-		goRoot, err := getGoRoot()
+		goRoot, err := getGoRootOnce()
 		if err != nil {
 			return nil, fmt.Errorf("could not determine GOROOT: %w", err)
 		}
 		l.goRoot = goRoot
-		cache, err := getGoModCache()
+		cache, err := getGoModCacheOnce()
 		if err != nil {
 			return nil, fmt.Errorf("could not determine go mod cache location: %w", err)
 		}
@@ -488,6 +489,36 @@ func getGoModCache() (string, error) {
 		return "", fmt.Errorf("failed to run 'go env GOMODCACHE': %w", err)
 	}
 	return strings.TrimSpace(string(output)), nil
+}
+
+// getGoRootOnce / getGoModCacheOnce memoize the `go env` lookups per
+// process: they spawn a subprocess each and the values cannot change
+// during a run. Failures are not cached, so a transient subprocess
+// error does not poison every later lookup.
+var (
+	getGoRootOnce     = memoized(getGoRoot)
+	getGoModCacheOnce = memoized(getGoModCache)
+)
+
+// memoized caches fn's first successful result; a failed call is
+// retried on the next call instead of sticking like sync.OnceValues.
+func memoized(fn func() (string, error)) func() (string, error) {
+	var mu sync.Mutex
+	var value string
+	var ok bool
+	return func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ok {
+			return value, nil
+		}
+		v, err := fn()
+		if err != nil {
+			return "", err
+		}
+		value, ok = v, true
+		return v, nil
+	}
 }
 
 // getRequireDirectivesFromBytes reads require directives from go.mod content.
