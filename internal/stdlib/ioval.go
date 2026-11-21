@@ -33,7 +33,7 @@ func BorrowBytes(v runtime.Value) ([]byte, func()) {
 		bs := ByteSlice(x)
 		return bs, func() {
 			for i := range bs {
-				x.Elems[i] = runtime.ByteValue(bs[i])
+				x.SetElem(int64(i), runtime.ByteValue(bs[i]))
 			}
 		}
 	case *runtime.GoValue:

@@ -256,6 +256,13 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 		if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
 			return reflect.Value{}, fmt.Errorf("cannot convert script slice to %s", t)
 		}
+		// an unboxed host slice marshals back as its own backing —
+		// `buf.Bytes()` handed to a FuncMap func shares the buffer, so
+		// the callee's element writes reach it like gc's would.
+		if x.Host.IsValid() && x.Host.Type().AssignableTo(t) {
+			av = x.Host
+			break
+		}
 		out := reflect.New(t).Elem()
 		// byte slices marshal in one pass — the element loop below
 		// builds a reflect.Value per byte otherwise (issue #362).
@@ -476,6 +483,12 @@ func (m *Marshal) DeepHost(v runtime.Value, vc runtime.VMCaller, h *HostMarshal)
 	case *runtime.Struct:
 		return structDataHost(x, x, vc, h)
 	case *runtime.Slice, *runtime.Map:
+		if sv, ok := v.(*runtime.Slice); ok && sv.Host.IsValid() && sv.Host.Len() == len(sv.Elems) {
+			// an unboxed host slice crosses back as its own backing —
+			// `buf.Bytes()` in a FuncMap arg shares the buffer, so the
+			// callee's element writes reach it like gc's would.
+			return sv.Host.Interface()
+		}
 		if out, ok := h.typedContainer(v, vc); ok {
 			return out
 		}
