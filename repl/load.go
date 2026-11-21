@@ -408,16 +408,18 @@ func (r *REPL) initUnit(unit *loadUnit) error {
 		return nil
 	}
 	vp := &runtime.Package{
-		Path:       p.Path,
-		Name:       p.Name,
-		Fset:       p.Fset,
-		Files:      p.Files,
-		FileByName: p.FileByName,
-		Index:      &view,
-		Globals:    p.Globals,
-		Scopes:     p.Scopes,
-		Imports:    p.Imports,
-		Specials:   p.Specials,
+		Path: p.Path,
+		Name: p.Name,
+		PackageImage: runtime.PackageImage{
+			Fset:       p.Fset,
+			Files:      p.Files,
+			FileByName: p.FileByName,
+			Index:      &view,
+		},
+		Globals:  p.Globals,
+		Scopes:   p.Scopes,
+		Imports:  p.Imports,
+		Specials: p.Specials,
 	}
 	ch, err := compile.InitFunc(vp)
 	if err != nil {

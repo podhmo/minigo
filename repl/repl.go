@@ -117,13 +117,13 @@ func New(e *minigo.Engine) *REPL {
 
 func newREPL(h *replhooks.Hooks) *REPL {
 	p := &runtime.Package{
-		Path:     "<repl>",
-		Name:     "repl",
-		Fset:     h.Fset,
-		Globals:  runtime.NewEnv(),
-		Scopes:   map[*syntax.File]map[string]*runtime.ImportRef{},
-		Imports:  map[*syntax.File][]*runtime.ImportRef{},
-		Specials: h.Specials,
+		Path:         "<repl>",
+		Name:         "repl",
+		PackageImage: runtime.PackageImage{Fset: h.Fset},
+		Globals:      runtime.NewEnv(),
+		Scopes:       map[*syntax.File]map[string]*runtime.ImportRef{},
+		Imports:      map[*syntax.File][]*runtime.ImportRef{},
+		Specials:     h.Specials,
 		RunInit: func(fn *runtime.Function) error {
 			_, err := h.NewVM().Call(fn, nil)
 			return err

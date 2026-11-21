@@ -513,21 +513,21 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 	}
 	// a package that shadows a universe name embeds ITS decl, not the
 	// builtin: `type int string` + struct{int} is not builtin struct{int}.
-	pShadow := &runtime.Package{Path: "shadow/p", Name: "p", Index: &index.Index{
+	pShadow := &runtime.Package{Path: "shadow/p", Name: "p", PackageImage: runtime.PackageImage{Index: &index.Index{
 		Types: map[string]*index.TypeDeclInfo{"int": {Decl: &index.Decl{
 			Spec: &ast.TypeSpec{Type: ast.NewIdent("string")},
 		}}},
-	}}
+	}}}
 	if a, b := e.typeIDOf(embedInt(pShadow)), e.typeIDOf(embedInt(p1)); a == b {
 		t.Errorf("struct{int} collides with package-shadowed int: %q", a)
 	}
 	// a package-level `type a = int` and a function-local `a = int` in
 	// the same package name one embedded field — the keys converge.
-	pAlias := &runtime.Package{Path: p1.Path, Name: "p", Index: &index.Index{
+	pAlias := &runtime.Package{Path: p1.Path, Name: "p", PackageImage: runtime.PackageImage{Index: &index.Index{
 		Types: map[string]*index.TypeDeclInfo{"a": {Decl: &index.Decl{
 			Spec: &ast.TypeSpec{Assign: 1, Type: ast.NewIdent("int")},
 		}}},
-	}}
+	}}}
 	embedPkgAlias := &runtime.TypeDef{
 		Kind: runtime.KindStruct, Pkg: pAlias, File: f,
 		Anon: &ast.StructType{Fields: &ast.FieldList{List: []*ast.Field{
@@ -547,12 +547,12 @@ func TestTypeIDAnonLocalLeafsDistinct(t *testing.T) {
 			{Names: []*ast.Ident{ast.NewIdent("X"), ast.NewIdent("Y")}, Type: ast.NewIdent("any")},
 		}},
 	}
-	pGen := &runtime.Package{Path: p1.Path, Name: "p", Index: &index.Index{
+	pGen := &runtime.Package{Path: p1.Path, Name: "p", PackageImage: runtime.PackageImage{Index: &index.Index{
 		Types: map[string]*index.TypeDeclInfo{
 			"G": {Decl: &index.Decl{Spec: genSpec}},
 			"Y": {Decl: &index.Decl{Spec: &ast.TypeSpec{Type: ast.NewIdent("int")}}},
 		},
-	}}
+	}}}
 	sliceGen := &ast.ArrayType{Elt: &ast.IndexListExpr{X: ast.NewIdent("G"), Indices: []ast.Expr{ast.NewIdent("int"), ast.NewIdent("string")}}}
 	pkgSide := &runtime.TypeDef{Kind: runtime.KindSlice, Pkg: pGen, File: f, Anon: sliceGen}
 	localAlias := &runtime.TypeDef{
