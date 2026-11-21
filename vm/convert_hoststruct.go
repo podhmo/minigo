@@ -12,7 +12,7 @@ import (
 // approximation of Go's identical-underlying rule — field types and tags
 // are not modeled). The result is a copy carrying the target's typedef.
 // srcTag is the declared tag convert peeled off x, when it had one.
-func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value, srcTag *runtime.TypeDef, srcIsDeref bool) (runtime.Value, error) {
+func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value, srcTag *runtime.TypeDef) (runtime.Value, error) {
 	s, ok := x.(*runtime.Struct)
 	if !ok {
 		if dv, isRef := runtime.Deref(x); isRef {
@@ -29,7 +29,7 @@ func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value, srcTag *runtime
 		// *bytes.Buffer) has no value tag — `MyBuf(p)` stays a convert
 		// error like gc.
 		if u := v.peelNamed(td); u != nil && u.HostNew != nil {
-			if gv, isGV := v.hostStructBox(x, u, srcTag, srcIsDeref); isGV {
+			if gv, isGV := v.hostStructBox(x, u, srcTag); isGV {
 				want := hostbridge.TypeOf(u.HostNew())
 				wantPtr := want != nil && want.Kind() == hostbridge.KindPtr
 				if nv, ok := runtime.HostStructSnapshot(gv, wantPtr); ok {
@@ -51,7 +51,7 @@ func (v *VM) convertStruct(td *runtime.TypeDef, x runtime.Value, srcTag *runtime
 // chain. An untagged box is only the value when it holds T itself (a
 // host call returning the struct); one holding *T is a real host
 // pointer — `MyBuf(p)` must fail like gc.
-func (v *VM) hostStructBox(x runtime.Value, u, srcTag *runtime.TypeDef, srcIsDeref bool) (*runtime.GoValue, bool) {
+func (v *VM) hostStructBox(x runtime.Value, u, srcTag *runtime.TypeDef) (*runtime.GoValue, bool) {
 	gv, ok := runtime.Unwrap(x).(*runtime.GoValue)
 	if !ok {
 		return nil, false
@@ -83,18 +83,19 @@ func (v *VM) hostStructBox(x runtime.Value, u, srcTag *runtime.TypeDef, srcIsDer
 		if tag == nil {
 			tag = srcTag
 		}
-		if !sameTypeDef(tag, u) || rtT != wantT {
+		// a `*p` read tags the source with the pointee's interned
+		// typedef — it spells the same host struct by HostIdent, not
+		// the bound type's declared name (`Tpl(*t)`).
+		same := sameTypeDef(tag, u)
+		if !same && tag.HostIdent != nil {
+			same = tag.HostIdent == wantT
+		}
+		if !same || rtT != wantT {
 			return nil, false
 		}
 		return gv, true
 	}
 	if rt == wantT {
-		return gv, true
-	}
-	// a `*p` operand holds the pointee through its pointer box — the
-	// call site marked it as a dereference, so the box stands for T
-	// itself (a bare `p` stays a convert error, like gc).
-	if srcIsDeref && rtT == wantT {
 		return gv, true
 	}
 	return nil, false

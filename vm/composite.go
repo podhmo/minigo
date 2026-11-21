@@ -386,9 +386,9 @@ func hostNil(hv any) bool {
 // path, a miss slot on no-member, nil for the value-dependent paths
 // (a field hit or a ScriptMethoder answer) no cache can replay.
 func (v *VM) hostMemberRes(f *frame, hv any, name string) (runtime.Value, *selRes) {
-	fv, promoted, fieldOK := hostField(hv, name, framePkgPath(f))
+	fv, fdepth, fieldOK := hostField(hv, name, framePkgPath(f))
 	m := hostbridge.RVOf(hv).MethodByName(name)
-	if fieldOK && !promoted {
+	if fieldOK && fdepth == 0 {
 		return hostbridge.GoSlotValueOf(fv), nil
 	}
 	if sm, ok := hv.(runtime.ScriptMethoder); ok {
@@ -977,13 +977,16 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 		// embedded Tree.Name field, not the host Name() method.
 		if td != nil && td.Kind == runtime.KindNamedBasic && td.HostNew == nil {
 			if u := v.peelNamed(td); u != nil && u.HostNew != nil {
-				if fv, _, fok := hostField(gv.V, name, framePkgPath(f)); fok {
+				pmd := hostbridge.HostPromotedMethodInner(gv.V, name)
+				if fv, fdepth, fok := hostField(gv.V, name, framePkgPath(f)); fok &&
+					(pmd < 0 || fdepth <= pmd) {
 					return hostbridge.GoSlotValueOf(fv), nil
 				}
-				if hostbridge.HostPromotedMethodInner(gv.V, name) < 0 {
+				if pmd < 0 {
 					f.trap("%s has no field or method %s", tdName(n.Typ), name)
 				}
-				// a promoted method falls through to hostMember.
+				// a shallower promoted method wins over a deeper field —
+				// it falls through to hostMember.
 			}
 		}
 		if mv, ok := v.hostMember(f, gv.V, name); ok {

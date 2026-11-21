@@ -43,14 +43,14 @@ func (v *VM) Convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 
 // convert implements T(x) — a call on a *TypeDef.
 func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
-	return v.convertFrom(td, x, nil, false)
+	return v.convertFrom(td, x, nil)
 }
 
 // convertFrom converts with the source expression's static typedef
 // when the call site knows it (a `var b T` stores a bare *T box — the
 // declared type lives on the slot, not the value, so only the static
 // type can tell it from a real *T host pointer).
-func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.TypeDef, srcIsDeref ...bool) (runtime.Value, error) {
+func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.TypeDef) (runtime.Value, error) {
 	// an alias IS its target type: `A(3)` with `type A = uint8` is a
 	// uint8 (%T, interface identity), and a typed const `const a A`
 	// converts the same way.
@@ -402,11 +402,11 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 	switch td.Kind {
 	case runtime.KindAlias:
 		if u := v.peelAlias(td); u != nil && u != td {
-			return v.convertFrom(u, x, srcTd, srcIsDeref...)
+			return v.convertFrom(u, x, srcTag)
 		}
 	case runtime.KindNamedBasic:
 		if u := v.peelNamed(td); u != nil && u != td {
-			cv, err := v.convertFrom(u, x, srcTd, srcIsDeref...)
+			cv, err := v.convertFrom(u, x, srcTag)
 			if err != nil {
 				return nil, err
 			}
@@ -433,7 +433,7 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 	case runtime.KindPointer:
 		return v.convertPointer(td, x, srcUnsafe)
 	case runtime.KindStruct:
-		return v.convertStruct(td, x, srcTag, len(srcIsDeref) > 0 && srcIsDeref[0])
+		return v.convertStruct(td, x, srcTag)
 	case runtime.KindFunc:
 		// generalized inference (Go 1.27): `F(Id)` instantiates the
 		// generic function against F's signature first — the inferred
