@@ -205,6 +205,14 @@ type Package struct {
 	// __init__ chunk mixes decls from several files).
 	FileByName map[string]*syntax.File
 
+	// Owner is the session that built this package: the engine sets it on
+	// source-built packages, and Engine.Call refuses a package another
+	// session owns — per-session package state (globals, init results,
+	// materialized values) must never cross sessions (M3-1, a dev-time
+	// guard rather than a boundary). Nil on host-bound packages, which
+	// sessions share on purpose.
+	Owner any
+
 	state atomic.Int32 // a State value — member access can come from any goroutine
 	// indexed closes when the package finishes indexing (success or
 	// failure): a goroutine racing a cold load waits for it instead of

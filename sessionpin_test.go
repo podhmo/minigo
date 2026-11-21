@@ -85,3 +85,27 @@ func TestSessionIsolationPin(t *testing.T) {
 		}
 	})
 }
+
+// TestSessionOwnershipCheck pins the M3-1 dev-time guard: passing a
+// package built by one session into another session's Call is refused,
+// since the package's globals and init results belong to the session
+// that built it.
+func TestSessionOwnershipCheck(t *testing.T) {
+	ctx := context.Background()
+	dir := writePinPkg(t)
+	base := NewEngine(dir)
+	s1 := base.NewSession()
+	s2 := base.NewSession()
+
+	p, err := s1.Package(ctx, dir)
+	if err != nil {
+		t.Fatalf("Package: %v", err)
+	}
+	if _, err := s2.Call(ctx, p, "Inc"); err == nil {
+		t.Error("Call on another session's package succeeded; want an ownership error")
+	}
+	// the owning session still calls it normally
+	if _, err := s1.Call(ctx, p, "Inc"); err != nil {
+		t.Errorf("Call on the owning session failed: %v", err)
+	}
+}
