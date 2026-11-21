@@ -11,7 +11,6 @@ package minigo
 
 import (
 	"fmt"
-	"go/ast"
 	"io"
 	"os"
 	"path/filepath"
@@ -194,27 +193,6 @@ func (h *hostHelpers) scanReader(v runtime.MemberCaller, args []runtime.Value) (
 	return []any{r}, nil
 }
 
-// sizeDeclTyp recovers the operand's declared typedef for
-// unsafe.Sizeof/Alignof — the layout unsafe.Offsetof already computes
-// from declared field types. A value without a stamped typedef (an
-// untyped literal, a host box) reports nil and the caller falls back
-// to runtime-value widths.
-func sizeDeclTyp(v runtime.Value) *runtime.TypeDef {
-	switch v.(type) {
-	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
-		// a pointer value: the operand's declared type is *T where T
-		// is the pointee's declared type — the tag stamped on the box
-		// belongs under the star (OpBox/OpLocalRef stamp the POINTEE's
-		// typedef), it never answers the pointee's layout itself.
-		var elem *runtime.TypeDef
-		if c, ok := v.(*runtime.Cell); ok {
-			elem = c.Typ
-		}
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: elem}
-	}
-	return valueDeclTyp(v)
-}
-
 // retErr wraps a (n int, err error) or single-value+error result into the
 // script-visible tuple (value, err-or-nil).
 func retErr(n int, err error) (any, error) {
@@ -259,26 +237,6 @@ func proxyHostTypeOf(v any) reflect.Type {
 	return stdtime.ProxyHostTypeOf(v)
 }
 
-func int64Of(v any) int64 { return stdlib.Int64Of(v) }
-
-// unsafeElems resolves unsafe.String/Slice's (ptr, len) to the n
-// elements starting at an &s[i] ref, sharing the slice's backing.
-// sliceTypFromPtr maps a pointer/array/slice typedef to the unnamed
-// []E typedef unsafe.Slice's result carries — never the named slice or
-// the [N]E array the pointer was taken from.
-func sliceTypFromPtr(td *runtime.TypeDef) *runtime.TypeDef {
-	if td == nil {
-		return nil
-	}
-	switch x := td.TypeExpr().(type) {
-	case *ast.StarExpr:
-		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.X}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
-	case *ast.ArrayType:
-		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: x.Elt}, Elem: td.Elem, Pkg: td.Pkg, File: td.File}
-	}
-	return td
-}
-
 func byteSlice(v any) []byte {
 	return stdlib.ByteSlice(v)
 }
@@ -297,189 +255,6 @@ func asCell(v runtime.Value) *runtime.Cell {
 			return nil
 		}
 	}
-}
-
-// devisit marks a pair of composite values already under comparison.
-// A reference cycle (a map or slice containing itself, two structures
-// pointing at each other) reaches the same pair again, which Go's
-// DeepEqual treats coinductively as equal — recording the pair both
-// terminates the walk and answers the recurrence.
-type devisit struct{ a, b runtime.Value }
-
-// deepEql implements reflect.DeepEqual over script values: nil-ness and
-// type identity are honored, composites compare recursively, and
-// leaf/host values compare as marshaled natives. Named tags and
-// pointer/ref layers peel on both sides in lockstep — a depth or named
-// type mismatch is a type mismatch, so *T never equals T and a named
-// type never equals a different name for the same underlying type.
-//
-// twin, when non-nil, reports whether two nil types differ only as a nil
-// host *T and its source twin's (or bound) *T ([vm.VM.HostNilTwin]).
-func deepEql(a, b runtime.Value, twin func(a, b *runtime.TypeDef) bool) bool {
-	return deepEqlSeen(a, b, map[devisit]bool{}, twin)
-}
-
-func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool, twin func(a, b *runtime.TypeDef) bool) bool {
-	for {
-		// a boxed host named basic (a FileMode from os.Stat) meets
-		// its source twin's value (io/fs's ModeDir) as that Named;
-		// a plain uint32 stays a different type.
-		a, b = runtime.TwinOperands(a, b)
-		an, aNamed := a.(*runtime.Named)
-		bn, bNamed := b.(*runtime.Named)
-		if aNamed != bNamed {
-			// a raw bound host scalar (time.Second) against a tagged one
-			// (time.Duration(1e9)): compare as host values.
-			hn, raw := an, b
-			if bNamed {
-				hn, raw = bn, a
-			}
-			if hn.Typ != nil && hn.Typ.HostScalar != nil {
-				hv, ok := runtime.HostScalarOf(hn.Typ, hn.V)
-				return ok && reflect.TypeOf(raw) == reflect.TypeOf(hv) && any(raw) == hv
-			}
-			return false
-		}
-		if aNamed {
-			if !runtime.TypIdenticalStrict(an.Typ, bn.Typ) {
-				return false
-			}
-			if an.Typ != nil && an.Typ.HostScalar != nil {
-				// a bound host scalar's payload is either the host value
-				// or still a constant (time.Duration(1e9)): compare as
-				// host values.
-				ha, aok := runtime.HostScalarOf(an.Typ, an.V)
-				hb, bok := runtime.HostScalarOf(bn.Typ, bn.V)
-				if aok && bok {
-					return ha == hb
-				}
-			}
-			a, b = an.V, bn.V
-			continue
-		}
-		ad, aRef := runtime.Deref(a)
-		bd, bRef := runtime.Deref(b)
-		if aRef != bRef {
-			return false
-		}
-		if aRef {
-			a, b = ad, bd
-			continue
-		}
-		break
-	}
-	if an, bn := deepNilish(a), deepNilish(b); an || bn {
-		if !(an && bn) {
-			return false
-		}
-		// an untyped nil and an empty-interface nil are just nil —
-		// equal to each other; a typed nil, bare or boxed in an
-		// interface (`var a any = (*T)(nil)`), carries a dynamic type
-		// so only another typed nil of the same type compares equal
-		// (kind + spelling — anonymous typedefs all spell "" by name —
-		// or a nil host *T against its source twin's *T).
-		at, bt := deepNilTyp(a), deepNilTyp(b)
-		if (at == nil) != (bt == nil) {
-			return false
-		}
-		if at != nil {
-			return runtime.TypIdenticalStrict(at, bt) || (twin != nil && twin(at, bt))
-		}
-		return true
-	}
-	switch av := a.(type) {
-	case *runtime.Slice:
-		bs, ok := b.(*runtime.Slice)
-		// both arrays and slices are runtime.Slice — the typedef's
-		// spelling carries the kind and element type ([]T != [N]T).
-		if !ok || len(av.Elems) != len(bs.Elems) || !runtime.TypIdenticalStrict(av.Typ, bs.Typ) {
-			return false
-		}
-		if av == bs {
-			return true
-		}
-		v := devisit{av, bs}
-		if seen[v] {
-			return true
-		}
-		seen[v] = true
-		for i := range av.Elems {
-			if !deepEqlSeen(av.Elems[i], bs.Elems[i], seen, twin) {
-				return false
-			}
-		}
-		return true
-	case *runtime.Struct:
-		bs, ok := b.(*runtime.Struct)
-		// struct defs need full type identity — field names alone let
-		// struct{ X int } equal struct{ X any }. Named types match
-		// only the same declaration; anonymous ones compare spelling
-		// (field types, tags, order).
-		if !ok || !runtime.TypIdenticalStrict(av.Def, bs.Def) || len(av.Fields) != len(bs.Fields) {
-			return false
-		}
-		if av == bs {
-			return true
-		}
-		v := devisit{av, bs}
-		if seen[v] {
-			return true
-		}
-		seen[v] = true
-		for i := range av.Fields {
-			if !deepEqlSeen(av.Fields[i], bs.Fields[i], seen, twin) {
-				return false
-			}
-		}
-		return true
-	case *runtime.Map:
-		bm, ok := b.(*runtime.Map)
-		if !ok || len(av.Pairs) != len(bm.Pairs) || !runtime.TypIdenticalStrict(av.Typ, bm.Typ) {
-			return false
-		}
-		if av == bm {
-			return true
-		}
-		v := devisit{av, bm}
-		if seen[v] {
-			return true
-		}
-		seen[v] = true
-		// keys match by the map's own equality — the canonical key in
-		// Pairs — not by deep equality: two distinct pointer keys with
-		// equal pointees are different keys in Go. Only the values
-		// compare recursively.
-		for ak, aval := range av.Pairs {
-			bval, found := bm.LookupCanonical(ak)
-			if !found {
-				return false
-			}
-			if !deepEqlSeen(aval, bval, seen, twin) {
-				return false
-			}
-		}
-		return true
-	}
-	return reflect.DeepEqual(hostbridge.GoNative(a), hostbridge.GoNative(b))
-}
-
-// deepNilTyp is the dynamic type of a nil v: a typed nil's own type or
-// the type boxed in an interface nil; nil for the nil interface.
-func deepNilTyp(v runtime.Value) *runtime.TypeDef {
-	if tn, ok := v.(*runtime.TypedNil); ok {
-		return tn.Typ
-	}
-	return runtime.BoxedNilTyp(v)
-}
-
-// deepNilish reports whether v is any nil flavor (typed nil, iface nil,
-// or the untyped nil).
-func deepNilish(v runtime.Value) bool {
-	switch v.(type) {
-	case *runtime.TypedNil, *runtime.IfaceNil, runtime.Nil:
-		return true
-	}
-	return v == nil || v == runtime.NIL
 }
 
 // ioAdapters bundles the env hooks the moved io package needs

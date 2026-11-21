@@ -882,15 +882,6 @@ func refDeclTyp(v runtime.Value) *runtime.TypeDef {
 	return nil
 }
 
-// valueDeclTyp recovers the declared typedef stamped on a runtime
-// value — a struct's Def, a named value's tag, a container's Typ, a
-// nil's declared type. Refs and cells carry no typedef of their own (a
-// cell's Typ stamps its ELEMENT — see pointeeDeclTyp), and untyped
-// literals or host boxes report nil.
-func valueDeclTyp(v runtime.Value) *runtime.TypeDef {
-	return stdlib.ValueDeclTyp(v)
-}
-
 // pointeeDeclTyp is the declared type an &-operand points at: a tracked
 // ref answers through its declared field/element typedef (refDeclTyp),
 // a plain &var cell through its own stamped Typ. Nil when the pointee's

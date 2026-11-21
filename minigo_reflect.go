@@ -1,10 +1,7 @@
 package minigo
 
 import (
-	"errors"
-
 	"github.com/podhmo/minigo/minireflect"
-	"github.com/podhmo/minigo/runtime"
 )
 
 // reflectHooks returns the engine's type machinery in the facade's
@@ -23,25 +20,4 @@ func (e *Engine) reflectHooks() minireflect.Hooks {
 		TypeAlias:   proxyHostType,
 		UnwrapHost:  proxyUnwrapHost,
 	}
-}
-
-// installReflect binds the reflect facade: interpreting reflect's own
-// source is a dead end (reflect.TypeOf reaches internal/abi's
-// unsafe.Pointer reinterpretation, which the host-object value model
-// cannot execute), so the package is backed by the minireflect facade
-// over runtime values instead. DeepEqual stays on the VM-side script
-// implementation.
-func (e *Engine) installReflect() {
-	syms := minireflect.Symbols(e.reflectHooks())
-	syms["DeepEqual"] = &runtime.BuiltinFunc{Name: "reflect.DeepEqual", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) != 2 {
-			return nil, errors.New("reflect.DeepEqual needs 2 args")
-		}
-		var twin func(a, b *runtime.TypeDef) bool
-		if t, ok := vc.(runtime.HostNilTwiner); ok {
-			twin = t.HostNilTwin
-		}
-		return deepEql(args[0], args[1], twin), nil
-	}}
-	e.bindBound("reflect", syms)
 }
