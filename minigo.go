@@ -577,34 +577,60 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	if rt == nil || rt.Name() == "" || rt.PkgPath() == "" {
 		return nil
 	}
-	p := e.hostPackageOf(rt.PkgPath())
-	if p == nil {
-		return nil
-	}
-	// published before it is parsed (import cycles): another goroutine
-	// may still be filling Index and the scopes
-	p.WaitIndexed()
-	if p.Index != nil {
-		td, err := e.td.ResolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
-		if err != nil || !hostbridge.HostNamedIs(rt, td) {
-			return nil
+	if p := e.hostPackageOf(rt.PkgPath()); p != nil {
+		// published before it is parsed (import cycles): another
+		// goroutine may still be filling Index and the scopes
+		p.WaitIndexed()
+		if p.Index != nil {
+			td, err := e.td.ResolveTypeRef(&runtime.TypeDef{Pkg: p}, ast.NewIdent(rt.Name()))
+			if err != nil || !hostbridge.HostNamedIs(rt, td) {
+				return nil
+			}
+			return td
 		}
-		return td
+		if p.Globals != nil {
+			if v, ok := p.Globals.Get(rt.Name()); ok {
+				if td := hostTwinBox(rt, v); td != nil {
+					return td
+				}
+			}
+		}
 	}
-	if p.Globals == nil {
-		return nil
+	// a bound package is registered under the path it was bound as —
+	// not the host type's own pkgpath — and its typedef may carry a
+	// bound name that is not the Go type's (a lib.T bound typedef
+	// boxing a host starPtrT): scan the bound packages' typedefs for
+	// the one boxing rt. Only misses reach here, so the walk stays
+	// off the resolved path.
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, bp := range e.pkgs {
+		if bp.Index != nil || bp.Globals == nil {
+			continue
+		}
+		for _, name := range bp.Globals.Names() {
+			v, ok := bp.Globals.Get(name)
+			if !ok {
+				continue
+			}
+			if td := hostTwinBox(rt, v); td != nil {
+				return td
+			}
+		}
 	}
-	v, ok := p.Globals.Get(rt.Name())
-	if !ok {
-		return nil
-	}
+	return nil
+}
+
+// hostTwinBox reports whether v is a bound typedef that boxes the host
+// type rt: a bound named basic (time.Month, time.Duration) boxes rt as
+// its scalar payload, and a bound host type boxes rt — or a pointer to
+// it, the way *T boxes ride a T typedef.
+func hostTwinBox(rt reflect.Type, v runtime.Value) *runtime.TypeDef {
 	td, ok := v.(*runtime.TypeDef)
 	if !ok {
 		return nil
 	}
 	if td.HostScalar != nil {
-		// a bound named basic (time.Month, time.Duration) boxes rt
-		// as its scalar payload
 		if reflect.TypeOf(td.HostScalar) == rt {
 			return td
 		}
