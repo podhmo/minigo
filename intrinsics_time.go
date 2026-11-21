@@ -188,7 +188,7 @@ func (e *Engine) installTime(h *hostHelpers) {
 // parked on a dead feed as asleep, the way gc treats a channel no timer
 // can feed, instead of leaving the park wakeable forever.
 type chanFeed struct {
-	vc   runtime.VMCaller
+	vc   runtime.CallerRef
 	C    chan time.Time   // the script-visible channel (proxied)
 	src  <-chan time.Time // the real timer channel the pump forwards
 	ptr  uintptr          // managed-channel id (0 = unmanaged, no proc)
@@ -200,7 +200,7 @@ type chanFeed struct {
 
 // newChanFeed starts a pump forwarding src into a buffered proxy channel
 // and registers the proxy's liveness with the caller's process.
-func newChanFeed(vc runtime.VMCaller, src <-chan time.Time, once bool) *chanFeed {
+func newChanFeed(vc runtime.CallerRef, src <-chan time.Time, once bool) *chanFeed {
 	f := &chanFeed{
 		vc:   vc,
 		C:    make(chan time.Time, 1),

@@ -867,7 +867,7 @@ func toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtime.VMCaller, d
 // io.Copy and friends): a Read-only script value adapted to io.Reader
 // must NOT satisfy WriterTo, or io.Copy calls a method that does not
 // exist and returns its error instead of copying through Read.
-func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, bool) {
+func adaptIface(v runtime.Value, t reflect.Type, vc runtime.MemberCaller) (reflect.Value, bool) {
 	if vc == nil {
 		return reflect.Value{}, false
 	}
@@ -938,7 +938,7 @@ func adaptIface(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.V
 // identity comparisons host-side still hold; a script error value (a
 // boxed typed nil included — it is a non-nil error) goes through
 // hostErr so it reads back as itself once the host returns it.
-func errOut(vc runtime.VMCaller, rs []runtime.Value, i int) error {
+func errOut(vc runtime.MemberCaller, rs []runtime.Value, i int) error {
 	if i >= len(rs) {
 		return nil
 	}
@@ -963,8 +963,8 @@ func errOut(vc runtime.VMCaller, rs []runtime.Value, i int) error {
 // hostErr boxes a script error value for host code through the
 // engine's HostErr hook, falling back to the scriptIface proxy (whose
 // Error forwards to the script method).
-func hostErr(vc runtime.VMCaller, v runtime.Value) error {
-	vc = callbackContext(vc)
+func hostErr(vc runtime.MemberCaller, v runtime.Value) error {
+	vc = callbackMemberContext(vc)
 	if m := vmOf(vc); m != nil && m.H.HostErr != nil {
 		return m.H.HostErr(vc, v)
 	}
@@ -974,7 +974,7 @@ func hostErr(vc runtime.VMCaller, v runtime.Value) error {
 var errorType = reflect.TypeFor[error]()
 
 // vmOf reports the VM behind a caller (nil for a foreign caller).
-func vmOf(vc runtime.VMCaller) *VM {
+func vmOf(vc runtime.CallerRef) *VM {
 	if b, ok := vc.(ownerVMBearer); ok {
 		return b.ownerVM()
 	}

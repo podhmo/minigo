@@ -103,6 +103,16 @@ type callbackAnchorer interface {
 	callbackAnchor() runtime.VMCaller
 }
 
+// callbackMemberContext is callbackContext for host proxies that only
+// probe members and call them: the anchored result keeps at least its
+// MemberCaller surface.
+func callbackMemberContext(vc runtime.MemberCaller) runtime.MemberCaller {
+	if a, ok := vc.(callbackAnchorer); ok {
+		return a.callbackAnchor()
+	}
+	return vc
+}
+
 func (c processCaller) callbackAnchor() runtime.VMCaller {
 	if v := c.callbackVM(); v != c.VM {
 		return processCaller{VM: v, p: c.p}
