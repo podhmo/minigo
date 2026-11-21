@@ -124,7 +124,7 @@ func effect(ch *Chunk, ip int, ins Instruction, d int, problems *[]string) (int,
 	case OpSwap, OpRot3, OpRenewVar, OpIter,
 		OpDeref, OpNilPtrCheck, OpDerefRef,
 		OpSelect, OpSelectCall, OpFieldRef, OpBox,
-		OpUnary, OpRecv, OpRecvOK,
+		OpUnary, OpRecv, OpRecvOK, OpRejectTuple,
 		OpElemType, OpElemTypeOrNil, OpLocalType:
 		return one(d)
 	case OpPop, OpNewLocal, OpSetLocal, OpSetUpval,

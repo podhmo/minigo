@@ -214,7 +214,12 @@ func (c *compiler) hoistedArgCalls(e ast.Expr) (calls []ast.Expr, ok bool) {
 // hoisting would not reorder anything — the caller then picks its own
 // fallback order (callArgs runs plain sequential, binaryOperands tries
 // the pure-operand defer).
-func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr, ok bool) {
+// spreads names the top-level exprs whose own calls may legally produce
+// a result tuple (a lone `f(g())` argument chain — every other position
+// is single-value, so their OpRejectTuple stays). Members of spreads get
+// no check in phase 1; the arm at the operand's emission covers the
+// scratch-slot reads.
+func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string, spreads map[ast.Expr]bool) (subs []ast.Expr, ok bool) {
 	// inOrder stays true while every expr up to the last one holding an
 	// eager op is that op alone (`f(x) + g(y)`, `h(f(), g())`): the
 	// sequential walk then runs the same order the two phases would, so
@@ -294,12 +299,27 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 				// the arg reads as an Ident, so emit the call with
 				// the source call's flag.
 				c.emit(bytecode.OpLocal, c.fs.lookupBinding(cname).slot, 0, call.Pos())
-				for _, a := range subArgs {
+				for i, a := range subArgs {
+					var src ast.Expr
+					if i < len(uc.Args) {
+						src = uc.Args[i]
+					}
+					if _, isCall := ast.Unparen(src).(*ast.CallExpr); isCall {
+						c.spreadTuple = true
+					}
 					c.expr(a)
+					c.spreadTuple = false
 				}
 				c.emit3(bytecode.OpCall, len(uc.Args), 2, c.callSiteArgs(c.argHints(subArgs), call.Pos()), call.Pos())
+				if !spreads[call] {
+					c.emit(bytecode.OpRejectTuple, 0, 0, call.Pos())
+				}
 			} else {
+				if spreads[call] {
+					c.spreadTuple = true
+				}
 				c.expr(synth)
+				c.spreadTuple = false
 			}
 			c.emit(bytecode.OpNewLocal, rslot, 0, call.Pos())
 			c.patchA(jT, len(c.ch.Code))
@@ -310,7 +330,15 @@ func (c *compiler) hoistEagerOps(es []ast.Expr, prefix string) (subs []ast.Expr,
 			names[call] = rname
 			continue
 		}
+		// the result lands in a scratch local — a spread-eligible call
+		// (a lone `f(g())` argument) may legitimately hand over a result
+		// tuple, so its OpRejectTuple stays off; every other call keeps
+		// the check here.
+		if spreads[call] {
+			c.spreadTuple = true
+		}
 		c.expr(call)
+		c.spreadTuple = false
 		name := c.fresh(prefix)
 		slot := c.fs.declare(name, call.Pos())
 		if c.isIfaceExpr(call) {
@@ -585,18 +613,67 @@ func substCallArg(e ast.Expr, subs map[ast.Expr]string) ast.Expr {
 // panic — but a slice's bounds check happens eagerly:
 // fmt.Sprintf("%d", s[10:0], f()) reports the slice's panic.
 func (c *compiler) callArgs(args []ast.Expr) {
-	if subs, ok := c.hoistEagerOps(args, "$arg"); ok {
-		for _, a := range subs {
+	// a lone call argument (`f(g())`) is the one legal result-tuple
+	// spread — the call op's mode-2 splice unpacks it — so arm
+	// spreadTuple for it; every other call lands its own OpRejectTuple.
+	// A call is eligible wherever it is the sole argument of a call —
+	// `sink("x", dep.F(pair()))` splices pair() into F legally — plus
+	// this call's own lone argument; the set keys on the SOURCE expr:
+	// under strict lazy an undecidable member call hoists even a lone
+	// argument into a scratch ident, whose deferredCallOperand re-emits
+	// the call.
+	spreads := map[ast.Expr]bool{}
+	for _, a := range args {
+		ast.Inspect(a, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if len(call.Args) == 1 {
+				if inner, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr); ok {
+					spreads[inner] = true
+				}
+			}
+			return true
+		})
+	}
+	if len(args) == 1 {
+		if call, ok := ast.Unparen(args[0]).(*ast.CallExpr); ok {
+			spreads[call] = true
+		}
+	}
+	if len(spreads) == 0 {
+		spreads = nil
+	}
+	emit := func(a ast.Expr, arm bool) {
+		if arm {
+			c.spreadTuple = true
 			c.expr(a)
+			c.spreadTuple = false
+			return
+		}
+		c.expr(a)
+	}
+	if subs, ok := c.hoistEagerOps(args, "$arg", spreads); ok {
+		for i, a := range subs {
+			emit(a, i < len(args) && spreads[ast.Unparen(args[i])])
 		}
 		return
 	}
 	for _, a := range args {
-		c.expr(a)
+		emit(a, spreads[ast.Unparen(a)])
 	}
 }
 
 func (c *compiler) call(x *ast.CallExpr) {
+	// gc's `multiple-value f() in single-value context`: a call's
+	// result tuple is legal only where it is the WHOLE value — a lone
+	// `f(g())` argument, `return g()`, `x, y := g()`. Every other use
+	// must land as a single value, so the general path below appends
+	// OpRejectTuple unless the caller armed spreadTuple for this call
+	// (latched and cleared on entry — a call arg must not inherit it).
+	suppressCheck := c.spreadTuple
+	c.spreadTuple = false
 	// F[...] is explicit generic instantiation — unwrap to reach a
 	// special form like define.Convert[Dst, Src](...); the type args
 	// carry no meaning for the quoted handler.
@@ -833,6 +910,9 @@ unwrapped:
 	}
 	c.callArgs(args)
 	c.emit3(bytecode.OpCall, len(x.Args), callSpread(x), c.callSiteArgs(c.argHints(x.Args), x.Pos()), x.Pos())
+	if !suppressCheck {
+		c.emit(bytecode.OpRejectTuple, 0, 0, x.Pos())
+	}
 }
 
 // lenOperandCalls reports whether a len/cap operand forces evaluation

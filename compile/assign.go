@@ -152,7 +152,14 @@ func (c *compiler) valueSpec(vs *ast.ValueSpec, d *index.Decl) {
 		// `= x.(T)`, `= <-ch` — like the := path; a plain call/unpack
 		// RHS falls through to OpUnpack.
 		if isConst || len(vs.Names) != 2 || !c.commaOkRhs(vals[0]) {
+			if _, isCall := ast.Unparen(vals[0]).(*ast.CallExpr); isCall {
+				// `var v, w = f()`: the result tuple unpacks into the
+				// names — a legal spread, so the call must not append
+				// OpRejectTuple.
+				c.spreadTuple = true
+			}
 			c.expr(vals[0])
+			c.spreadTuple = false
 		}
 		c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 		for i := len(vs.Names) - 1; i >= 0; i-- {
@@ -386,7 +393,13 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 			c.noteIfaceBinds(st)
 			return
 		}
+		if _, isCall := ast.Unparen(st.Rhs[0]).(*ast.CallExpr); isCall {
+			// `x, y := f()` / `= f()`: the result tuple unpacks into
+			// the targets — a legal spread.
+			c.spreadTuple = true
+		}
 		c.expr(st.Rhs[0])
+		c.spreadTuple = false
 		c.emit3(bytecode.OpUnpack, n, 0, 0, st.Pos())
 	} else {
 		for _, r := range st.Rhs {

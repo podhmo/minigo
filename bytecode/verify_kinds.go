@@ -203,7 +203,7 @@ func kindSuccs(ch *Chunk, ip int, ins Instruction, st []SlotKind, problems *[]st
 		return one(push(pop(1), KindTuple))
 	case OpUnary:
 		return one(push(pop(1), KindScalar))
-	case OpNilPtrCheck, OpBox:
+	case OpNilPtrCheck, OpBox, OpRejectTuple:
 		return one(st) // in-place on the top slot
 	case OpCoerceTop:
 		expect(KindType)

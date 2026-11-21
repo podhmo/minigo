@@ -403,7 +403,7 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 // (&&/||) inside an operand makes hoisting unsafe, the left read
 // instead defers wholesale, the model's earlier approximation.
 func (c *compiler) binaryOperands(x, y ast.Expr) {
-	if subs, ok := c.hoistEagerOps([]ast.Expr{x, y}, "$bin"); ok {
+	if subs, ok := c.hoistEagerOps([]ast.Expr{x, y}, "$bin", nil); ok {
 		c.expr(subs[0])
 		c.expr(subs[1])
 		return

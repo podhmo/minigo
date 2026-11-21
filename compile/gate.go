@@ -212,7 +212,7 @@ func (c *compiler) emitShift(op bytecode.BinOp, x *ast.BinaryExpr) {
 	if !isConst && !nonConst && c.sawDeferred {
 		xs, ys := x.X, x.Y
 		hoisted := false
-		if subs, ok := c.hoistEagerOps([]ast.Expr{x.X, x.Y}, "$bin"); ok {
+		if subs, ok := c.hoistEagerOps([]ast.Expr{x.X, x.Y}, "$bin", nil); ok {
 			xs, ys, hoisted = subs[0], subs[1], true
 		}
 		c.expr(xs)
