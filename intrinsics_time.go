@@ -297,3 +297,189 @@ type afterFuncTimer struct {
 	note    func() func() // registers a fresh external-wait note
 	release func()        // releases the held note (nil when none)
 }
+
+// pump forwards each src value into the proxy until p.done closes; a
+// one-shot feed dies after its single delivery. A pump is retired only
+// before the real timer is stopped or reset, so a fire it holds at that
+// point predates the Stop/Reset and is dropped, as go1.23 discards it.
+func (f *chanFeed) pump(p *feedPump) {
+	defer close(p.exited)
+	for {
+		select {
+		case v := <-f.src:
+			if !f.once {
+				// a repeating feed drops a tick nobody has collected
+				// yet, like gc's ticker — the 1-buffer keeps only the
+				// latest.
+				select {
+				case f.C <- v:
+				default:
+				}
+				continue
+			}
+			select {
+			case f.C <- v:
+			case <-p.done:
+				p.dropped = true
+				return
+			}
+			f.dieIf(p)
+			return
+		case <-p.done:
+			return
+		}
+	}
+}
+
+// start (re)arms the feed with a fresh pump: the managed channel reports
+// alive again. Callers hold f.op (or own f exclusively).
+func (f *chanFeed) start() {
+	p := &feedPump{done: make(chan struct{}), exited: make(chan struct{})}
+	f.mu.Lock()
+	f.cur = p
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, false)
+	}
+	f.mu.Unlock()
+	go f.pump(p)
+}
+
+// dieIf marks the feed dead after a one-shot delivery — but only while
+// p is still the live pump; a Stop/Reset already owns the lifecycle.
+func (f *chanFeed) dieIf(p *feedPump) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cur != p {
+		return
+	}
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, true)
+	}
+}
+
+// retire stops the live pump and waits for it to exit, so no value read
+// from src before the coming Stop/Reset can reach C afterwards. It
+// reports whether the pump held an undelivered fire. Callers hold f.op;
+// f.mu is released while waiting so the pump's dieIf cannot deadlock.
+func (f *chanFeed) retire() bool {
+	f.mu.Lock()
+	p := f.cur
+	f.cur = nil
+	f.mu.Unlock()
+	if p == nil {
+		return false
+	}
+	close(p.done)
+	<-p.exited
+	return p.dropped
+}
+
+// drain discards a fire left in the proxy buffer, reporting whether one
+// was there: go1.23 makes no pre-Stop/Reset value receivable afterwards.
+func (f *chanFeed) drain() bool {
+	select {
+	case <-f.C:
+		return true
+	default:
+		return false
+	}
+}
+
+// stop retires the feed for good around the real stop: parked receivers
+// join the asleep count. It reports whether a fire was still pending
+// (the real timer's own stop result, a dropped fire, or a buffered one).
+func (f *chanFeed) stop(realStop func() bool) bool {
+	f.op.Lock()
+	defer f.op.Unlock()
+	dropped := f.retire()
+	stopped := realStop()
+	drained := f.drain()
+	if f.ptr != 0 {
+		vm.SetWakeChanDead(f.vc, f.ptr, true)
+	}
+	return stopped || dropped || drained
+}
+
+// reset retires the old pump, resets the real timer, discards any stale
+// fire, and re-arms with a fresh pump. It reports whether a fire was
+// still pending, like stop.
+func (f *chanFeed) reset(realReset func() bool) bool {
+	f.op.Lock()
+	defer f.op.Unlock()
+	dropped := f.retire()
+	active := realReset()
+	drained := f.drain()
+	f.start()
+	return active || dropped || drained
+}
+
+// Stop cancels the timer like time.Timer.Stop: the feed dies and parked
+// receivers count asleep. As in go1.23, a fire not yet received counts
+// as stopped (true) and is discarded.
+func (b *timerChanBox) Stop() bool {
+	return b.feed.stop(b.t.Stop)
+}
+
+// Reset reschedules the timer like time.Timer.Reset: a dead feed
+// re-arms and a stale fire is discarded.
+func (b *timerChanBox) Reset(d time.Duration) bool {
+	return b.feed.reset(func() bool { return b.t.Reset(d) })
+}
+
+// Stop halts the ticker like time.Ticker.Stop: no more ticks can arrive,
+// so the feed dies and parked receivers count asleep.
+func (b *tickerChanBox) Stop() {
+	b.feed.stop(func() bool { b.t.Stop(); return false })
+}
+
+// Reset restarts the ticker like time.Ticker.Reset: a stopped feed
+// re-arms so parked receivers wake again.
+//
+// The interval is validated before the feed retires its pump: a
+// recovered panic must leave the ticker running, as in gc.
+func (b *tickerChanBox) Reset(d time.Duration) {
+	if d <= 0 {
+		panic("non-positive interval for Ticker.Reset")
+	}
+	b.feed.reset(func() bool { b.t.Reset(d); return false })
+}
+
+// hold takes a new note if none is held. Call with no lock held.
+func (t *afterFuncTimer) hold() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.release == nil {
+		t.release = t.note()
+	}
+}
+
+// drop releases the held note, if any. The release funcs are
+// once-guarded, but clearing the field also stops a later Stop from
+// double-counting a callback that already fired.
+func (t *afterFuncTimer) drop() {
+	t.mu.Lock()
+	r := t.release
+	t.release = nil
+	t.mu.Unlock()
+	if r != nil {
+		r()
+	}
+}
+
+// Stop cancels the timer like time.Timer.Stop: a true return means the
+// callback will never run, so its wait note is released.
+func (t *afterFuncTimer) Stop() bool {
+	if !t.Timer.Stop() {
+		return false
+	}
+	t.drop()
+	return true
+}
+
+// Reset reschedules the timer like time.Timer.Reset: a callback the
+// timer may now fire must hold a wait note again.
+func (t *afterFuncTimer) Reset(d time.Duration) bool {
+	active := t.Timer.Reset(d)
+	t.hold()
+	return active
+}

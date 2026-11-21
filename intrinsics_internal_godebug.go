@@ -1,6 +1,9 @@
 package minigo
 
 import (
+	"os"
+	"strings"
+
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -28,3 +31,29 @@ func (e *Engine) installInternalGodebug(h *hostHelpers) {
 // reports the same current value — "" when the knob is unset, which is
 // the enabled-by-default answer every consumer relies on.
 type godebugSetting struct{ name string }
+
+func (s *godebugSetting) Value() string {
+	// a name may repeat in GODEBUG — gc's runtime parse keeps the LAST
+	// entry, which is also what makes testenv.SetGODEBUG's appended
+	// override win over an earlier setting.
+	var val string
+	for _, kv := range strings.Split(os.Getenv("GODEBUG"), ",") {
+		if n, v, ok := strings.Cut(kv, "="); ok && n == s.Name() {
+			val = v
+		}
+	}
+	return val
+}
+
+func (s *godebugSetting) Name() string {
+	if s.name != "" && s.name[0] == '#' {
+		return s.name[1:]
+	}
+	return s.name
+}
+
+func (s *godebugSetting) Undocumented() bool { return s.name != "" && s.name[0] == '#' }
+
+func (s *godebugSetting) String() string { return s.Name() + "=" + s.Value() }
+
+func (s *godebugSetting) IncNonDefault() {}

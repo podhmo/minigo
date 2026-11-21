@@ -498,7 +498,7 @@ func (v *RValue) Type() *RType {
 	// host box `var b bytes.Buffer` is GoValue{*bytes.Buffer} but types
 	// as bytes.Buffer). A GoValue{*RValue} is not a host object — it is
 	// the script repr of reflect.Value itself.
-	if gv, ok := unwrapRef(v.get()).(*runtime.GoValue); ok && gv.V != nil {
+	if gv, ok := runtime.Unwrap(v.get()).(*runtime.GoValue); ok && gv.V != nil {
 		switch gv.V.(type) {
 		case *RValue:
 			// script repr of reflect.Value itself — the td path
@@ -560,7 +560,7 @@ func (v *RValue) Elem() *RValue {
 	switch v.Kind() {
 	case reflect.Ptr:
 		// the pointer object is the cell/ref-view itself
-		ptr := unwrapRef(v.get())
+		ptr := runtime.Unwrap(v.get())
 		dv, ok := runtime.Deref(ptr)
 		if !ok {
 			// dereferencing a nil pointer value gives the invalid Value
@@ -683,7 +683,7 @@ func (v *RValue) IsNil() bool {
 		reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer)
 	// in the cell model a ref-view IS a pointer and is never nil; a nil
 	// pointer value arrives as the TypedNil it stores.
-	x := unwrapRef(v.get())
+	x := runtime.Unwrap(v.get())
 	if v.Kind() == reflect.Interface {
 		// IsNil on an interface asks about the interface itself: a
 		// boxed typed nil (IfaceNil{*T}) is a NON-nil interface —
@@ -3241,7 +3241,7 @@ func (v *RValue) Pointer() uintptr {
 	switch v.Kind() {
 	case reflect.String:
 		// the string-data pointer: empty reads 0, non-empty nonzero.
-		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
+		if s, ok := runtime.Unwrap(runtime.Unwrap(v.get())).(string); ok && s == "" {
 			return 0
 		}
 		return fakeAddr
@@ -3265,7 +3265,7 @@ func (v *RValue) UnsafePointer() any {
 	}
 	switch v.Kind() {
 	case reflect.String:
-		if s, ok := runtime.Unwrap(unwrapRef(v.get())).(string); ok && s == "" {
+		if s, ok := runtime.Unwrap(runtime.Unwrap(v.get())).(string); ok && s == "" {
 			return nil
 		}
 		return v.get()
@@ -3483,18 +3483,6 @@ func arrayTypeOf(td *runtime.TypeDef) *ast.ArrayType {
 		return at
 	}
 	return nil
-}
-
-// unwrapRef strips Named wrappers down to the ref-view underneath so
-// pointer mechanics can reach the cell.
-func unwrapRef(v runtime.Value) runtime.Value {
-	for {
-		if n, ok := v.(*runtime.Named); ok {
-			v = n.V
-			continue
-		}
-		return v
-	}
 }
 
 // normVal normalizes an ifaceVal payload back into a script value:

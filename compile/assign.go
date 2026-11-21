@@ -278,48 +278,10 @@ func (c *compiler) localTypeDecl(ts *ast.TypeSpec) {
 	isIface := false
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
-		td.Kind = runtime.KindStruct
-		for _, fld := range t.Fields.List {
-			tag := ""
-			if fld.Tag != nil {
-				tag, _ = strconv.Unquote(fld.Tag.Value)
-			}
-			if len(fld.Names) > 0 {
-				for _, n := range fld.Names {
-					td.Fields = append(td.Fields, n.Name)
-					if tag != "" {
-						if td.FTags == nil {
-							td.FTags = map[string]string{}
-						}
-						td.FTags[n.Name] = tag
-					}
-				}
-			} else {
-				// anonymous field: embed by type name
-				name := embedFieldName(fld.Type)
-				td.EmbedSpecs = append(td.EmbedSpecs, fld.Type)
-				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, name)
-				if tag != "" {
-					if td.FTags == nil {
-						td.FTags = map[string]string{}
-					}
-					td.FTags[name] = tag
-				}
-			}
-		}
+		td.SetStructShape(t)
 	case *ast.InterfaceType:
-		td.Kind = runtime.KindInterface
+		td.SetInterfaceShape(t)
 		isIface = true
-		for _, m := range t.Methods.List {
-			if len(m.Names) == 0 {
-				td.IEmbeds = append(td.IEmbeds, m.Type)
-				continue
-			}
-			for _, n := range m.Names {
-				td.MReqs = append(td.MReqs, n.Name)
-			}
-		}
 	case *ast.ArrayType:
 		td.Kind = runtime.KindSlice
 	case *ast.MapType:

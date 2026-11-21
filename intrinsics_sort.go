@@ -203,3 +203,26 @@ func cmpScript(a, b runtime.Value) int64 {
 	}
 	return 0
 }
+
+func (s *scriptSortable) Len() int {
+	r, err := s.vc.Call(s.lenFn, nil)
+	if err != nil {
+		panic(err)
+	}
+	return int(int64Of(r))
+}
+
+func (s *scriptSortable) Less(i, j int) bool {
+	r, err := s.vc.Call(s.lessFn, []runtime.Value{int64(i), int64(j)})
+	if err != nil {
+		panic(err)
+	}
+	b, _ := r.(bool)
+	return b
+}
+
+func (s *scriptSortable) Swap(i, j int) {
+	if _, err := s.vc.Call(s.swapFn, []runtime.Value{int64(i), int64(j)}); err != nil {
+		panic(err)
+	}
+}

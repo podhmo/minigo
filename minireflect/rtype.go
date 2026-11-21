@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // RType is minigo's reflect.Type, for either a script type or a host
@@ -1702,18 +1703,7 @@ func (t *RType) NumIn() int {
 	if ft == nil {
 		trap("NumIn of non-func type %s", t.String())
 	}
-	if ft.Params == nil {
-		return 0
-	}
-	n := 0
-	for _, f := range ft.Params.List {
-		if len(f.Names) > 0 {
-			n += len(f.Names)
-		} else {
-			n++
-		}
-	}
-	return n
+	return syntax.FieldCount(ft.Params)
 }
 
 func (t *RType) NumOut() int {
@@ -1724,18 +1714,7 @@ func (t *RType) NumOut() int {
 	if ft == nil {
 		trap("NumOut of non-func type %s", t.String())
 	}
-	if ft.Results == nil {
-		return 0
-	}
-	n := 0
-	for _, f := range ft.Results.List {
-		if len(f.Names) > 0 {
-			n += len(f.Names)
-		} else {
-			n++
-		}
-	}
-	return n
+	return syntax.FieldCount(ft.Results)
 }
 
 func (t *RType) In(i int) *RType {

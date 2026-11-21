@@ -1025,8 +1025,8 @@ func (v *VM) unifyFieldTypes(ctx *runtime.TypeDef, tset map[string]bool, binds m
 	if pat == nil || conc == nil {
 		return
 	}
-	pe := flattenFieldExprs(pat)
-	ce := flattenFieldExprs(conc)
+	pe := syntax.FieldTypes(pat)
+	ce := syntax.FieldTypes(conc)
 	for i, p := range pe {
 		if i >= len(ce) {
 			break
@@ -1050,20 +1050,6 @@ func (v *VM) unifyFieldTypes(ctx *runtime.TypeDef, tset map[string]bool, binds m
 		}
 		v.unifyTypeDef(ctx, tset, binds, pv, ct)
 	}
-}
-
-func flattenFieldExprs(fl *ast.FieldList) []ast.Expr {
-	var out []ast.Expr
-	for _, fd := range fl.List {
-		n := len(fd.Names)
-		if n == 0 {
-			n = 1
-		}
-		for i := 0; i < n; i++ {
-			out = append(out, fd.Type)
-		}
-	}
-	return out
 }
 
 // unifyIndices handles a `Name[E]`-shaped pattern against an instantiated

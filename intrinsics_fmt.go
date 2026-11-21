@@ -9,6 +9,7 @@ import (
 	"io"
 	"reflect"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -624,13 +625,18 @@ func bindTyp(td *runtime.TypeDef, et *runtime.TypeDef) *runtime.TypeDef {
 	return et
 }
 
-// formatOfNoHash is formatOf without the '#' flag — for scalar leaves
-// inside composites, where %#v keeps decimal ints (the 0x spelling is a
-// top-level-only form).
-func formatOfNoHash(f fmt.State, verb rune) string {
+// formatDirective rebuilds a fmt directive from the verb and the
+// flags/width a host call set on the state. hash drops the '#' flag for
+// scalar leaves inside composites, where %#v keeps decimal ints (the
+// 0x spelling is a top-level-only form).
+func formatDirective(f fmt.State, verb rune, hash bool) string {
 	var sb strings.Builder
 	sb.WriteByte('%')
-	for _, c := range "+- 0" {
+	flags := "+- 0"
+	if hash {
+		flags = "+-# 0"
+	}
+	for _, c := range flags {
 		if f.Flag(int(c)) {
 			sb.WriteByte(byte(c))
 		}
@@ -643,6 +649,11 @@ func formatOfNoHash(f fmt.State, verb rune) string {
 	}
 	sb.WriteRune(verb)
 	return sb.String()
+}
+
+// formatOfNoHash is formatOf without the '#' flag.
+func formatOfNoHash(f fmt.State, verb rune) string {
+	return formatDirective(f, verb, false)
 }
 
 // unsignedIntTyp reports whether td denotes an unsigned integer — the
@@ -1063,21 +1074,7 @@ func rewriteTypeVerbs(spec string, a []any, rawArgs []runtime.Value, formatAt in
 // host call set on the state — for scalar leaf values the host formatter
 // does the real work.
 func formatOf(f fmt.State, verb rune) string {
-	var sb strings.Builder
-	sb.WriteByte('%')
-	for _, c := range "+-# 0" {
-		if f.Flag(int(c)) {
-			sb.WriteByte(byte(c))
-		}
-	}
-	if w, ok := f.Width(); ok {
-		sb.WriteString(strconv.Itoa(w))
-	}
-	if p, ok := f.Precision(); ok {
-		sb.WriteString("." + strconv.Itoa(p))
-	}
-	sb.WriteRune(verb)
-	return sb.String()
+	return formatDirective(f, verb, true)
 }
 
 func withWidth(f fmt.State, s string) string {
@@ -1292,4 +1289,499 @@ func typedefSpelling(td *runtime.TypeDef) string {
 		return "interface{}"
 	}
 	return runtime.DisplayName(td)
+}
+
+func (s *fmtValue) Format(f fmt.State, verb rune) {
+	io.WriteString(f, s.render(verb, f))
+}
+
+func (zeroState) Write(b []byte) (int, error) { return len(b), nil }
+
+func (zeroState) Width() (int, bool) { return 0, false }
+
+func (zeroState) Precision() (int, bool) { return 0, false }
+
+func (zeroState) Flag(int) bool { return false }
+
+func (s *captureState) Write(b []byte) (int, error) { return s.buf.Write(b) }
+
+func (s *captureState) Width() (int, bool) { return s.f.Width() }
+
+func (s *captureState) Precision() (int, bool) { return s.f.Precision() }
+
+func (s *captureState) Flag(ch int) bool { return s.f.Flag(ch) }
+
+func (s *fmtValue) render(verb rune, f fmt.State) string {
+	// fmt consults Formatter before the Stringer family, for every verb
+	// but %T/%p — a script Formatter writes to the live state itself, so
+	// a successful call already emitted its output. zeroState is the
+	// flag-less stand-in for nested renderings (bad-verb markers, %p)
+	// where Go invokes no Formatter; nothing real writes to it.
+	if s.c != nil && verb != 'T' && verb != 'p' {
+		if cs, isCap := f.(*captureState); isCap {
+			wrote, pan := callFormatReport(s.c, s.x, cs, verb)
+			if pan != nil {
+				return fmtPanicMarker(verb, "Format", pan)
+			}
+			if wrote {
+				return cs.buf.String()
+			}
+		} else if _, isZero := f.(zeroState); !isZero {
+			wrote, pan := callFormatReport(s.c, s.x, f, verb)
+			if pan != nil {
+				return fmtPanicMarker(verb, "Format", pan)
+			}
+			if wrote {
+				return ""
+			}
+		}
+	}
+	// Stringer family first, like fmt does.
+	if s.c != nil {
+		switch verb {
+		case 'v':
+			if f.Flag('#') {
+				// %#v consults GoString, not String/Error.
+				if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "GoString"); pan != nil {
+					return fmtPanicMarker(verb, "GoString", pan)
+				} else if ok {
+					return str
+				}
+				break
+			}
+			// Go's fmt consults error before Stringer — a value
+			// implementing both prints its Error().
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
+				return withWidth(f, str)
+			}
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
+				return withWidth(f, str)
+			}
+		case 's':
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
+				return withWidth(f, str)
+			}
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
+				return withWidth(f, str)
+			}
+		case 'q':
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
+				return strconv.Quote(str)
+			}
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
+				return strconv.Quote(str)
+			}
+		case 'x', 'X':
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "Error"); pan != nil {
+				return fmtPanicMarker(verb, "Error", pan)
+			} else if ok {
+				return fmt.Sprintf("%"+string(verb), str)
+			}
+			if str, ok, pan := ifaceCallStringPanic(s.c, s.x, "String"); pan != nil {
+				return fmtPanicMarker(verb, "String", pan)
+			} else if ok {
+				return fmt.Sprintf("%"+string(verb), str)
+			}
+		}
+	}
+	return s.renderValue(s.x, verb, f)
+}
+
+func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
+	// Go's fmt has no render-depth cap — a deeply nested composite
+	// prints every level (issue29264), and a cyclic one overflows the
+	// host stack just as it does under go run.
+	switch v := x.(type) {
+	case *runtime.Named:
+		// %T keeps the declared name; other verbs render through.
+		if verb == 'T' {
+			if runtime.IfaceTaggedNil(v.V) != nil {
+				return "<nil>" // a nil interface has no dynamic type
+			}
+			return typedefSpelling(v.Typ)
+		}
+		// a bound host scalar (time.Month/time.Duration) whose payload is
+		// still script-shaped — a stored int64 or a const-domain UConst —
+		// renders through the host scalar so String() and every verb
+		// apply like gc (%v → "January", %d → 1).
+		if td := v.Typ; td != nil && td.HostScalar != nil {
+			if hv, ok := runtime.HostScalarOf(td, v.V); ok {
+				return fmt.Sprintf(formatOf(f, verb), hv)
+			}
+		}
+		// an int64 carrying a uint64/uintptr tag must format its bits as
+		// unsigned — host fmt would read the int64 as signed otherwise.
+		if unsignedIntTyp(v.Typ) {
+			if iv, ok := v.V.(int64); ok {
+				return fmt.Sprintf(formatOf(f, verb), uint64(iv))
+			}
+		}
+		// a float64 carrying a float32 tag formats in float32 — the
+		// rounded value, not the wider box's digits. A payload still
+		// riding the constant domain reads at float32 width the same
+		// way (`float32(c)` conversions keep UConst).
+		if float32Tag(v.Typ) {
+			if fv, ok := v.V.(float64); ok {
+				return fmt.Sprintf(formatOf(f, verb), float32(fv))
+			}
+			if uc, ok := v.V.(*runtime.UConst); ok {
+				if nv, err := uconstNative(uc); err == nil {
+					if fv, ok := nv.(float64); ok {
+						return fmt.Sprintf(formatOf(f, verb), float32(fv))
+					}
+				}
+			}
+		}
+		// a complex128 carrying a complex64 tag rounds each half to
+		// float32 — same gap as float32, one level wider.
+		if complex64Tag(v.Typ) {
+			if cv, ok := complex64Value(v.V); ok {
+				return fmt.Sprintf(formatOf(f, verb), cv)
+			}
+		}
+		return (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: v.V, et: v.Typ, depth: s.depth + 1}).render(verb, f)
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+		dv, ok := runtime.Deref(v)
+		if !ok {
+			return "<nil>"
+		}
+		// Go's printPtr descends one level only when the pointee is a
+		// composite — struct, array, slice, or map — spelling `&[...]`/
+		// `&{...}`/`&map[...]`; every other pointee (scalars, other
+		// pointers, chans, funcs) reads as the address. The descent only
+		// happens at the top level: a pointer nested inside a composite
+		// prints 0x... — []*S{p} renders [0xADDR], and under %#v
+		// [(*S)(0xADDR)].
+		composite := func(x runtime.Value) bool {
+			switch t := x.(type) {
+			case *runtime.Struct, *runtime.Slice, *runtime.Map:
+				return true
+			case *runtime.TypedNil:
+				// &ns for a nil slice/map spells &[]/&map[]
+				return t.Typ != nil &&
+					(t.Typ.Kind == runtime.KindSlice || t.Typ.Kind == runtime.KindMap)
+			}
+			return false
+		}
+		if s.depth == 0 && composite(dv) {
+			return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: dv, depth: s.depth + 1}).render(verb, nested(f))
+		}
+		if s.depth == 0 {
+			if n, isNamed := dv.(*runtime.Named); isNamed && composite(n.V) {
+				return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: n.V, depth: s.depth + 1}).render(verb, nested(f))
+			}
+		}
+		// scalar pointer: Go prints the address — a host pointer repr
+		// is the closest readable stand-in; %#v wraps it as (*T)(0xADDR).
+		if verb == 'v' && f.Flag('#') {
+			return fmt.Sprintf("(*%s)(%p)", scriptTypeString(dv), v)
+		}
+		return fmt.Sprintf("%p", v)
+	case *runtime.Struct:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Def)
+		case 'q':
+			return strconv.Quote(s.renderValue(x, 'v', f))
+		}
+		parts := make([]string, len(v.Fields))
+		for i, e := range v.Fields {
+			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: fieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
+			if f.Flag('+') && i < len(v.Def.Fields) {
+				fv = v.Def.Fields[i] + ":" + fv
+			}
+			if f.Flag('#') && i < len(v.Def.Fields) {
+				fv = v.Def.Fields[i] + ":" + fv
+			}
+			parts[i] = fv
+		}
+		sep := " "
+		if f.Flag('#') {
+			sep = ", "
+		}
+		body := strings.Join(parts, sep)
+		if f.Flag('#') {
+			return typedefSpelling(v.Def) + "{" + body + "}"
+		}
+		return "{" + body + "}"
+	case *runtime.Slice:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Typ)
+		case 'p':
+			if isArrayTyp(v.Typ) {
+				return badVerb(verb, typedefSpelling(v.Typ), s.renderList(v, 'v', f))
+			}
+			return fmt.Sprintf("%p", v)
+		case 's', 'q', 'x', 'X':
+			// a byte-wise slice formats as text like Go's fmt does
+			if bs, ok := sliceBytes(v); ok {
+				switch verb {
+				case 's':
+					return string(bs)
+				case 'q':
+					return strconv.Quote(string(bs))
+				default:
+					return fmt.Sprintf(formatOf(f, verb), bs)
+				}
+			}
+		case 'v':
+			// %#v renders a byte slice as []byte{0xNN, ...} — the byte
+			// spelling applies only at the top level (reflect cannot
+			// distinguish byte from uint8 below it).
+			if f.Flag('#') && byteSliceTyp(v.Typ) {
+				if bs, ok := sliceBytes(v); ok {
+					spell := typedefSpelling(v.Typ)
+					if v.Typ.Name == "" && s.depth == 0 && !isArrayTyp(v.Typ) {
+						spell = "[]byte"
+					}
+					parts := make([]string, len(bs))
+					for i, b := range bs {
+						parts[i] = fmt.Sprintf("0x%x", b)
+					}
+					return spell + "{" + strings.Join(parts, ", ") + "}"
+				}
+			}
+		}
+		return s.renderList(v, verb, f)
+	case *runtime.Map:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Typ)
+		case 'p':
+			return fmt.Sprintf("%p", v)
+		}
+		// Go's fmt prints maps in sorted-key order (fmtsort), not
+		// insertion order — sort a copy of Order the same way.
+		order := append([]runtime.Value{}, v.Order...)
+		sort.SliceStable(order, func(i, j int) bool {
+			a, b := order[i], order[j]
+			if lessScript(a, b) {
+				return true
+			}
+			if lessScript(b, a) {
+				return false
+			}
+			// unordered kinds (bool, composites, mixed): order by the
+			// rendered key like fmtsort's fallback.
+			ka := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: a, depth: s.depth + 1}).render('v', nested(f))
+			kb := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: b, depth: s.depth + 1}).render('v', nested(f))
+			return ka < kb
+		})
+		kt, vt := mapElemTyps(v.Typ)
+		ev := elemVerb(verb)
+		parts := make([]string, 0, len(order))
+		for _, k := range order {
+			e, _ := v.Get(k)
+			kr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: k, et: kt, depth: s.depth + 1}).render(ev, nested(f))
+			vr := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: vt, depth: s.depth + 1}).render(ev, nested(f))
+			parts = append(parts, kr+":"+vr)
+		}
+		if f.Flag('#') {
+			return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
+		}
+		return "map[" + strings.Join(parts, " ") + "]"
+	case *runtime.Tuple:
+		parts := make([]string, len(v.Elems))
+		for i, e := range v.Elems {
+			parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, depth: s.depth + 1}).render(verb, nested(f))
+		}
+		return strings.Join(parts, " ")
+	case *runtime.TypedNil:
+		if verb == 'T' {
+			return typedefSpelling(v.Typ)
+		}
+		if rt := vm.HostNilType(v.Typ); rt != nil {
+			// a nil named host slice (net.IP) renders as the host nil
+			// would — its String method on the nil receiver
+			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
+		}
+		return s.nilTyp(verb, f, v.Typ)
+	case *runtime.IfaceNil:
+		if v.Typ != nil && v.Typ.Kind == runtime.KindInterface {
+			// a nil interface value prints like a bare nil — <nil> at
+			// top level, the slot's static type inside %#v composites.
+			if verb == 'v' && f.Flag('#') && s.et != nil {
+				return nilGoSyntax(s.et)
+			}
+			if verb == 'T' || verb == 'v' || s.depth > 0 || s.et != nil {
+				return "<nil>"
+			}
+			return badVerb(verb, "", "<nil>")
+		}
+		if verb == 'T' {
+			return typedefSpelling(v.Typ)
+		}
+		if rt := vm.HostNilType(v.Typ); rt != nil {
+			return fmt.Sprintf(formatOf(f, verb), reflect.Zero(rt).Interface())
+		}
+		return s.nilTyp(verb, f, v.Typ)
+	case runtime.Nil:
+		// %#v spells a nil sitting in an interface-typed field or
+		// element with the slot's static type — error(nil),
+		// interface {}(nil) — the way reflect sees the declared type.
+		// Every other verb (and an untyped top-level nil) keeps <nil>.
+		if verb == 'v' && f.Flag('#') && s.et != nil {
+			return nilGoSyntax(s.et)
+		}
+		// a nil interface element inside a composite renders <nil>
+		// under every verb; top-level non-%v verbs get the marker.
+		if verb == 'T' || verb == 'v' || s.depth > 0 || s.et != nil {
+			return "<nil>"
+		}
+		return badVerb(verb, "", "<nil>")
+	case *runtime.Chan:
+		switch verb {
+		case 'T':
+			return typedefSpelling(v.Typ)
+		case 'v':
+			// %#v spells pointer-shaped values as (T)(0xADDR).
+			if f.Flag('#') {
+				return fmt.Sprintf("(%s)(%p)", chanTypSpelling(v.Typ), v)
+			}
+			return fmt.Sprintf("%p", v)
+		case 'p':
+			return fmt.Sprintf("%p", v)
+		}
+		return badVerb(verb, typedefSpelling(v.Typ), fmt.Sprintf("%p", v))
+	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
+		switch verb {
+		case 'T':
+			return funcSigSpelling(v)
+		case 'v':
+			if f.Flag('#') {
+				return fmt.Sprintf("(%s)(%p)", funcSigSpelling(v), v)
+			}
+			return fmt.Sprintf("%p", v)
+		case 'p':
+			return fmt.Sprintf("%p", v)
+		}
+		return badVerb(verb, funcSigSpelling(v), fmt.Sprintf("%p", v))
+	case *runtime.GoValue:
+		if verb == 'T' {
+			// a proxy box spells its API type, not the box's name.
+			if rt := proxyHostTypeOf(v.V); rt != nil {
+				return rt.String()
+			}
+		}
+		return fmt.Sprintf(formatOf(f, verb), v.V)
+	case *runtime.TypeDef:
+		if verb == 'T' {
+			return "type"
+		}
+		return typedefSpelling(v)
+	}
+	return s.leaf(x, verb, f)
+}
+
+// renderList renders a slice's bracketed element list — every verb
+// descends elementwise like Go's fmt ([]int under %q quotes each element
+// as a char, under %s each becomes a %!s marker).
+func (s *fmtValue) renderList(v *runtime.Slice, verb rune, f fmt.State) string {
+	et := sliceElemTyp(v.Typ)
+	ev := elemVerb(verb)
+	parts := make([]string, len(v.Elems))
+	for i, e := range v.Elems {
+		parts[i] = (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: et, depth: s.depth + 1}).render(ev, nested(f))
+	}
+	if f.Flag('#') && verb == 'v' {
+		return typedefSpelling(v.Typ) + "{" + strings.Join(parts, ", ") + "}"
+	}
+	return "[" + strings.Join(parts, " ") + "]"
+}
+
+// leaf formats a scalar value: compatible verbs go to host fmt after
+// normalizing to the script-canonical Go type (script ints are int64 but
+// spell int), incompatible verbs produce Go's %!verb(type=value) marker
+// spelled with the declared element type when the leaf has one.
+func (s *fmtValue) leaf(x runtime.Value, verb rune, f fmt.State) string {
+	if u, ok := x.(*runtime.UConst); ok {
+		x = mustNativeConst(u)
+	}
+	if leafBadVerb(x, verb) {
+		name := ""
+		// an interface-typed element (incl. any) names the value's
+		// dynamic type, not the interface — []any{1} gives %!v(int=1)
+		if s.et != nil && s.et.Name != "any" {
+			if _, isIface := s.et.TypeExpr().(*ast.InterfaceType); !isIface {
+				name = typedefSpelling(s.et)
+			}
+		}
+		if name == "" {
+			name = scriptScalarName(x)
+		}
+		return badVerb(verb, name, (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: x, depth: s.depth + 1}).render('v', nested(f)))
+	}
+	if i, ok := x.(int64); ok {
+		// script ints store int64 but spell int — including inside
+		// composites, where %#v elements stay decimal (the 0x-hex int
+		// spelling is a top-level-only form).
+		if verb == 'v' && f.Flag('#') {
+			return fmt.Sprintf(formatOfNoHash(f, verb), int(i))
+		}
+		return fmt.Sprintf(formatOf(f, verb), int(i))
+	}
+	return fmt.Sprintf(formatOf(f, verb), x)
+}
+
+// nilTyp renders a typed nil like Go's fmt: a nil slice or map prints its
+// empty composite ([] or map[]) under every verb — a nil []byte renders
+// like the empty string — while a nil pointer, chan or func prints
+// <nil>/0x0/0 like the nil address it is. %#v uses the Go-syntax
+// conversion form T(nil): []string(nil), map[string]int(nil), (*int)(nil).
+func (s *fmtValue) nilTyp(verb rune, f fmt.State, td *runtime.TypeDef) string {
+	if verb == 'v' && f.Flag('#') {
+		return nilGoSyntax(td)
+	}
+	if verb == 'v' && s.nilSyntax && td != nil &&
+		(td.Kind == runtime.KindSlice || td.Kind == runtime.KindMap) {
+		return nilGoSyntax(td)
+	}
+	if td == nil {
+		return "<nil>"
+	}
+	switch td.Kind {
+	case runtime.KindSlice:
+		if byteSliceTyp(td) {
+			switch verb {
+			case 's', 'x', 'X':
+				return ""
+			case 'q':
+				return strconv.Quote("")
+			}
+		}
+		if verb == 'p' {
+			return "0x0"
+		}
+		return "[]"
+	case runtime.KindMap:
+		if verb == 'p' {
+			return "0x0"
+		}
+		return "map[]"
+	case runtime.KindPointer, runtime.KindChan, runtime.KindFunc:
+		switch verb {
+		case 'v':
+			return "<nil>"
+		case 'p':
+			return "0x0"
+		case 'd', 'o', 'b', 'x', 'X', 'U', 'c':
+			// a nil address formats as 0 under the numeric verbs
+			return fmt.Sprintf(formatOf(f, verb), 0)
+		}
+		return badVerb(verb, typedefSpelling(td), "<nil>")
+	}
+	return "<nil>"
 }

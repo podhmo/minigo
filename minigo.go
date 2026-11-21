@@ -1454,32 +1454,9 @@ func (e *Engine) typeDefOf(pkg *runtime.Package, d *index.Decl) (runtime.Value, 
 		Anon:         ts.Type}
 	switch t := ts.Type.(type) {
 	case *ast.StructType:
-		td.Kind = runtime.KindStruct
-		td.FTags = runtime.StructFieldTags(t)
-		for _, f := range t.Fields.List {
-			if len(f.Names) == 0 {
-				// embedded field: the field name is the base type's name
-				td.EmbedSpecs = append(td.EmbedSpecs, f.Type)
-				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, embedBaseName(f.Type))
-				continue
-			}
-			for _, n := range f.Names {
-				td.Fields = append(td.Fields, n.Name)
-			}
-		}
+		td.SetStructShape(t)
 	case *ast.InterfaceType:
-		td.Kind = runtime.KindInterface
-		for _, m := range t.Methods.List {
-			if len(m.Names) == 0 {
-				// embedded element: io.Reader, ~int unions, constraints
-				td.IEmbeds = append(td.IEmbeds, m.Type)
-				continue
-			}
-			for _, n := range m.Names {
-				td.MReqs = append(td.MReqs, n.Name)
-			}
-		}
+		td.SetInterfaceShape(t)
 	case *ast.ArrayType:
 		td.Kind = runtime.KindSlice
 	case *ast.MapType:

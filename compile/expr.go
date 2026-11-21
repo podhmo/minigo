@@ -639,19 +639,8 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindPointer, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.StructType:
-		td := &runtime.TypeDef{Kind: runtime.KindStruct, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
-		td.FTags = runtime.StructFieldTags(t)
-		for _, f := range t.Fields.List {
-			if len(f.Names) == 0 {
-				td.EmbedSpecs = append(td.EmbedSpecs, f.Type)
-				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, embedFieldName(f.Type))
-				continue
-			}
-			for _, n := range f.Names {
-				td.Fields = append(td.Fields, n.Name)
-			}
-		}
+		td := &runtime.TypeDef{Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
+		td.SetStructShape(t)
 		c.emit(bytecode.OpConst, c.constIdx(td), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.FuncType:
@@ -660,16 +649,8 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindFunc, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.InterfaceType:
-		td := &runtime.TypeDef{Kind: runtime.KindInterface, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
-		for _, m := range t.Methods.List {
-			if len(m.Names) == 0 {
-				td.IEmbeds = append(td.IEmbeds, m.Type)
-				continue
-			}
-			for _, n := range m.Names {
-				td.MReqs = append(td.MReqs, n.Name)
-			}
-		}
+		td := &runtime.TypeDef{Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}
+		td.SetInterfaceShape(t)
 		c.emit(bytecode.OpConst, c.constIdx(td), 0, e.Pos())
 		c.emitLenFolds(t)
 	case *ast.ParenExpr:

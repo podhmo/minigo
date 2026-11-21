@@ -853,7 +853,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 			if len(f.Names) == 0 {
 				td.EmbedSpecs = append(td.EmbedSpecs, f.Type)
 				td.EmbedIdx = append(td.EmbedIdx, len(td.Fields))
-				td.Fields = append(td.Fields, embedBaseName(f.Type))
+				td.Fields = append(td.Fields, runtime.AnonFieldName(f.Type))
 				continue
 			}
 			for _, n := range f.Names {
@@ -1147,22 +1147,4 @@ func typeParamConstraints(fl *ast.FieldList) []ast.Expr {
 		}
 	}
 	return out
-}
-
-// embedBaseName derives the field name of an anonymous (embedded) struct
-// field: the base type name, ignoring pointers, packages and type args.
-func embedBaseName(x ast.Expr) string {
-	switch t := x.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return embedBaseName(t.X)
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return embedBaseName(t.X)
-	case *ast.IndexListExpr:
-		return embedBaseName(t.X)
-	}
-	return ""
 }
