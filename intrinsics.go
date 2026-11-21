@@ -344,7 +344,7 @@ func (h *hostHelpers) sortByCmpFunc(name string) *runtime.BuiltinFunc {
 	return &runtime.BuiltinFunc{Name: name, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		s, ok := sliceOf(args[0])
 		if !ok {
-			if nilish(args[0]) {
+			if stdlib.Nilish(args[0]) {
 				return args[0], nil // sorting a nil slice is a no-op
 			}
 			return nil, fmt.Errorf("%s: first arg must be a slice, got %T", name, args[0])
@@ -465,27 +465,6 @@ func byteSlice(v any) []byte {
 	return stdlib.ByteSlice(v)
 }
 
-func strSlice(v any) []string {
-	if n, ok := v.(*runtime.Named); ok {
-		return strSlice(n.V)
-	}
-	if s, ok := v.(*runtime.Slice); ok {
-		out := make([]string, len(s.Elems))
-		for i, e := range s.Elems {
-			out[i] = str(hostbridge.GoNative(e))
-		}
-		return out
-	}
-	if a, ok := v.([]any); ok {
-		out := make([]string, len(a))
-		for i, e := range a {
-			out[i] = str(e)
-		}
-		return out
-	}
-	return nil
-}
-
 // nilSliceArg reports whether v is a typed nil whose type is a slice —
 // sort's slice functions accept a nil slice (a no-op / sorted) but
 // still reject nil pointers, maps, chans like Go's reflect-based check.
@@ -543,34 +522,6 @@ func seqElems(vc runtime.ScriptCaller, v runtime.Value) ([]runtime.Value, error)
 		return nil, err
 	}
 	return out, nil
-}
-
-// strPieces boxes string pieces as script values for seqOf.
-func strPieces(ss []string) []runtime.Value {
-	out := make([]runtime.Value, len(ss))
-	for i, s := range ss {
-		out[i] = s
-	}
-	return out
-}
-
-// seqOf builds an iter.Seq-shaped value: a callable the range-over-func
-// loop drives through its yield builtin — the producer runs once and the
-// loop body executes inside each yield call, so early exit just reports
-// false back. Pieces are materialized up front; laziness is unobservable
-// from a script.
-func seqOf(name string, pieces []runtime.Value) *runtime.BuiltinFunc {
-	return seqFn(name, sliceSource(pieces))
-}
-
-// nilish reports whether a value carries no concrete content — bare nil,
-// a typed nil, or a named wrapper around one.
-func nilish(v runtime.Value) bool {
-	switch runtime.Unwrap(v).(type) {
-	case runtime.Nil, *runtime.TypedNil, *runtime.IfaceNil:
-		return true
-	}
-	return false
 }
 
 // sliceTypOf keeps a bound slice op's declared element type — a new
@@ -688,42 +639,6 @@ func strsSlice(ss []string) runtime.Value {
 	return stdlib.StrsSlice(ss)
 }
 
-// runePred adapts a script callback into a rune predicate — strings'
-// TrimFunc/IndexFunc family and unicode's Is-print predicates call it.
-func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
-	return func(r rune) bool {
-		res := hostbridge.CallOrPanic(v, fn, []runtime.Value{int64(r)})
-		b, _ := res.(bool)
-		return b
-	}
-}
-
-func runeOf(v any) rune { return rune(intOf(v)) }
-
-// strArgs marshals trailing varargs (each already a script value) to strings.
-func strArgs(a []any) []string {
-	out := make([]string, len(a))
-	for i, v := range a {
-		out[i] = str(v)
-	}
-	return out
-}
-
-// derefTyp peels the pointer level off a value's typedef — json.Unmarshal
-// decodes into the pointee, so `&cfg` (*Config) shapes as Config.
-func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
-	if td != nil && td.Kind == runtime.KindPointer {
-		if td.Elem == nil {
-			// `&v` where the pointee's typedef could not be recovered
-			// (e.g. `var v any` carries an untyped iface nil) — decode
-			// as `any` rather than wrapping the value in a cell.
-			return nil
-		}
-		return td.Elem
-	}
-	return td
-}
-
 // elemAt indexes a prior container's stored values without failing — a
 // prior field/element exists only when the old value matches the new
 // shape's position.
@@ -785,7 +700,7 @@ func sliceParamAny(name string, v runtime.Value) (*runtime.Slice, error) {
 	if s, ok := sliceOf(v); ok {
 		return s, nil
 	}
-	if nilish(v) {
+	if stdlib.Nilish(v) {
 		return nil, nil
 	}
 	return nil, fmt.Errorf("%s: arg must be a slice", name)
@@ -1120,4 +1035,19 @@ func engineFileOf(v any) *os.File {
 	}
 	t, _ := v.(*os.File)
 	return t
+}
+
+// derefTyp peels the pointer level off a value's typedef — json.Unmarshal
+// decodes into the pointee, so `&cfg` (*Config) shapes as Config.
+func derefTyp(td *runtime.TypeDef) *runtime.TypeDef {
+	if td != nil && td.Kind == runtime.KindPointer {
+		if td.Elem == nil {
+			// `&v` where the pointee's typedef could not be recovered
+			// (e.g. `var v any` carries an untyped iface nil) — decode
+			// as `any` rather than wrapping the value in a cell.
+			return nil
+		}
+		return td.Elem
+	}
+	return td
 }
