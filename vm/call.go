@@ -527,6 +527,7 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 			args = v.vals[len(v.vals)-winArgs:]
 		} else {
 			args = append([]runtime.Value{c.Recv}, args...)
+			v.profAllocs++
 		}
 	default:
 		return nil, fmt.Errorf("value of type %T is not callable", callee)
@@ -655,25 +656,30 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 	if nCells > 0 {
 		if chunkCellsEscape(ch) {
 			cells = make([]runtime.Cell, nCells)
+			v.profAllocs++
 		} else {
 			if cap(fr.cells) < nCells {
 				fr.cells = make([]runtime.Cell, nCells)
+				v.profAllocs++
 			}
 			cells = fr.cells[:nCells]
 		}
 	}
 	if cap(fr.locals) < ch.NLocals {
 		fr.locals = make([]runtime.Value, ch.NLocals)
+		v.profAllocs++
 	} else {
 		fr.locals = fr.locals[:ch.NLocals]
 	}
 	if cap(fr.ltyps) < ch.NLocals {
 		fr.ltyps = make([]*runtime.TypeDef, ch.NLocals)
+		v.profAllocs++
 	} else {
 		fr.ltyps = fr.ltyps[:ch.NLocals]
 	}
 	if cap(fr.slotRefs) < nCells {
 		fr.slotRefs = make([]localCell, nCells)
+		v.profAllocs++
 	}
 	refs := fr.slotRefs[:nCells]
 	ci := 0
@@ -754,6 +760,12 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 		fr.sp = 0
 		fr.stack = fr.stack[:0]
 	}
+	if v.H.Prof != nil {
+		// exact per-function call counts — counted once the call is
+		// committed: arity or binding errors above must not tally a
+		// function that never ran.
+		v.H.Prof.countCall(fn, ch)
+	}
 	return fr, nil
 }
 
@@ -797,6 +809,9 @@ func firstArg(args []runtime.Value) runtime.Value {
 // the only multi-value spread Go allows).
 func (v *VM) popArgsCallSite(f *frame, argc int, mode int, pos token.Pos, site *bytecode.CallSite) ([]runtime.Value, []bytecode.ArgHint, *runtime.TypeDef) {
 	args, spreadTd := v.popArgsBuf(f, argc, mode, pos, make([]runtime.Value, argc))
+	if argc > 0 { // a length-0 slice allocates no backing array
+		v.profAllocs++
+	}
 	hints := site.Args
 	if mode == 1 && len(hints) >= argc {
 		hints = hints[:argc-1]
