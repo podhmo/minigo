@@ -232,7 +232,7 @@ func (ad *Adapters) AsWriterVM(vc runtime.MemberCaller, v any) (io.Writer, error
 	}
 	if vc != nil && v != nil && v != runtime.NIL {
 		if m, ok := runtime.IfaceMember(vc, orig, "Write"); ok && m != nil && m != runtime.NIL {
-			return &scriptWriter{v: vc, write: m}, nil
+			return &scriptWriter{v: vc, write: m, orig: orig}, nil
 		}
 	}
 	return nil, fmt.Errorf("not an io.Writer: %T", v)
@@ -309,6 +309,11 @@ type scriptReaderWriterTo struct {
 	scriptReader
 }
 
+// ScriptValue hands back the script value the proxy adapts — a host
+// field read returning the proxy (io.LimitedReader.R) resolves to the
+// script's own concrete value, so `l.R.(*rd)` asserts like gc.
+func (s *scriptReader) ScriptValue() runtime.Value { return s.recv }
+
 // readResult decodes a script (n int, err error) pair.
 func readResult(c runtime.MemberCaller, r runtime.Value) (int, error) {
 	n, err := readResult64(c, r)
@@ -340,7 +345,10 @@ func readResult64(c runtime.MemberCaller, r runtime.Value) (int64, error) {
 type scriptWriter struct {
 	v     runtime.MemberCaller
 	write runtime.Value
+	orig  runtime.Value
 }
+
+func (w *scriptWriter) ScriptValue() runtime.Value { return w.orig }
 
 // AsReader mirrors AsWriter for io.Reader args: `strings.NewReader`'s
 // GoValue unwraps to the real reader, `&r` cells deref through. A nil
