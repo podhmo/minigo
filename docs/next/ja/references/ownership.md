@@ -38,6 +38,14 @@ D-own §14 の例を使う。`script/main.go` は `dep` を import し、`Main()
 6. dep を編集したあとの新しい Session C は新しい版を使う。Session A のインスタンスはそのままにする。
 7. Session A の dep インスタンスを Session B の Call に渡すのは誤用で、所有権チェック（M3-1）が捕捉する。
 
+## 派生キャッシュの再利用単位（M5-3b）
+
+Engine のソース管理が持つ派生キャッシュは 2 つある。どちらも「同じ版を要求するすべての Session」が再利用の単位で、Session や PackageInstance の状態は入らない。
+
+- **`ParseCache`（path → parse 結果）**: 同じパス・同じ内容（sha256）・同じ言語バージョンなら 1 つの `*syntax.File` を返す。内容が変われば再 parse して新しい AST を発行し、ファイルを編集した Session としていない Session が別の版を持つ。`refold` と印の付いたファイル（記号的な配列長を含む）は AST を共有せず、登録済みの Pos 範囲で毎回 parse する。上限はなく、古いエントリは不整合と判定されたときに差し替えられるだけで、保存済みエントリを書き換えることはない。
+- **`IndexCache`（ファイル集合の fingerprint → index）**: 順序付きの `*syntax.File` ポインタ列と lenient フラグをキーにする。1 ファイルでも再 parse されれば fingerprint が変わり新版として index し直す。上限 64 エントリで、超えた挿入はテーブル全体をリセットする。追い出しはあくまでキャッシュ内部の話で、Session が握っている `*index.Index` はそのまま有効であり続ける（共有の不変オブジェクト）。次回同じファイル集合で要求すると新しいオブジェクトとして再構築される。
+- **Session / PackageInstance**: globals、初期化状態、実行時 `ImportRef`、materialize キャッシュは Session ごとで、これらのキャッシュには絶対に入れない。追い出し後も旧 Session の値と位置情報は保たれ、新しい Session は新しい版を読み込む。
+
 ## 計測値（D-own のスパイク）
 
 12 ファイル × 20 関数のパッケージをリロードして呼び出すと、約 2〜3 ms かかった。AST と index の完全な JSON ハッシュで監査すると約 1〜1.6 s で、同じ AST を何度も辿るのが主なコストだった。そのため資産監査はオプトインとし（M3-2）、軽量な所有権チェックと分ける。

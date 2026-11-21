@@ -6,6 +6,7 @@ package source
 // handed to a session keeps working unchanged.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"os"
@@ -188,5 +189,73 @@ func TestIndexCacheFileSetVersion(t *testing.T) {
 	}
 	if diff := cmp.Diff(true, ix5.Funcs["A2"] != nil); diff != "" {
 		t.Errorf("new index version lacks the edited decl: %s", diff)
+	}
+}
+
+// M5-3b: eviction is a cache-internal event. An evicted index keeps
+// answering for the session that holds it — decls and their positions
+// still resolve — while a later build over the same files mints a new
+// *index.Index. The cache never mutates a stored entry in place.
+func TestIndexCacheEviction(t *testing.T) {
+	dir := t.TempDir()
+	fset := token.NewFileSet()
+	pc := NewParseCache()
+	ic := NewIndexCache()
+
+	pa := writeFile(t, dir, "a.go", "package a\n\nfunc A() {}\n")
+	files, _, err := pc.Files(fset, []string{pa}, "go1.24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix1, err := ic.IndexFor(files, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// fill the bounded cache, then force the reset: the (cap+1)-th
+	// insert clears every stored entry, including ix1's
+	for i := 0; i < indexCacheCap; i++ {
+		p := writeFile(t, dir, fmt.Sprintf("f%02d.go", i), fmt.Sprintf("package a\n\nfunc F%d() {}\n", i))
+		fs, _, err := pc.Files(fset, []string{p}, "go1.24")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ic.IndexFor(fs, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// the same file set now misses and rebuilds to a fresh object
+	ix2, err := ic.IndexFor(files, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(ptr(ix2), ptr(ix1)); diff == "" {
+		t.Fatal("an evicted file set must rebuild to a new *index.Index")
+	}
+
+	// the version the session holds is untouched: decls and their
+	// positions still resolve through the FileSet
+	d := ix1.Funcs["A"]
+	if diff := cmp.Diff(true, d != nil); diff != "" {
+		t.Fatalf("evicted index lost its decls: %s", diff)
+	}
+	pos := fset.Position(d.Pos)
+	if diff := cmp.Diff("a.go", filepath.Base(pos.Filename)); diff != "" {
+		t.Errorf("evicted index lost its position: %s", diff)
+	}
+
+	// and a new version reads the source as it is now
+	writeFile(t, dir, "a.go", "package a\n\nfunc A2() {}\n")
+	files3, _, err := pc.Files(fset, []string{pa}, "go1.24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ix3, err := ic.IndexFor(files3, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(true, ix3.Funcs["A2"] != nil); diff != "" {
+		t.Errorf("post-eviction load lacks the edited decl: %s", diff)
 	}
 }
