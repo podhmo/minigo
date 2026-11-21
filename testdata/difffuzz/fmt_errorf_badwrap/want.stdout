@@ -1,0 +1,42 @@
+x %!w(<nil>)
+x %!w(<nil>) %!w(MISSING)
+x %!w(int=3)
+x %!w(MISSING)
+a e1 b e2
+x %!w(*main.P=<nil>)
+x %!w(string=s)
+ok
+e e
+3 %!w(int=3)
+%!w(string=ab)
+x %!w(main.S={})
+%!(BADWIDTH)%!w(string=x)
+%!w(string=    x)
+%!w(string=   x) 7
+%!(BADPREC)%!w(int=5)
+%!w(string=   x) 4
+%!w(BADINDEX)
+%!w(BADINDEX) %!d(string=x)
+%!(BADWIDTH)%!w(MISSING)
+%!(BADWIDTH)%!w(BADINDEX)
+%!(BADWIDTH)%!w(BADINDEX)
+a %!w(BADINDEX) b
+%!w(BADINDEX) e0
+%!w(BADINDEX) %!(BADWIDTH)%!s(int=5)
+%!w(BADINDEX)   x
+%!w(BADINDEX) %!(BADWIDTH)%!s(int=00000003)
+%!w(BADINDEX) %!w(string=x) e1
+%!w(string=        x) %!w(int=9) e1
+%!(BADWIDTH)%!w(BADINDEX) %!d(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)%!s(MISSING)
+%!w(BADINDEX) %!s(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)%!s(MISSING)
+%!w(BADINDEX) %!界(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)%!界(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)v %!s(MISSING)
+%!w(BADINDEX) %!(BADPREC)%!s(MISSING)
+%!w(BADINDEX) %!s(MISSING)
+%!w(BADINDEX) %!s(MISSING)
+%!w(BADINDEX) %!(BADPREC)%!s(MISSING)
+%!w(BADINDEX) %!(BADWIDTH)v
+%!w(BADINDEX) %!(BADPREC)    v
