@@ -445,10 +445,12 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 		}
 		switch x.(type) {
 		case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-			// a declared func type re-tags so `x.(F)` checks identity
+			// a named func type re-tags so `x.(F)` checks identity
 			// and member access sees only F's declared method set —
-			// function values carry no swappable tag otherwise.
-			if td.Spec != nil {
+			// function values carry no swappable tag otherwise. Bound
+			// named func types (bufio.SplitFunc) have no Spec but do
+			// name a type; anonymous func() shapes stay bare.
+			if tagIsNamed(td) {
 				return runtime.Tag(td, x), nil
 			}
 			return x, nil // signatures are not modeled
@@ -776,7 +778,7 @@ func (v *VM) convertPointer(td *runtime.TypeDef, x runtime.Value, srcUnsafe bool
 		// The box carries no pointee tag to check or re-tag, so only
 		// a declared target — the pointer type itself, or a declared
 		// pointee like `(*MyBuf)(p)` — needs the Named wrap.
-		if td.Spec != nil {
+		if tagIsNamed(td) {
 			return runtime.Tag(td, x), nil
 		}
 		if v.H.ElemOf != nil {
@@ -1291,11 +1293,13 @@ func (v *VM) coerceConcrete(f *frame, x runtime.Value, td *runtime.TypeDef) runt
 			return runtime.Tag(td, x)
 		}
 	case runtime.KindPointer, runtime.KindFunc:
-		// declared pointer/func types tag the bound value so asserts
+		// named pointer/func types tag the bound value so asserts
 		// check declared identity and member access sees only the
-		// declared method set. Anonymous *T/func() binds stay bare —
-		// they carry the pointee's members (T's method set promotes).
-		if td.Spec != nil {
+		// declared method set — including bound named types like
+		// bufio.SplitFunc that carry no Spec. Anonymous *T/func()
+		// binds stay bare — they carry the pointee's members (T's
+		// method set promotes).
+		if tagIsNamed(td) {
 			return runtime.Tag(td, x)
 		}
 	}
