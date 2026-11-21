@@ -4166,11 +4166,10 @@ func Main() int64 { var w Wrap; return w.Q() }
 }
 
 // TestBoundStarStarAssert pins the `x.(**T)` boundary on bound host
-// types (M4-4): asserting a host **probeT to **lib.T compares the
-// anonymous pointer's spelled identity — the bound package's import
-// path is not the host element's Go pkgpath, so the assert answers
-// false where gc answers true (TODO: bound-typedef twin gap). The
-// single-star and wrong-element asserts agree with gc.
+// types (M4-4): asserting a host **probeT to **lib.T resolves the
+// unnamed pointer chain down to the named element, whose bound twin
+// answers true — matching gc. The single-star and wrong-element
+// asserts agree with gc too.
 func TestBoundStarStarAssert(t *testing.T) {
 	e := newEngine(t)
 	e.Bind("example.com/lib", map[string]runtime.Value{
@@ -4179,7 +4178,7 @@ func TestBoundStarStarAssert(t *testing.T) {
 		"New": minigo.WrapFunc("lib.New", func() **starPtrT { p := &starPtrT{X: 1}; return &p }),
 	})
 	for fn, want := range map[string]bool{
-		"AssertStarStar": false, // gc: true — bound-pkg path ≠ host pkgpath (TODO)
+		"AssertStarStar": true,
 		"AssertStar":     false,
 		"WrongElem":      false,
 	} {
