@@ -856,9 +856,8 @@ func Copy(v Value) Value {
 		// a host-struct payload copies the struct on assignment like gc
 		// (`var b bytes.Buffer = a` must not alias a's storage). The tag
 		// is the only reliable signal: a bare *T GoValue may be a
-		// host-returned pointer that must share. A HostNoCopy type is
-		// exempt: its box is immutable, so sharing is the copy.
-		if HostStructTagged(x) && !(x.Typ != nil && x.Typ.HostNoCopy) {
+		// host-returned pointer that must share.
+		if HostStructTagged(x) {
 			if cp, ok := HostStructCopy(x.V); ok {
 				return Tag(x.Typ, cp)
 			}
@@ -916,7 +915,16 @@ func SetRef(v, val Value) bool {
 type mapKey struct {
 	typ  string
 	repr string
+	// key carries a Go-comparable identity for boxes whose content, not
+	// their pointer, is the map key (a reflect.Value copy keys by its
+	// viewed content). Nil for every other key.
+	key any
 }
+
+// ContentKeyer is implemented by a host box that answers for a
+// Go-comparable value identity rather than its own pointer —
+// [CanonicalKey] consults it in the GoValue arm.
+type ContentKeyer interface{ ContentKey() any }
 
 // CanonicalKey converts a script map key to the Go-comparable form that
 // keys [Map.Pairs], so composite keys compare by content. Scalars pass
@@ -958,6 +966,9 @@ func CanonicalKey(v Value) Value {
 	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
 		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type func()"}})
 	case *GoValue:
+		if ck, ok := x.V.(ContentKeyer); ok {
+			return mapKey{typ: "host:" + reflect.TypeOf(x.V).String(), key: ck.ContentKey()}
+		}
 		if !reflect.TypeOf(x.V).Comparable() {
 			panic(&Panic{Value: &RuntimeError{Msg: fmt.Sprintf("hash of unhashable type %T", x.V)}})
 		}
@@ -2281,13 +2292,6 @@ type TypeDef struct {
 	// instead of a *Struct so member access dispatches through the host
 	// method set. Set only on typedefs of bound host packages.
 	HostNew func() any
-
-	// HostNoCopy, when set, marks a HostNew-backed type whose assignment
-	// must not snapshot the box (reflect.Value): the value carries no
-	// mutable state a script can write through, so assignment shares the
-	// box — which is what a map[any] key needs, since its canonical key
-	// is the box's identity.
-	HostNoCopy bool
 
 	// HostScalar, when set, marks a bound named basic whose payload is a
 	// stdlib scalar (time.Duration): the raw host value is stored, not a
