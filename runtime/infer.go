@@ -3,6 +3,7 @@ package runtime
 import (
 	"go/ast"
 	"go/token"
+	"strings"
 
 	"github.com/podhmo/minigo/syntax"
 )
@@ -17,6 +18,11 @@ import (
 type Inferer struct {
 	// Underlying follows declared chains to the shape-giving typedef.
 	Underlying func(td *TypeDef) *TypeDef
+	// expanding marks UnifyIndices's one-shot underlying-expression
+	// expansion: gc expands a pattern's named type once, so a named
+	// instantiation nested inside that expansion (a recursive typedef's
+	// own Name[T], or a deeper chain) gets no fallback of its own.
+	expanding bool
 	// ElemOf resolves a container's element typedef, including the
 	// caller's own evidence (frame locals, first-element typedefs) and
 	// interning; nil means "unresolvable".
@@ -24,6 +30,32 @@ type Inferer struct {
 	// ResolveType resolves a type expr in `from`'s declaring context;
 	// (nil, nil) means "unresolvable".
 	ResolveType func(from *TypeDef, x ast.Expr) (*TypeDef, error)
+	// MethodSigs maps a typedef's method names to their signature
+	// shells — the interface's requirements and the concrete type's
+	// methods alike. Nil means "unresolvable" (interface-method
+	// inference is skipped).
+	MethodSigs func(td *TypeDef) map[string]*Function
+	// ifacePairs dedups (interface, concrete, index-args) triples
+	// unifyIfaceMethods already compared — a requirement and an
+	// implementation that each return their own type
+	// (N[T] interface{ M() N[T] } vs I{ M() I }) otherwise recurse
+	// forever; a triple already compared teaches nothing new anyway.
+	// The args belong in the key: one alias repeated at two positions
+	// with different type args (Getter[U, int] beside Getter[string,
+	// V]) must unify each position separately.
+	ifacePairs map[ifaceTriple]bool
+	// ifaceDepth bounds the method-set walk: a substituted requirement
+	// that nests one level deeper each round (M() N[N[T]]) spells new
+	// index args at every visit, so the pair dedup never fires — the
+	// depth cap is the backstop that still terminates the walk.
+	ifaceDepth int
+}
+
+// ifaceTriple keys the unifyIfaceMethods dedup: pattern typedef,
+// concrete typedef and the index args' spelling.
+type ifaceTriple struct {
+	bt, conc *TypeDef
+	args     string
 }
 
 func (i *Inferer) underlying(td *TypeDef) *TypeDef {
@@ -179,20 +211,134 @@ func (i *Inferer) UnifyIndices(ctx *TypeDef, tset map[string]bool, binds map[str
 	if err != nil || bt == nil || len(bt.TParams) == 0 {
 		return
 	}
+	// the concrete side's binds are its own instantiation's — only a
+	// conc that IS this decl (Box[T]'s pattern against Box[int]) may
+	// lend them: Wrapper[int] under a Box[T] pattern also keys its
+	// binding "T", and borrowing it would accept the call gc rejects
+	// (the arg's own type args masquerading as the parameter's).
+	// Script typedefs share the TypeSpec node; bound host typedefs
+	// carry no Spec, so they pair on name + package.
+	sameDecl := bt.Spec != nil && conc.Spec == bt.Spec ||
+		bt.Spec == nil && conc.Spec == nil && bt.Name != "" &&
+			conc.Name == bt.Name && conc.Pkg == bt.Pkg
+	if !sameDecl && conc.Name != "" {
+		// a named arg of another decl cannot lend its binds — but an
+		// interface pattern still unifies through the method set:
+		// Getter[K,V] against M{} binds K,V from M.Get's signature,
+		// like gc.
+		if bt.Kind == KindInterface && i.MethodSigs != nil && !i.expanding {
+			i.unifyIfaceMethods(ctx, tset, binds, bt, idxs, conc)
+		}
+		return
+	}
+	var bound bool
 	for j, x := range idxs {
+		if !sameDecl {
+			break
+		}
 		if j >= len(bt.TParams) {
 			break
 		}
-		id, ok := x.(*ast.Ident)
-		if !ok || !tset[id.Name] {
+		bv, hasBv := conc.Binds[bt.TParams[j]]
+		if hasBv {
+			bound = true
+		}
+		if id, ok := x.(*ast.Ident); ok && tset[id.Name] {
+			if hasBv {
+				if _, done := binds[id.Name]; !done {
+					binds[id.Name] = bv
+				}
+			}
 			continue
 		}
-		if bv, ok := conc.Binds[bt.TParams[j]]; ok {
-			if _, bound := binds[id.Name]; !bound {
-				binds[id.Name] = bv
-			}
+		// a non-ident index (func() Y, []T, *T) is a pattern itself:
+		// unify it against the concrete type's binding for the base's
+		// parameter at this position — Mapper[X, func() Y] over
+		// Mapper[int, func() string] binds Y=string.
+		if td, ok := bv.(*TypeDef); hasBv && ok && td != nil {
+			i.UnifyDef(ctx, tset, binds, x, td)
 		}
 	}
+	// an unnamed concrete shape (a bare func literal's signature, a
+	// composite literal's anon type) never records the instantiation's
+	// binds — unify through the base type's own underlying expression
+	// instead: Seq[V] over func(func(int) bool) binds V=int, like gc.
+	// Skipped when the binds lookup already taught the indices (an
+	// instantiated named arg), when the pattern instantiates only part
+	// of the base's parameters (a leftover tparam name in the underlying
+	// expr could then bind the caller's same-named parameter), or when
+	// this base typedef is already being expanded up-stack (a recursive
+	// typedef like map[string]Graph[T] re-enters through itself; an
+	// alias chain of distinct typedefs unwinds freely).
+	if bound || len(idxs) != len(bt.TParams) || i.expanding || conc.Name != "" {
+		return
+	}
+	if ue := bt.TypeExpr(); ue != nil {
+		subs := map[string]ast.Expr{}
+		for j, name := range bt.TParams {
+			subs[name] = idxs[j]
+		}
+		// gc expands the pattern's named type exactly once: a named
+		// instantiation nested in that underlying expr does not
+		// re-expand, which also keeps a recursive typedef
+		// (map[string]Graph[T]) from spinning forever.
+		i.expanding = true
+		defer func() { i.expanding = false }()
+		i.UnifyDef(ctx, tset, binds, substTypeExprs(ue, subs), conc)
+	}
+}
+
+// substTypeExprs replaces type-parameter names in a type expression —
+// a local twin of compile's substTypeParams extended with FuncType so
+// a func-typed underlying shape substitutes its signature too.
+func substTypeExprs(e ast.Expr, subs map[string]ast.Expr) ast.Expr {
+	switch t := e.(type) {
+	case *ast.Ident:
+		if a, ok := subs[t.Name]; ok {
+			return a
+		}
+		return t
+	case *ast.ParenExpr:
+		return &ast.ParenExpr{Lparen: t.Lparen, X: substTypeExprs(t.X, subs), Rparen: t.Rparen}
+	case *ast.ArrayType:
+		return &ast.ArrayType{Lbrack: t.Lbrack, Len: t.Len, Elt: substTypeExprs(t.Elt, subs)}
+	case *ast.MapType:
+		return &ast.MapType{Map: t.Map, Key: substTypeExprs(t.Key, subs), Value: substTypeExprs(t.Value, subs)}
+	case *ast.StarExpr:
+		return &ast.StarExpr{Star: t.Star, X: substTypeExprs(t.X, subs)}
+	case *ast.Ellipsis:
+		return &ast.Ellipsis{Ellipsis: t.Ellipsis, Elt: substTypeExprs(t.Elt, subs)}
+	case *ast.ChanType:
+		return &ast.ChanType{Begin: t.Begin, Arrow: t.Arrow, Dir: t.Dir, Value: substTypeExprs(t.Value, subs)}
+	case *ast.IndexExpr:
+		return &ast.IndexExpr{X: t.X, Lbrack: t.Lbrack, Index: substTypeExprs(t.Index, subs), Rbrack: t.Rbrack}
+	case *ast.IndexListExpr:
+		idx := make([]ast.Expr, len(t.Indices))
+		for i, x := range t.Indices {
+			idx[i] = substTypeExprs(x, subs)
+		}
+		return &ast.IndexListExpr{X: t.X, Lbrack: t.Lbrack, Indices: idx, Rbrack: t.Rbrack}
+	case *ast.FuncType:
+		return &ast.FuncType{
+			Func:    t.Func,
+			Params:  substFieldList(t.Params, subs),
+			Results: substFieldList(t.Results, subs),
+		}
+	}
+	return e
+}
+
+func substFieldList(fl *ast.FieldList, subs map[string]ast.Expr) *ast.FieldList {
+	if fl == nil {
+		return nil
+	}
+	out := &ast.FieldList{Opening: fl.Opening, Closing: fl.Closing}
+	for _, f := range fl.List {
+		nf := *f
+		nf.Type = substTypeExprs(f.Type, subs)
+		out.List = append(out.List, &nf)
+	}
+	return out
 }
 
 // CoreTypes is Go's constraint type inference: a bound parameter whose
@@ -297,5 +443,63 @@ func typedefOfBind(v Value) *TypeDef {
 			return nil
 		}
 		v = dv
+	}
+}
+
+// unifyIfaceMethods binds a generic interface pattern's index args from
+// the concrete type's method signatures: each requirement `M(P...) R...`
+// is substituted with the pattern's index exprs (the caller's own type
+// params, which UnifyDef then binds) and unified against conc's method
+// of the same name.
+func (i *Inferer) unifyIfaceMethods(ctx *TypeDef, tset map[string]bool, binds map[string]Value, bt *TypeDef, idxs []ast.Expr, conc *TypeDef) {
+	var sb strings.Builder
+	for _, ix := range idxs {
+		if ix != nil {
+			sb.WriteString(TypGoSpelling(ix, ctx))
+		}
+		sb.WriteByte(0)
+	}
+	if i.ifaceDepth >= 16 {
+		return
+	}
+	i.ifaceDepth++
+	defer func() { i.ifaceDepth-- }()
+	key := ifaceTriple{bt: bt, conc: conc, args: sb.String()}
+	if i.ifacePairs == nil {
+		i.ifacePairs = map[ifaceTriple]bool{}
+	}
+	if i.ifacePairs[key] {
+		return
+	}
+	i.ifacePairs[key] = true
+	reqs := i.MethodSigs(bt)
+	cms := i.MethodSigs(conc)
+	if reqs == nil || cms == nil {
+		return
+	}
+	subs := map[string]ast.Expr{}
+	for j, name := range bt.TParams {
+		if j < len(idxs) {
+			subs[name] = idxs[j]
+		}
+	}
+	for name, req := range reqs {
+		cm := cms[name]
+		if req == nil || cm == nil || req.Decl == nil || cm.Decl == nil ||
+			req.Decl.Type == nil || cm.Decl.Type == nil {
+			continue
+		}
+		// an unexported method belongs to its declaring package — gc
+		// never satisfies the requirement with a same-named method
+		// from another package.
+		if name[0] >= 'a' && name[0] <= 'z' && req.Pkg != cm.Pkg {
+			continue
+		}
+		ps, ok := substTypeExprs(req.Decl.Type, subs).(*ast.FuncType)
+		if !ok || ps == nil {
+			continue
+		}
+		ct := &TypeDef{Kind: KindFunc, Anon: cm.Decl.Type, Pkg: cm.Pkg, File: cm.File, Binds: cm.Binds}
+		i.UnifyDef(ctx, tset, binds, ps, ct)
 	}
 }

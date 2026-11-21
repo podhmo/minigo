@@ -879,6 +879,16 @@ func (v *VM) inferer() *runtime.Inferer {
 			return et
 		},
 		ResolveType: v.H.ResolveType,
+		MethodSigs: func(td *runtime.TypeDef) map[string]*runtime.Function {
+			if v.H.TypeMethodInfoOf == nil {
+				return nil
+			}
+			ms, err := v.H.TypeMethodInfoOf(td, true)
+			if err != nil || ms == nil {
+				return nil
+			}
+			return ms.Funcs
+		},
 	}
 }
 
