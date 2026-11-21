@@ -465,7 +465,17 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		}
 	}
 	if td.Kind == runtime.KindInterface {
-		names := e.ifaceReqSet(td)
+		// the requirement set carries pkg-qualified keys for unexported
+		// names (M4-2b); the facade's method set also answers under the
+		// plain name so `x.m` and `I.m` keep resolving. Never write
+		// back into the cached req set — copy.
+		names := map[string]bool{}
+		for m := range e.ifaceReqSet(td) {
+			names[m] = true
+			if p := plainReqName(m); p != m {
+				names[p] = true
+			}
+		}
 		funcs := e.ifaceSigFuncs(td)
 		depths := map[string]int{}
 		for m := range names {
@@ -515,6 +525,13 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 		}
 		names[name] = true
 		funcs[name] = m
+		if k := reqKey(td.Pkg, name); k != name {
+			// an unexported method also answers under its declaring
+			// package's key so interface requirements compare per
+			// package; promotion carries the key unchanged.
+			names[k] = true
+			funcs[k] = m
+		}
 	}
 	members := map[string]*runtime.PromotedMember{}
 	ambig := map[string]int{}
@@ -532,7 +549,17 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 	// a name declared at this depth — field or method alike — is not
 	// promoted: embeds cannot contest it (the declared member always
 	// wins, so its smin entry would only poison Depths).
-	promoted := func(m string) bool { return !shadowed[m] && td.Methods[m] == nil }
+	promoted := func(m string) bool {
+		p := plainReqName(m)
+		if !shadowed[p] && td.Methods[p] == nil {
+			return true
+		}
+		// a member `p` declared at this depth shadows the candidate —
+		// for a pkg-qualified unexported key only when this type is in
+		// the same package: gc keeps `struct{ a.T; m int }` satisfying
+		// a's interface{ m() } (m in main is a different identifier).
+		return m != p && reqKey(td.Pkg, p) != m
+	}
 	// A member promoted through more than one source survives only
 	// when its shallowest promotion is unique — gc's selector is
 	// ambiguous where two paths offer the member at the same smallest
@@ -648,6 +675,12 @@ func (e *Engine) methodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]boo
 			for m := range e.ifaceReqSet(peeled) {
 				if promoted(m) {
 					contest(m, 1, sigs[m], []int{fieldIdx}, "iface", true)
+				}
+				// a pkg-qualified unexported requirement (M4-2b) also
+				// promotes under its plain name — `x.m` keeps selecting
+				// it; satisfaction only counts the qualified key.
+				if p := plainReqName(m); p != m && promoted(p) {
+					contest(p, 1, sigs[p], []int{fieldIdx}, "iface", true)
 				}
 			}
 			continue
@@ -853,47 +886,6 @@ func hostDepthsIn(rt reflect.Type, seen map[reflect.Type]bool) map[string]int {
 	return out
 }
 
-// ifaceSigFunc synthesizes the member Function an interface typedef's
-// required method resolves to — the declared signature plus the typedef
-// context (package, file imports, binds) that spells it.
-func ifaceSigFunc(sig ifaceSig) *runtime.Function {
-	return &runtime.Function{
-		Decl: &ast.FuncDecl{Type: sig.decl},
-		Pkg:  sig.ctx.Pkg, File: sig.ctx.File, Binds: sig.ctx.Binds,
-	}
-}
-
-// ifaceSigFuncs maps an interface typedef's signature-bearing required
-// methods to their synthesized member Functions — nil when it declares
-// no signature (name-only requirements). The single conversion behind
-// methodWalkU's interface arms and the IfaceSigs hook.
-//
-// The result is cached on td (callers treat it as read-only): every
-// conversion to an interface runs this, and the stable shell pointers
-// let SigMemo remember each requirement's comparison. A set built while
-// an embed failed to resolve is not cached — it may be incomplete.
-func (e *Engine) ifaceSigFuncs(td *runtime.TypeDef) map[string]*runtime.Function {
-	if td == nil {
-		return nil
-	}
-	if out, ok := td.CachedIfaceSigs(); ok {
-		return out
-	}
-	complete := true
-	sigs := e.ifaceSigsOf(td, map[*runtime.TypeDef]bool{}, &complete)
-	var out map[string]*runtime.Function
-	if len(sigs) > 0 {
-		out = make(map[string]*runtime.Function, len(sigs))
-		for name, sig := range sigs {
-			out[name] = ifaceSigFunc(sig)
-		}
-	}
-	if complete {
-		td.SetIfaceSigs(out)
-	}
-	return out
-}
-
 // methodSet implements the minireflect MethodSet hook and the
 // Hooks.TypeMethodFuncs hook: the signature-bearing method set of a
 // typedef.
@@ -915,12 +907,9 @@ func (e *Engine) methodFuncs(td *runtime.TypeDef, ptr bool) map[string]*runtime.
 	return nil
 }
 
-// ifaceSigReqs implements the Hooks.IfaceSigs hook: the interface's
-// required methods that carry a declared signature, as Function shells
-// spelling that signature in their declaring typedef's context.
-func (e *Engine) ifaceSigReqs(td *runtime.TypeDef) (map[string]*runtime.Function, error) {
-	return e.ifaceSigFuncs(td), nil
-}
+// ifaceSigFunc, ifaceSigFuncs, ifaceSigReqs, ifaceSig and ifaceSigsOf
+// live in iface_reqs.go — the pkg-qualified requirement keys (M4-2b)
+// shared by requirements, signatures and method sets are spelled there.
 
 // methodFuncsOfValue implements the Hooks.MethodFuncsOf hook: the
 // signature-bearing twin of methodSetOfValue — declared and promoted
@@ -935,111 +924,9 @@ func (e *Engine) methodFuncsOfValue(v runtime.Value) (map[string]*runtime.Functi
 	return ms.Funcs, err
 }
 
-// ifaceSig is an interface's required method together with the typedef
-// context that declared it — its package, file imports and binds spell
-// the signature.
-type ifaceSig struct {
-	decl *ast.FuncType
-	ctx  *runtime.TypeDef
-}
-
-// ifaceSigsOf maps an interface's required methods to their declared
-// signatures — a name-only set can't distinguish F(int) from F(string),
-// which interface satisfaction via reflect needs.
-//
-// complete turns false when an embedded element fails to resolve.
-func (e *Engine) ifaceSigsOf(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]ifaceSig {
-	td = e.peelAliasTd(td)
-	if td == nil || seen[td] {
-		return nil
-	}
-	seen[td] = true
-	out := map[string]ifaceSig{}
-	var it *ast.InterfaceType
-	for _, x := range []ast.Expr{td.Anon, specType(td)} {
-		if s, ok := x.(*ast.InterfaceType); ok {
-			it = s
-			break
-		}
-	}
-	if it != nil {
-		for _, m := range it.Methods.List {
-			if len(m.Names) == 0 {
-				continue
-			}
-			ft, ok := m.Type.(*ast.FuncType)
-			if !ok {
-				continue
-			}
-			for _, n := range m.Names {
-				out[n.Name] = ifaceSig{decl: ft, ctx: td}
-			}
-		}
-	}
-	for _, spec := range td.IEmbeds {
-		emb, err := e.resolveTypeRef(td, spec)
-		if err != nil || emb == nil {
-			*complete = false
-			continue
-		}
-		for name, sig := range e.ifaceSigsOf(emb, seen, complete) {
-			if _, dup := out[name]; !dup {
-				out[name] = sig
-			}
-		}
-	}
-	return out
-}
-
-// ifaceReqs returns the required method set of an interface typedef:
-// declared methods union the requirements of embedded interface elements.
-// Constraint elements (~T, unions) are approximated away — satisfaction
-// checks treat them as fulfilled.
-func (e *Engine) ifaceReqs(td *runtime.TypeDef) (map[string]bool, error) {
-	return e.ifaceReqSet(td), nil
-}
-
-// ifaceReqSet is ifaceReqs cached on td (callers treat the set as
-// read-only). A set built while an embed failed to resolve — a
-// constraint element (~T, unions) or a not-yet-loadable package — is
-// not cached, so it is recomputed exactly as before.
-func (e *Engine) ifaceReqSet(td *runtime.TypeDef) map[string]bool {
-	if td == nil {
-		return nil
-	}
-	if set, ok := td.CachedIfaceReqs(); ok {
-		return set
-	}
-	complete := true
-	set := e.ifaceReqsRec(td, map[*runtime.TypeDef]bool{}, &complete)
-	if complete {
-		td.SetIfaceReqs(set)
-	}
-	return set
-}
-
-func (e *Engine) ifaceReqsRec(td *runtime.TypeDef, seen map[*runtime.TypeDef]bool, complete *bool) map[string]bool {
-	td = e.peelAliasTd(td)
-	if td == nil || seen[td] {
-		return nil
-	}
-	seen[td] = true
-	set := map[string]bool{}
-	for _, m := range td.MReqs {
-		set[m] = true
-	}
-	for _, spec := range td.IEmbeds {
-		sub, err := e.resolveTypeRef(td, spec)
-		if err != nil || sub == nil {
-			*complete = false
-			continue // constraint exprs (~T, |) don't resolve to typedefs
-		}
-		for m := range e.ifaceReqsRec(sub, seen, complete) {
-			set[m] = true
-		}
-	}
-	return set
-}
+// ifaceReqs, ifaceReqSet, ifaceReqsRec and reqKey live in iface_reqs.go —
+// the pkg-qualified requirement keys (M4-2b) share one key space with the
+// method sets methodWalkU builds above.
 
 // fieldTypes implements the Hooks.FieldTypes hook: the declared type of
 // each field, parallel to td.Fields, resolved from the struct's field
