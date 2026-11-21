@@ -155,7 +155,7 @@ func (e *Engine) installContext(h *hostHelpers) {
 // script-defined value adapts through its Lock/Unlock members — calls
 // run back on the VM that built the Cond, the same hazard as every
 // retained host callback.
-func lockerOf(vc runtime.VMCaller, v runtime.Value) (sync.Locker, error) {
+func lockerOf(vc runtime.MemberCaller, v runtime.Value) (sync.Locker, error) {
 	if l, ok := goNative(v).(sync.Locker); ok {
 		return l, nil
 	}
@@ -178,7 +178,7 @@ type scriptCoro struct {
 // scriptLocker adapts a script value with Lock/Unlock methods to a host
 // sync.Locker so sync.Cond can wait on it.
 type scriptLocker struct {
-	vc           runtime.VMCaller
+	vc           runtime.MemberCaller
 	lock, unlock runtime.Value
 }
 

@@ -117,7 +117,7 @@ type Hooks struct {
 	// implementation this way. A nil hook, a one-arg directive, or an
 	// unresolvable target reports false and the declaration keeps its
 	// zero-return shim.
-	Linkname func(vc runtime.VMCaller, fn *runtime.Function) (runtime.Value, bool, error)
+	Linkname func(vc runtime.ScriptCaller, fn *runtime.Function) (runtime.Value, bool, error)
 	// HostErr boxes a script error value as a host error that keeps the
 	// script value (and its Unwrap/Is/As methods) reachable: a script
 	// Write's error handed to host fmt.Fprintf, or a script error passed

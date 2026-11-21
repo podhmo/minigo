@@ -980,7 +980,7 @@ func hostSliceElems(x *runtime.GoValue) ([]runtime.Value, *runtime.TypeDef, bool
 // the element type first (`1<<n` truncates to the element width), a
 // []any compares (dynamic type, value) pairs, and a boxed host named
 // basic meets its source twin in a []fs.FileMode.
-func sliceIndexScript(vc runtime.VMCaller, name string, args []runtime.Value) (int, error) {
+func sliceIndexScript(vc runtime.IndexTyper, name string, args []runtime.Value) (int, error) {
 	if len(args) != 2 {
 		return 0, fmt.Errorf("%s needs 2 args, got %d", name, len(args))
 	}
@@ -1108,7 +1108,7 @@ func callOrPanic(v runtime.ScriptCaller, fn runtime.Value, args []runtime.Value)
 // the result goes back through hostErrOf so the host walker compares
 // fs.SkipDir/SkipAll by identity and a script error keeps its identity
 // on the way out (errVal).
-func walkCallback(v runtime.VMCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
+func walkCallback(v runtime.MemberCaller, cb runtime.Value, root, ap, p string, entry runtime.Value, werr error) error {
 	sp := scriptPathOf(root, ap, p)
 	r := callOrPanic(v, cb, []runtime.Value{sp, entry, errVal(scriptPathErr(werr, root, ap))})
 	return hostErrOf(v, r)
@@ -1252,7 +1252,7 @@ func nilSliceLike(orig runtime.Value, typ *runtime.TypeDef) runtime.Value {
 // and Replace for storing into a slice of type typ: an untyped constant
 // takes the element type (like sliceIndexScript's operand), and each
 // operand is copied so an array or struct is not shared with its source.
-func elemOperands(vc runtime.VMCaller, name string, typ *runtime.TypeDef, vals []runtime.Value) ([]runtime.Value, error) {
+func elemOperands(vc runtime.ElemOperandTyper, name string, typ *runtime.TypeDef, vals []runtime.Value) ([]runtime.Value, error) {
 	var et *runtime.TypeDef
 	if typ != nil {
 		et, _ = vc.ElemOf(typ)

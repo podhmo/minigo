@@ -183,7 +183,7 @@ func (e *Engine) installEncodingJson(h *hostHelpers) {
 // structs become field-name maps, runtime maps/slices recurse, GoValue
 // unwraps. c carries the engine's type-resolution hooks — embedded
 // fields promote through them.
-func goJSON(c runtime.VMCaller, v any) any {
+func goJSON(c runtime.MemberShapeCaller, v any) any {
 	return goJSONSeen(c, v, map[any]bool{})
 }
 
@@ -707,7 +707,7 @@ type cleanupHandle struct{}
 // MarshalJSON/MarshalText failure — `json: error calling MarshalJSON
 // for type *T: <err>` (gc's encoder always invokes through an
 // address, so the named type spells *T even for a value receiver).
-func jsonMarshalerErr(c runtime.VMCaller, se *jsonScriptErr) error {
+func jsonMarshalerErr(c runtime.TypeMemberCaller, se *jsonScriptErr) error {
 	name := "unknown"
 	if vt := c.TypeOf(se.operand); vt != nil {
 		name = runtime.DisplayName(derefTyp(vt))
@@ -819,7 +819,7 @@ func jsonUnmarshalShape(m runtime.Value) bool {
 // nil pointer of type ptd: a cell holding the element's zero —
 // recursively a fresh cell when the element is itself a pointer, so
 // **T allocates a *T pointing at a fresh T.
-func jsonAllocPointee(c runtime.VMCaller, ptd *runtime.TypeDef) runtime.Value {
+func jsonAllocPointee(c runtime.ElemZeroTyper, ptd *runtime.TypeDef) runtime.Value {
 	if ptd == nil || ptd.Kind != runtime.KindPointer {
 		return nil
 	}
