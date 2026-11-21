@@ -857,6 +857,14 @@ func (t *RType) Len() int {
 			return int(n)
 		}
 	}
+	// a named type declared over an array gets its length through the
+	// underlying typedef — `type B [2]int` carries the ident "A", not
+	// an ArrayType, in td.Anon.
+	if t.e.h.Underlying != nil && t.td != nil {
+		if u, err := t.e.h.Underlying(t.td); err == nil && u != nil && u != t.td {
+			return t.e.rtypeOf(u).Len()
+		}
+	}
 	trap("Len of non-array type %s", t.String())
 	return 0
 }
@@ -1931,9 +1939,10 @@ func (t *RType) sizeOf() uintptr {
 			off = roundUp(off, uintptr(ft.alignOf())) + ft.sizeOf()
 		}
 		// gc pads a struct whose LAST field is zero-size so the
-		// field's address stays in bounds: struct{i int64; s struct{}}
-		// measures 16, not 8.
-		if n := t.NumField(); n > 0 && t.Field(n-1).Type.sizeOf() == 0 {
+		// field's address stays in bounds — only when a preceding field
+		// occupied space: struct{i int64; s struct{}} is 16, while
+		// struct{s struct{}} stays 0.
+		if n := t.NumField(); off > 0 && n > 0 && t.Field(n-1).Type.sizeOf() == 0 {
 			off++
 		}
 		return roundUp(off, uintptr(t.alignOf()))
