@@ -1531,10 +1531,10 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		order := append([]runtime.Value{}, v.Order...)
 		sort.SliceStable(order, func(i, j int) bool {
 			a, b := order[i], order[j]
-			if lessScript(a, b) {
+			if stdlib.LessScript(a, b) {
 				return true
 			}
-			if lessScript(b, a) {
+			if stdlib.LessScript(b, a) {
 				return false
 			}
 			// unordered kinds (bool, composites, mixed): order by the
