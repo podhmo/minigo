@@ -242,7 +242,7 @@ func TestInternTypedefStragglerRebindKeepsNewest(t *testing.T) {
 	// the newer bind's interning reaches the table before the older's
 	e.bindInternTypedefs(p2, keys2, seq2)
 	e.bindInternTypedefs(p1, keys1, seq1)
-	if e.internTypedef(first) != second {
-		t.Error("straggling older bind rolled the interned typedef back")
+	if diff := cmp.Diff(true, e.internTypedef(first) == second); diff != "" {
+		t.Errorf("straggling older bind rolled the interned typedef back (-want +got):\n%s", diff)
 	}
 }
