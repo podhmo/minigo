@@ -46,7 +46,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                            120,
 	"internal/archcheck/all.go":                  57,
 	"internal/archcheck/archcheck.go":            643,
-	"internal/archcheck/budgets.go":              394,
+	"internal/archcheck/budgets.go": 398,
 	"internal/archcheck/rules.go":                152,
 	"internal/cmd/simcheck/main.go":              359,
 	"internal/assetaudit/assetaudit.go":          112,
@@ -101,7 +101,9 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/host/host.go":               40,
 	"internal/stdlib/net/net.go":                 168,
 	"internal/stdlib/os/file.go":                 123,
-	"internal/stdlib/os/os.go":                   425,
+	"internal/stdlib/os/link.go":                77,
+	"internal/stdlib/os/stdout.go":              61,
+	"internal/stdlib/os/os.go": 355,
 	"internal/stdlib/osexec/osexec.go":           66,
 	"internal/stdlib/unsafe.go":                  42,
 	"internal/stdlib/seq.go":                     118,
@@ -274,6 +276,8 @@ var FileBudgets = map[string]int{
 // base — path → the reason the raise is justified. An empty map is the
 // steady state: prefer splitting a file over recording an exception.
 var FileBudgetExceptions = map[string]string{
+	"internal/stdlib/os/stdout.go":    "EngineStdout facade: routes Write/WriteString/ReadFrom through env output and spells *os.File under APIType",
+	"internal/stdlib/os/link.go":      "hard/symbolic link binds incl. the Symlink roots-policy target check",
 	"runtime/growslice.go":          "gc's growslice capacity model: nextslicecap + roundupsize size classes + the 32B stack-buffer cap (TODO #176)",
 	"builtin/append.go":             "append moved out of builtins.go; Forwards keeps the real Spread marker so gc's stack-buffer vs growslice cap rule is tellable (TODO #176)",
 	"internal/stdlib/fserr.go":      "ScriptPathOf maps resolved-under-symlinked-cwd and trailing-separator host paths back through the spelled base (TODO #169)",
@@ -349,7 +353,7 @@ var FileBudgetExceptions = map[string]string{
 	"inspect/stub.go":                    "Spec intrinsic for the non-func decl Node-view root",
 	"internal/stdlib/inspect/inspect.go": "Spec binding for the non-func decl Node-view root + hostSlice tags boxed slices with the element's host typedef",
 	"internal/stdlib/os/file.go":         "scriptFile facade: script-spelled Name + PathError rewrite for Open/Create/OpenFile/CreateTemp",
-	"internal/stdlib/os/os.go":           "os.ReadDir's result slice carries the []fs.DirEntry typedef; APITypeBox: the Stdout facade spells *os.File; IsPathSeparator byte-predicate binding; Chdir stores the resolved cwd (TODO #169)",
+	"internal/stdlib/os/os.go":        "os.ReadDir's result slice carries the []fs.DirEntry typedef; APITypeBox: the Stdout facade spells *os.File; IsPathSeparator byte-predicate binding; Chdir stores the resolved cwd (TODO #169)",
 	"internal/hostbridge/valueof.go":     "HostSliceTypOf + sizedIntTyp rides the shared BasicTypedef",
 	"internal/hostbridge/pointee.go":     "hostptrref: HostPointeeEql — *p pointee contents compare for `r == *p` parity (new file)",
 	"internal/hostbridge/snapshot.go":    "hostslice write-through: detachSliceHost strips Slice.Host on the arg-snapshot tail so Engine.Call writes stay local",
