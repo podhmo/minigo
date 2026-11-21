@@ -767,6 +767,14 @@ func (v *VM) loop(f *frame) {
 			}
 			v.profAllocs++
 			f.push(&runtime.Tuple{Elems: el})
+		case bytecode.OpRejectTuple:
+			// gc's `multiple-value f() in single-value context`: a
+			// result tuple may sit on the stack only when it is the
+			// whole argument list — the compiler emits this check
+			// after every call used in any other position.
+			if _, isTup := f.stack[f.sp-1].(*runtime.Tuple); isTup {
+				f.trap("multiple-value call in single-value context")
+			}
 		case bytecode.OpUnpack:
 			tv := f.pop()
 			t, ok := tv.(*runtime.Tuple)

@@ -32,7 +32,13 @@ func (c *compiler) stmt(s ast.Stmt) {
 		}
 		c.fs.popBlock()
 	case *ast.ExprStmt:
+		if _, isCall := ast.Unparen(st.X).(*ast.CallExpr); isCall {
+			// an expression statement discards its value — `f()`
+			// — so a result tuple is legal here.
+			c.spreadTuple = true
+		}
 		c.expr(st.X)
+		c.spreadTuple = false
 		c.emit(bytecode.OpPop, 0, 0, st.Pos())
 	case *ast.DeclStmt:
 		gd := st.Decl.(*ast.GenDecl)
@@ -96,7 +102,14 @@ func (c *compiler) stmt(s ast.Stmt) {
 					// most once — its shape doubles as the typing decision.
 					isCommaOk := !isConst && len(vs.Names) == 2 && c.commaOkRhs(vals[0])
 					if !isCommaOk {
+						if _, isCall := ast.Unparen(vals[0]).(*ast.CallExpr); isCall {
+							// `var v, w = f()`: a legal result-tuple
+							// spread — the call must not append
+							// OpRejectTuple.
+							c.spreadTuple = true
+						}
 						c.expr(vals[0])
+						c.spreadTuple = false
 					}
 					c.emit3(bytecode.OpUnpack, len(vs.Names), 0, 0, vs.Pos())
 					for i := len(vs.Names) - 1; i >= 0; i-- {
@@ -948,7 +961,11 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 		// `return pair()`: one expr produces N results — push every
 		// declared result type and coerce the tuple element-wise, so an
 		// `any` slot still boxes a typed nil into an IfaceNil.
+		if _, isCall := ast.Unparen(st.Results[0]).(*ast.CallExpr); isCall {
+			c.spreadTuple = true
+		}
 		c.expr(st.Results[0])
+		c.spreadTuple = false
 		for _, rt := range c.results {
 			c.sigTypeExpr(rt)
 		}
@@ -959,8 +976,25 @@ func (c *compiler) returnStmt(st *ast.ReturnStmt) {
 		c.emit(bytecode.OpReturn, len(c.results), 0, st.Pos())
 		return
 	} else {
+		// a single `any` result accepts a result tuple — the repl's
+		// `__stepN() any { return f() }` convention relies on it.
+		anyResult := len(st.Results) == 1 && len(c.results) == 1 && func() bool {
+			switch t := c.results[0].(type) {
+			case *ast.Ident:
+				return t.Name == "any"
+			case *ast.InterfaceType:
+				return t.Methods == nil || len(t.Methods.List) == 0
+			}
+			return false
+		}()
 		for i, r := range st.Results {
+			if anyResult {
+				if _, isCall := ast.Unparen(r).(*ast.CallExpr); isCall {
+					c.spreadTuple = true
+				}
+			}
 			c.expr(r)
+			c.spreadTuple = false
 			// `return e` coerces e to the declared result type — `return nil`
 			// under a *T result yields a typed nil, under any an IfaceNil.
 			if i < len(c.results) && c.results[i] != nil {

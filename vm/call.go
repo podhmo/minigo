@@ -342,6 +342,12 @@ func (v *VM) callWindow(f *frame, callee runtime.Value, args []runtime.Value, wi
 			if len(args) != 1 {
 				return nil, fmt.Errorf("conversion to %s needs exactly one argument", c.Name)
 			}
+			if _, isTuple := args[0].(*runtime.Tuple); isTuple {
+				// a lone `A(f())` arg's spread arm lets a result tuple
+				// reach the conversion — gc rejects multi-value args
+				// to conversions too (`A(pair())`).
+				return nil, fmt.Errorf("multiple-value call in single-value context")
+			}
 			var srcTd *runtime.TypeDef
 			if len(statics) == 1 {
 				srcTd = statics[0]

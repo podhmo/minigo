@@ -78,6 +78,13 @@ type compiler struct {
 	// shadow the decl's names.
 	pkgScopeTyp *syntax.File
 
+	// spreadTuple arms the next emitted call as a legitimate
+	// result-tuple spread — a lone `f(g())` argument, `return g()`,
+	// or `x, y := g()` — so the OpRejectTuple every call otherwise
+	// appends is skipped. call() latches and clears it on entry, so
+	// the call's own argument emissions are never suppressed.
+	spreadTuple bool
+
 	// synthImports binds qualifier identifiers minted by
 	// synthImportName to their import refs: an operand or type
 	// expression re-scoped through a foreign package's file refers to
