@@ -174,9 +174,9 @@ func freeFrame(f *frame) {
 	// f.results' backing may be the returned Tuple's Elems — release it
 	// rather than clearing (OpReturn allocates a fresh slice per call).
 	f.results = nil
-	clear(f.argbuf)
+	clear(f.argbuf[:cap(f.argbuf)])
 	f.argbuf = f.argbuf[:0]
-	clear(f.statbuf)
+	clear(f.statbuf[:cap(f.statbuf)])
 	f.statbuf = f.statbuf[:0]
 	f.boundLo, f.boundHi = 0, 0
 	f.vpack = nil
@@ -310,6 +310,9 @@ func (f *frame) push(x runtime.Value) {
 }
 
 func (f *frame) pop() runtime.Value {
+	// atTail before the decrement: the arena top equals this window's
+	// end only while no suspended frame's region sits above.
+	atTail := f.base+f.sp == len(f.v.vals)
 	x := f.stack[f.sp-1]
 	// nil the slot before dropping it — the backing arena keeps the
 	// region past len, and a dead script value pinned there outlives
@@ -317,9 +320,7 @@ func (f *frame) pop() runtime.Value {
 	f.stack[f.sp-1] = nil
 	f.sp--
 	f.stack = f.stack[:f.sp]
-	// at the tail the arena shrinks with the pop; below a suspended
-	// window it must not — those operands belong to the frame above.
-	if f.base+f.sp == len(f.v.vals) {
+	if atTail {
 		f.v.vals = f.v.vals[:f.base+f.sp]
 	}
 	return x
