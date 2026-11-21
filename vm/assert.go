@@ -492,10 +492,10 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 		}
 		// a Named value's dynamic type is its declared typedef —
 		// `x.(MyInt)` on MyInt matches, `x.(int)` does not.
-		return v.typeMatchesTD(f, td, n.Typ)
+		return v.typeMatchesTD(f, td, n.Typ, n.V)
 	}
 	if tn, ok := asTypedNil(x); ok {
-		return v.typeMatchesTD(f, td, tn.Typ)
+		return v.typeMatchesTD(f, td, tn.Typ, nil)
 	}
 	if runtime.IfaceTaggedNil(x) != nil {
 		// a nil interface value has no dynamic type — every assert
@@ -688,7 +688,7 @@ func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.Ty
 		return true
 	}
 	if td.Name != "" || tag.Name != "" {
-		return v.typeMatchesTD(f, td, tag)
+		return v.typeMatchesTD(f, td, tag, nil)
 	}
 	if kind == runtime.KindSlice && tag.Elem != nil && v.hostElemTwin(f, tag, td) {
 		// a host-unboxed slice spells its element bare (`[]*Field`);
@@ -743,6 +743,13 @@ func ifaceDynKey(x runtime.Value) (key ifaceKey, ok bool) {
 	case *runtime.IfaceNil:
 		return ifaceKey{dyn: t.Typ, nilIface: true}, t.Typ != nil
 	case *runtime.Cell:
+		// `&x` keys on the pointee's declared type, not the stored
+		// value's: `(&w).(io.Writer)` on an interface var is *W (empty
+		// set) while `(&s).(io.Writer)` on a struct is *T — sharing the
+		// payload's key would leak one result into the other.
+		if t.Typ != nil {
+			return ifaceKey{dyn: t.Typ, ptr: true}, true
+		}
 		switch e := t.Elem.(type) {
 		case *runtime.Struct:
 			return ifaceKey{dyn: e.Def, ptr: true}, e.Def != nil
@@ -977,7 +984,7 @@ func asTypedNil(x runtime.Value) (*runtime.TypedNil, bool) {
 // typeMatchesTD runs x.(T) when x is a typed nil: the "dynamic type" is
 // the typedef the nil was declared with. Interfaces check the typedef's
 // method set; concrete types compare by type identity.
-func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
+func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef, x runtime.Value) bool {
 	if td.Kind == runtime.KindInterface || td.IfaceBase {
 		if len(td.MReqs) == 0 && len(td.IEmbeds) == 0 && !td.IfaceBase {
 			return true
@@ -1008,7 +1015,7 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef) bool {
 				if err != nil {
 					f.trap("%s", err)
 				}
-				return v.memberSigsMatch(reqFns, dynFns, nil)
+				return v.memberSigsMatch(reqFns, dynFns, x)
 			}
 		}
 		return true

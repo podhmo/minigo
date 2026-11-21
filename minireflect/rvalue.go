@@ -30,6 +30,9 @@ type RValue struct {
 	// (Go's flagEmbedRO): selecting an exported field below it clears
 	// the restriction, as reflect does for `type T struct{ inner }`.
 	embedRO bool
+	// keyID holds the root box a copy's map-key identity links back
+	// to — set by LinkCopiedKey during an assignment copy.
+	keyID any
 	// mexpr marks the Func value of a host type's Method(i)/MethodByName:
 	// the method expression's name. Call dispatches the receiver (in[0])
 	// by that name on the concrete value, so a facade's own method —
@@ -45,6 +48,53 @@ type RValue struct {
 
 // host reports whether this value delegates to a real reflect.Value.
 func (v *RValue) host() bool { return v != nil && v.rv.IsValid() }
+
+// LinkCopiedKey implements runtime.CopyKeyLinker: an assignment copy
+// keys like its root box — gc's copied Value keeps the same data
+// pointer, so copies of one Value compare equal while two distinct
+// reflect.ValueOf calls on the same operand key differently.
+func (v *RValue) LinkCopiedKey(orig any) {
+	if o, ok := orig.(*RValue); ok && o.keyID != nil {
+		v.keyID = o.keyID
+		return
+	}
+	v.keyID = orig
+}
+
+// rkey tags a viewed location with the view's domain — gc's map key
+// for a reflect.Value includes typ alongside the data pointer, so a
+// pointer Value and its Elem() (same location, different kind of
+// view) do not collide. The typedef itself is not the key: repeated
+// Elem() walks mint a fresh descriptor per call, so keying on it
+// would split equal views.
+type rkey struct {
+	via int // 0 = value view, 1 = settable ref view
+	id  any
+}
+
+func (v *RValue) ContentKey() any {
+	if v.host() {
+		return v.rv
+	}
+	// a script-domain view keys like the Value it models: a settable
+	// view by the location it reads through (gc's data ptr), and any
+	// other view by the root box copies link back to.
+	if v.ref != nil {
+		return rkey{1, v.ref}
+	}
+	// a reference-like viewed value IS gc's data word — reflect.ValueOf
+	// on the same pointer/map/chan keys identically across calls,
+	// while scalar and slice operands box fresh each call and key on
+	// the copy-linked root box.
+	switch v.val.(type) {
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.Map, *runtime.Chan:
+		return rkey{0, v.val}
+	}
+	if v.keyID != nil {
+		return v.keyID
+	}
+	return v
+}
 
 // get reads the current script value, through the ref when settable.
 func (v *RValue) get() runtime.Value {

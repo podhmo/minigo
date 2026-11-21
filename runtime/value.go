@@ -859,11 +859,13 @@ func Copy(v Value) Value {
 		// host-returned pointer that must share.
 		if HostStructTagged(x) {
 			if cp, ok := HostStructCopy(x.V); ok {
+				linkCopiedKey(cp, x.V)
 				return Tag(x.Typ, cp)
 			}
 			// a `*p` read of a named non-struct host type boxes *T the
 			// same way — `x := *p` must detach from p's storage.
 			if cp, ok := HostPointeeCopy(x.V); ok {
+				linkCopiedKey(cp, x.V)
 				return Tag(x.Typ, cp)
 			}
 		}
@@ -880,6 +882,19 @@ func Copy(v Value) Value {
 		return &Named{Typ: x.Typ, V: Copy(x.V)}
 	}
 	return v
+}
+
+// linkCopiedKey hands a copied host box its original so a
+// [CopyKeyLinker] payload can share the original's key identity.
+func linkCopiedKey(cp, orig Value) {
+	if og, ok := orig.(*GoValue); ok {
+		orig = og.V
+	}
+	if g, ok := cp.(*GoValue); ok {
+		if lk, ok := g.V.(CopyKeyLinker); ok {
+			lk.LinkCopiedKey(orig)
+		}
+	}
 }
 
 // SetRef stores val through a pointer value ([Cell], [FieldRef],
@@ -915,7 +930,22 @@ func SetRef(v, val Value) bool {
 type mapKey struct {
 	typ  string
 	repr string
+	// key carries a Go-comparable identity for boxes whose content, not
+	// their pointer, is the map key (a reflect.Value copy keys by its
+	// viewed content). Nil for every other key.
+	key any
 }
+
+// ContentKeyer is implemented by a host box that answers for a
+// Go-comparable value identity rather than its own pointer —
+// [CanonicalKey] consults it in the GoValue arm.
+type ContentKeyer interface{ ContentKey() any }
+
+// CopyKeyLinker is implemented by a host box that survives an
+// assignment copy ([HostStructCopy]) with a key identity tied to its
+// original — reflect.Value keys like a copied gc Value, not like a
+// fresh box.
+type CopyKeyLinker interface{ LinkCopiedKey(orig any) }
 
 // CanonicalKey converts a script map key to the Go-comparable form that
 // keys [Map.Pairs], so composite keys compare by content. Scalars pass
@@ -957,6 +987,9 @@ func CanonicalKey(v Value) Value {
 	case *Function, *Closure, *BoundMethod, *BuiltinFunc:
 		panic(&Panic{Value: &RuntimeError{Msg: "hash of unhashable type func()"}})
 	case *GoValue:
+		if ck, ok := x.V.(ContentKeyer); ok {
+			return mapKey{typ: "host:" + reflect.TypeOf(x.V).String(), key: ck.ContentKey()}
+		}
 		if !reflect.TypeOf(x.V).Comparable() {
 			panic(&Panic{Value: &RuntimeError{Msg: fmt.Sprintf("hash of unhashable type %T", x.V)}})
 		}

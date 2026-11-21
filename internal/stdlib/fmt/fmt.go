@@ -1976,11 +1976,15 @@ func fmtArg(v runtime.MemberCaller, x runtime.Value) any {
 		if fv, ok := x.V.(*fmtValue); ok {
 			return fmtArg(v, fv.x)
 		}
-		// the tag only names the declared type — a host-boxed payload
-		// still unwraps to fmtRValue, while other payloads keep
-		// fmtValue's tag-aware rendering (float32 tags, named scalars).
+		// a host-boxed payload unwraps to fmtRValue — but only while
+		// the tag is the bound typedef itself: a script-declared type
+		// over a host struct inherits no methods, so gc renders it
+		// field-wise and the native box must stay wrapped.
 		if gv, ok := x.V.(*runtime.GoValue); ok {
-			return fmtArg(v, gv)
+			td := x.Typ
+			if _, isRV := gv.V.(*minireflect.RValue); isRV || td == nil || td.HostNew != nil || td.HostIdent != nil {
+				return fmtArg(v, gv)
+			}
 		}
 		// a still-constant payload materializes at the declared width
 		// first: `fmt.Println(uint64(1<<64 - 1))` is max-uint where the
@@ -2099,7 +2103,13 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 	// Formatter AND every Stringer-family method there — a Stringer
 	// argument renders its fields, never its String() output.
 	nested := suppressMethods(f)
-	if s.c != nil && !nested && verb != 'T' && verb != 'p' {
+	// a ref operand is a *T where T is the pointee's declared type:
+	// `&p` on a *bytes.Buffer is a **bytes.Buffer and `&i` on an
+	// interface var is a *interface{} — unnamed pointer-to-pointer
+	// and pointer-to-interface carry no methods, so the Stringer and
+	// Formatter families never run on them (gc prints 0xADDR).
+	opaque := refOpaque(s.x)
+	if s.c != nil && !nested && !opaque && verb != 'T' && verb != 'p' {
 		if cs, isCap := f.(*captureState); isCap {
 			wrote, pan := callFormatReport(s.c, s.x, cs, verb)
 			if pan != nil {
@@ -2119,7 +2129,7 @@ func (s *fmtValue) render(verb rune, f fmt.State) string {
 		}
 	}
 	// Stringer family first, like fmt does.
-	if s.c != nil && !nested {
+	if s.c != nil && !nested && !opaque {
 		switch verb {
 		case 'v':
 			if f.Flag('#') {
@@ -2234,6 +2244,28 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 				return fmt.Sprintf(formatOf(f, verb), cv)
 			}
 		}
+		// a script-declared type over a host box inherits no host
+		// methods: gc renders it field-wise, so the native payload
+		// must not reach Sprintf where its String() would run
+		// (`type MyBuf bytes.Buffer` prints {[104 105] 0 0}, not "hi").
+		// A declared-over-INTERFACE tag is the opposite — transparent
+		// to the payload (`var a A = buf` with `type A any` calls
+		// buf.String()), so it renders through the payload below.
+		if td := v.Typ; td != nil && declaredOverHost(td) {
+			if gv, ok := runtime.Unwrap(v.V).(*runtime.GoValue); ok {
+				if rv := reflect.ValueOf(hostbridge.GoNative(gv)); rv.IsValid() {
+					// the box stores a pointer to the host struct —
+					// incidental unless the declared type itself is
+					// a pointer type (`type P *bytes.Buffer`).
+					if rv.Kind() == reflect.Pointer && td.Kind != runtime.KindPointer && rv.Elem().Kind() == reflect.Struct {
+						// a Named-over-host-struct stores *T where
+						// gc holds T — a pointer pointee keeps its &.
+						rv = rv.Elem()
+					}
+					return hostFields(rv, verb, f, stdlib.TypedefSpelling(td))
+				}
+			}
+		}
 		return (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: v.V, et: v.Typ, depth: s.depth + 1}).render(verb, f)
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
 		dv, ok := runtime.Deref(v)
@@ -2251,6 +2283,21 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			switch t := x.(type) {
 			case *runtime.Struct, *runtime.Slice, *runtime.Map:
 				return true
+			case *runtime.GoValue:
+				// a host box counts only when it holds a composite
+				// directly — a *T box is a pointer (`&p` on a
+				// *bytes.Buffer prints 0xADDR, not &{...}). The
+				// incidental *T a Named-over-host stores is handled
+				// through the Named arm's declared type below.
+				rv := reflect.ValueOf(hostbridge.GoNative(t))
+				if !rv.IsValid() {
+					return false
+				}
+				switch rv.Kind() {
+				case reflect.Struct, reflect.Array, reflect.Slice, reflect.Map:
+					return true
+				}
+				return false
 			case *runtime.TypedNil:
 				// &ns for a nil slice/map spells &[]/&map[]
 				return t.Typ != nil &&
@@ -2262,14 +2309,36 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 			return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: dv, depth: s.depth + 1}).render(verb, nested(f))
 		}
 		if s.depth == 0 {
-			if n, isNamed := dv.(*runtime.Named); isNamed && composite(n.V) {
-				return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: n.V, depth: s.depth + 1}).render(verb, nested(f))
+			if n, isNamed := dv.(*runtime.Named); isNamed && (composite(n.V) || declaredHostComposite(n)) {
+				px := n.V
+				if td := n.Typ; td != nil && td.File != nil {
+					// a declared-over-host value keeps its tag through
+					// the descent so hostFields renders the fields.
+					px = dv
+				}
+				return "&" + (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: px, depth: s.depth + 1}).render(verb, nested(f))
 			}
 		}
 		// scalar pointer: Go prints the address — a host pointer repr
 		// is the closest readable stand-in; %#v wraps it as (*T)(0xADDR).
 		if verb == 'v' && f.Flag('#') {
 			return fmt.Sprintf("(*%s)(%p)", ScriptTypeString(dv), v)
+		}
+		if verb == 'x' || verb == 'X' {
+			// %x of a pointer prints the bare hex address; # restores
+			// the 0x/0X prefix (%p's shape) and width/precision pad
+			// the spelled address.
+			sp := strings.TrimPrefix(fmt.Sprintf("%p", v), "0x")
+			if f.Flag('#') {
+				if verb == 'X' {
+					sp = "0X" + strings.ToUpper(sp)
+				} else {
+					sp = "0x" + sp
+				}
+			} else if verb == 'X' {
+				sp = strings.ToUpper(sp)
+			}
+			return fmt.Sprintf(formatOfNoHash(f, 's'), sp)
 		}
 		return fmt.Sprintf("%p", v)
 	case *runtime.Struct:
@@ -2281,25 +2350,25 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		// +/# field naming and the T{...} go-syntax are live-%v forms;
 		// inside a bad-verb marker gc passes the flags down to the leaf
-		// renders instead (%+p of S{X:7} prints {+7}).
+		// renders instead (%+p of S{X:7} prints {+7}). The x-family
+		// verbs keep the flags' numeric meaning at the leaf (%#x of a
+		// pointer field prints 0xADDR, no field names, no T{} wrapper).
 		nameFields := !suppressMethods(f)
+		vFlags := nameFields && verb == 'v'
 		parts := make([]string, len(v.Fields))
 		for i, e := range v.Fields {
 			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: stdlib.FieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
-			if nameFields && f.Flag('+') && i < len(v.Def.Fields) {
-				fv = v.Def.Fields[i] + ":" + fv
-			}
-			if nameFields && f.Flag('#') && i < len(v.Def.Fields) {
+			if vFlags && (f.Flag('+') || f.Flag('#')) && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
 			parts[i] = fv
 		}
 		sep := " "
-		if nameFields && f.Flag('#') {
+		if vFlags && f.Flag('#') {
 			sep = ", "
 		}
 		body := strings.Join(parts, sep)
-		if nameFields && f.Flag('#') {
+		if vFlags && f.Flag('#') {
 			return stdlib.TypedefSpelling(v.Def) + "{" + body + "}"
 		}
 		return "{" + body + "}"
@@ -2520,6 +2589,224 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		return stdlib.TypedefSpelling(v)
 	}
 	return s.leaf(x, verb, f)
+}
+
+// refOpaque reports whether a ref operand (&x) is a pointer whose
+// own method set is empty: the pointee's declared type is an unnamed
+// pointer (`&p` is **bytes.Buffer), an interface (`&i` is
+// *interface{}), or unstamped while the stored value is a raw host
+// pointer box (an inferred `p := bytes.NewBufferString` slot — its
+// *T payload makes &p a **T). A Named payload is left for its own
+// declared-method walk, and a NAMED pointer pointee (`type P *T`)
+// keeps its declared methods.
+func refOpaque(x runtime.Value) bool {
+	switch x.(type) {
+	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef:
+	default:
+		return false
+	}
+	if td := stdlib.PointeeDeclTyp(x); td != nil {
+		return td.Kind == runtime.KindInterface || td.IfaceBase ||
+			(td.Kind == runtime.KindPointer && td.Spec == nil)
+	}
+	dv, ok := runtime.Deref(x)
+	if !ok {
+		return false
+	}
+	if _, named := dv.(*runtime.Named); named {
+		return false
+	}
+	if gv, ok := dv.(*runtime.GoValue); ok {
+		if rv := reflect.ValueOf(hostbridge.GoNative(gv)); rv.IsValid() && rv.Kind() == reflect.Pointer {
+			return true
+		}
+	}
+	return false
+}
+
+// declaredOverHost reports whether td is a script-declared typedef
+// whose value sits on a host box: a declaration in source (File set),
+// or the anonymous *T over one (`&b` on `type MyBuf bytes.Buffer`).
+// Declared-over-interface tags (`type A any`, `type E error`) are not
+// host wraps — the interface is transparent to its payload's type.
+func declaredOverHost(td *runtime.TypeDef) bool {
+	if td == nil || td.Kind == runtime.KindInterface || td.IfaceBase {
+		return false
+	}
+	if td.File != nil {
+		return true
+	}
+	return td.Kind == runtime.KindPointer && td.Spec == nil &&
+		td.Elem != nil && td.Elem.File != nil &&
+		td.Elem.Kind != runtime.KindInterface && !td.Elem.IfaceBase
+}
+
+// declaredHostComposite reports whether a Named-over-host value is a
+// composite for the `&x` descent: the declared type's underlying host
+// kind decides (`type MyBuf bytes.Buffer` is a struct) — a declared
+// pointer type (`type P *T`) and an interface tag are not composite.
+func declaredHostComposite(n *runtime.Named) bool {
+	td := n.Typ
+	if td == nil || td.Kind == runtime.KindPointer ||
+		td.Kind == runtime.KindInterface || td.IfaceBase || td.File == nil {
+		return false
+	}
+	if gv, ok := runtime.Unwrap(n.V).(*runtime.GoValue); ok {
+		rv := reflect.ValueOf(hostbridge.GoNative(gv))
+		for rv.IsValid() && rv.Kind() == reflect.Pointer {
+			rv = rv.Elem()
+		}
+		switch rv.Kind() {
+		case reflect.Struct, reflect.Array, reflect.Slice, reflect.Map:
+			return true
+		}
+	}
+	return false
+}
+
+// hostFields renders a host value the way gc's fmt renders a value
+// whose declared type has no methods: a field-wise walk where no
+// String()/Error() runs. Unexported fields read through the kind
+// accessors (Interface() would panic on them), so a nested Stringer
+// under %v renders its own fields — one level deeper than gc goes.
+func hostFields(rv reflect.Value, verb rune, f fmt.State, typ string) string {
+	return hostFieldsAt(rv, verb, f, typ, true)
+}
+
+// hostFieldsAt is hostFields's recursive walk: top marks the entry
+// value, where gc descends a pointer's composite pointee once
+// (`&{...}`). A nested pointer prints its address instead — which is
+// also what bounds the walk, so cyclic host shapes (a template's
+// shared parse tables) cannot exhaust the stack.
+func hostFieldsAt(rv reflect.Value, verb rune, f fmt.State, typ string, top bool) string {
+	for rv.IsValid() && rv.Kind() == reflect.Interface {
+		if rv.IsNil() {
+			return "<nil>"
+		}
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() {
+		return "<nil>"
+	}
+	switch rv.Kind() {
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return "<nil>"
+		}
+		if top {
+			switch rv.Elem().Kind() {
+			case reflect.Struct, reflect.Array, reflect.Slice, reflect.Map:
+				return "&" + hostFieldsAt(rv.Elem(), verb, f, "", false)
+			}
+		}
+		if f.Flag('#') && verb == 'v' {
+			// %#v spells a pointer the Go-syntax way: (*T)(0xADDR).
+			return fmt.Sprintf("(*%s)(0x%x)", rv.Type().Elem(), rv.Pointer())
+		}
+		// %x prints the bare hex address; every other verb keeps %p's
+		// 0xADDR shape (%#x's 0x prefix lands the same).
+		if verb == 'x' || verb == 'X' {
+			// fmt's own # flag on %x spells the 0x/0X prefix and
+			// width/precision apply to the hex like %p's.
+			return fmt.Sprintf(formatOf(f, verb), rv.Pointer())
+		}
+		return fmt.Sprintf("0x%x", rv.Pointer())
+	case reflect.Struct:
+		nameFields := !suppressMethods(f)
+		// field names and the T{...} wrapper are %v family spellings:
+		// %+v/%#v name fields and %#v wraps in the type's Go name —
+		// under %x-family verbs the flags keep their numeric meaning
+		// (%+x signs the hex, %#x prefixes 0x).
+		nameThem := nameFields && (f.Flag('+') || f.Flag('#')) && verb == 'v'
+		parts := make([]string, rv.NumField())
+		for i := range parts {
+			fv := hostFieldsAt(rv.Field(i), verb, f, "", false)
+			if nameThem {
+				fv = rv.Type().Field(i).Name + ":" + fv
+			}
+			parts[i] = fv
+		}
+		if f.Flag('#') && verb == 'v' && nameFields {
+			if typ == "" {
+				typ = rv.Type().String()
+			}
+			return typ + "{" + strings.Join(parts, ", ") + "}"
+		}
+		return "{" + strings.Join(parts, " ") + "}"
+	case reflect.Slice, reflect.Array:
+		if rv.Kind() == reflect.Slice && rv.IsNil() {
+			return "[]"
+		}
+		if v, ok := hostIface(rv); ok && !f.Flag('#') {
+			// byte slices print through host fmt like gc — "hi"
+			// under %s, "hi" quoted under %q, hex under %x. Under
+			// %#v the manual path spells reflect's type name
+			// ([]uint8 where host fmt writes []byte).
+			return fmt.Sprintf(formatOf(f, verb), v)
+		}
+		parts := make([]string, rv.Len())
+		for i := range parts {
+			parts[i] = hostFieldsAt(rv.Index(i), verb, f, "", false)
+		}
+		if f.Flag('#') && !suppressMethods(f) {
+			return rv.Type().String() + "{" + strings.Join(parts, ", ") + "}"
+		}
+		return "[" + strings.Join(parts, " ") + "]"
+	case reflect.Map:
+		if rv.IsNil() {
+			return "map[]"
+		}
+		keys := rv.MapKeys()
+		sort.Slice(keys, func(i, j int) bool {
+			return hostFields(keys[i], 'v', f, "") < hostFields(keys[j], 'v', f, "")
+		})
+		parts := make([]string, len(keys))
+		for i, k := range keys {
+			parts[i] = hostFieldsAt(k, verb, f, "", false) + ":" + hostFieldsAt(rv.MapIndex(k), verb, f, "", false)
+		}
+		if f.Flag('#') && !suppressMethods(f) {
+			if typ == "" {
+				typ = rv.Type().String()
+			}
+			return typ + "{" + strings.Join(parts, ", ") + "}"
+		}
+		return "map[" + strings.Join(parts, " ") + "]"
+	}
+	if v, ok := hostIface(rv); ok {
+		return fmt.Sprintf(formatOf(f, verb), v)
+	}
+	// chans, funcs, unsafe pointers — an address repr is the closest
+	// readable stand-in.
+	return fmt.Sprintf("0x%x", rv.Pointer())
+}
+
+// hostIface materializes a possibly-unexported host field into a plain
+// value host fmt can print — rv.Interface() panics on unexported fields,
+// but the per-kind Set* copies need only the readable accessor.
+func hostIface(rv reflect.Value) (any, bool) {
+	nv := reflect.New(rv.Type()).Elem()
+	switch rv.Kind() {
+	case reflect.Bool:
+		nv.SetBool(rv.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		nv.SetInt(rv.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		nv.SetUint(rv.Uint())
+	case reflect.Float32, reflect.Float64:
+		nv.SetFloat(rv.Float())
+	case reflect.Complex64, reflect.Complex128:
+		nv.SetComplex(rv.Complex())
+	case reflect.String:
+		nv.SetString(rv.String())
+	case reflect.Slice:
+		if rv.Type().Elem().Kind() != reflect.Uint8 {
+			return nil, false
+		}
+		nv.SetBytes(rv.Bytes())
+	default:
+		return nil, false
+	}
+	return nv.Interface(), true
 }
 
 // renderList renders a slice's bracketed element list — every verb
