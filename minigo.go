@@ -591,6 +591,11 @@ func (e *Engine) hostTwin(rt reflect.Type) *runtime.TypeDef {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, bp := range e.pkgs {
+		if !bp.IndexReady() {
+			// a package still being indexed publishes Index and scopes
+			// unsynchronized — skip it; bound packages are born ready.
+			continue
+		}
 		if bp.Index != nil || bp.Globals == nil {
 			continue
 		}
