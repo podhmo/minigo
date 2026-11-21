@@ -90,3 +90,30 @@ import とセレクタ名の検査では、コールバック経由の実行が�
   `mapKeyOperand`/`coerceConcrete`/`convert`/`hostPtrConv`）、frame/サイト依存の
   dispatch（`selectMember`/`hostMember`/`namedMember`/`setField`/`setIndex`/
   `compositeOf`/`binaryOpFlags`/`eqlValue`/`ifaceEql`）。
+
+### P2-7e: channel 操作（hostbridge/chanops.go）
+
+- `ChanHooks`: VM 側の frame/proc 依存を注入する束。`VC`・`Trap`・
+  `Park`（`v.park`）・`Done`（`chan struct{}`、proc 無しで nil）・
+  `ZeroValue`（`v.zeroValue(f, et)`）・`ElemTypedef`・`Managed`
+  （`p.ChanState` の managed 判定）・`Exit`（`procExit{}` を返す）。
+  `v.chanHooks(f)` で呼び出し側が組み立てる。
+- 移動したもの: `ChanOf`（`chanOf` — `*runtime.Chan`/`Cell`/`Named`/
+  `IfaceNil`/`TypedNil`/`Nil`/`GoValue` の解決 + wake 計算）、
+  `ChanParkWake`、`Marshal.ChanSendValue`（`chan any` は verbatim、
+  それ以外は `m.ToReflect`）、`ChanSend`/`ChanRecvRV`（done arm 付きの
+  ブロッキング select）、`ChanZero`、select-case 構築
+  （`SelectCase` エイリアス + `SelectCaseSend/Recv/Default` +
+  `Select`）、`RVOf`/`IsChan`/`IsMap`/`IsSlice`/`IsArray`/`IsString`/
+  `NewElem`（reflect を名前で参照しないための helper）、
+  `NilChanRV`/`NilChanValue`。
+- vm 側の変更: `doneRV` → `doneChan() chan struct{}`（reflect を
+  返さない）、`RegisterWakeChan(vc, ch any)`（内部で `RVOf`）、
+  `mkIter` の ChRV/HostRV 構築は `RVOf`+kind helper、`runtime.SelArm.Case`・
+  `runtime.Iterator.ChRV` フィールドの型（`reflect.SelectCase`・
+  `reflect.Value`）は runtime 側のまま — vm は値を受け渡すだけで
+  型名を書かないので import 不要。
+- 残存 reflect（P2-7f で除去予定）: `ffi_marshal.go` の host 呼び出し、
+  `generic.go` の intern、`const.go` の materialize、`assert.go`、
+  `composite.go`/`binop.go`/`convert.go` の typedef 解決・dispatch、
+  `panic.go`/`vm.go`/`call.go` の断片、テスト。

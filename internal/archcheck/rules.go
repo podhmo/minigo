@@ -25,7 +25,7 @@ var Rules = map[string][]string{
 	"internal/cmd/genbind":   {".", "index"},
 	"internal/cmd/genifaces": {},
 	"internal/execution":     {},
-	"internal/hostbridge":    {"minireflect", "runtime"},
+	"internal/hostbridge":    {"internal/process", "minireflect", "runtime"},
 	"internal/process":       {},
 	"internal/replhooks":     {"bytecode", "index", "internal/execution", "resolve", "runtime", "syntax", "vm"},
 	"internal/semantics":     {"index", "syntax"},
