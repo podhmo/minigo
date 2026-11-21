@@ -2324,6 +2324,18 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		if verb == 'v' && f.Flag('#') {
 			return fmt.Sprintf("(*%s)(%p)", ScriptTypeString(dv), v)
 		}
+		if verb == 'x' || verb == 'X' {
+			// %x of a pointer prints the bare hex address; %#x's 0x
+			// prefix lands the same as %p's shape.
+			sp := fmt.Sprintf("%p", v)
+			if !f.Flag('#') {
+				sp = strings.TrimPrefix(sp, "0x")
+			}
+			if verb == 'X' {
+				sp = strings.ToUpper(sp)
+			}
+			return sp
+		}
 		return fmt.Sprintf("%p", v)
 	case *runtime.Struct:
 		switch verb {
@@ -2334,25 +2346,25 @@ func (s *fmtValue) renderValue(x runtime.Value, verb rune, f fmt.State) string {
 		}
 		// +/# field naming and the T{...} go-syntax are live-%v forms;
 		// inside a bad-verb marker gc passes the flags down to the leaf
-		// renders instead (%+p of S{X:7} prints {+7}).
+		// renders instead (%+p of S{X:7} prints {+7}). The x-family
+		// verbs keep the flags' numeric meaning at the leaf (%#x of a
+		// pointer field prints 0xADDR, no field names, no T{} wrapper).
 		nameFields := !suppressMethods(f)
+		vFlags := nameFields && verb == 'v'
 		parts := make([]string, len(v.Fields))
 		for i, e := range v.Fields {
 			fv := (&fmtValue{c: s.c, nilSyntax: s.nilSyntax, x: e, et: stdlib.FieldTypOf(v.Def, i), depth: s.depth + 1}).render(elemVerb(verb), nested(f))
-			if nameFields && f.Flag('+') && i < len(v.Def.Fields) {
-				fv = v.Def.Fields[i] + ":" + fv
-			}
-			if nameFields && f.Flag('#') && i < len(v.Def.Fields) {
+			if vFlags && (f.Flag('+') || f.Flag('#')) && i < len(v.Def.Fields) {
 				fv = v.Def.Fields[i] + ":" + fv
 			}
 			parts[i] = fv
 		}
 		sep := " "
-		if nameFields && f.Flag('#') {
+		if vFlags && f.Flag('#') {
 			sep = ", "
 		}
 		body := strings.Join(parts, sep)
-		if nameFields && f.Flag('#') {
+		if vFlags && f.Flag('#') {
 			return stdlib.TypedefSpelling(v.Def) + "{" + body + "}"
 		}
 		return "{" + body + "}"
@@ -2683,21 +2695,32 @@ func hostFieldsAt(rv reflect.Value, verb rune, f fmt.State, typ string, top bool
 				return "&" + hostFieldsAt(rv.Elem(), verb, f, "", false)
 			}
 		}
-		if f.Flag('#') {
+		if f.Flag('#') && verb == 'v' {
+			// %#v spells a pointer the Go-syntax way: (*T)(0xADDR).
 			return fmt.Sprintf("(*%s)(0x%x)", rv.Type().Elem(), rv.Pointer())
+		}
+		// %x prints the bare hex address; every other verb keeps %p's
+		// 0xADDR shape (%#x's 0x prefix lands the same).
+		if (verb == 'x' || verb == 'X') && !f.Flag('#') {
+			return fmt.Sprintf("%"+string(verb), rv.Pointer())
 		}
 		return fmt.Sprintf("0x%x", rv.Pointer())
 	case reflect.Struct:
 		nameFields := !suppressMethods(f)
+		// field names and the T{...} wrapper are %v family spellings:
+		// %+v/%#v name fields and %#v wraps in the type's Go name —
+		// under %x-family verbs the flags keep their numeric meaning
+		// (%+x signs the hex, %#x prefixes 0x).
+		nameThem := nameFields && (f.Flag('+') || f.Flag('#')) && verb == 'v'
 		parts := make([]string, rv.NumField())
 		for i := range parts {
 			fv := hostFieldsAt(rv.Field(i), verb, f, "", false)
-			if nameFields && (f.Flag('+') || f.Flag('#')) {
+			if nameThem {
 				fv = rv.Type().Field(i).Name + ":" + fv
 			}
 			parts[i] = fv
 		}
-		if f.Flag('#') && nameFields {
+		if f.Flag('#') && verb == 'v' && nameFields {
 			if typ == "" {
 				typ = rv.Type().String()
 			}
