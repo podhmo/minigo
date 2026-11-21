@@ -2226,7 +2226,7 @@ func (e *jsonEncoder) ScriptMethod(name string) (func(runtime.VMCaller, []runtim
 	}, true
 }
 
-func (e *jsonEncoder) encode(c runtime.VMCaller, v runtime.Value) error {
+func (e *jsonEncoder) encode(c runtime.MemberShapeTyper, v runtime.Value) error {
 	err := e.enc.Encode(goJSON(c, v))
 	err = jsonUnsupportedOf(err)
 	var se *jsonScriptErr
