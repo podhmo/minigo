@@ -199,8 +199,23 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 				// the host packs a ...T call into one slice; the script
 				// callee collects separate args back into its own ...T.
 				for j := range a.Len() {
-					sargs = append(sargs, GoSlotValueOf(a.Index(j)))
+					e := a.Index(j)
+					if pe := m.projectedVal(e); pe != nil {
+						m.pullProjected(pe, vc, map[runtime.Value]bool{})
+						sargs = append(sargs, pe.sv)
+						continue
+					}
+					sargs = append(sargs, GoSlotValueOf(e))
 				}
+				continue
+			}
+			if pe := m.projectedVal(a); pe != nil {
+				// the arg is a host projection a call on this
+				// goroutine made of a script container — the FuncMap
+				// param reads the script value (typedef + methods),
+				// not the method-less projected map/slice.
+				m.pullProjected(pe, vc, map[runtime.Value]bool{})
+				sargs = append(sargs, pe.sv)
 				continue
 			}
 			sargs = append(sargs, GoSlotValueOf(a))
@@ -212,6 +227,11 @@ func (m *Marshal) AdaptFuncWith(x runtime.Value, t reflect.Type, vc runtime.VMCa
 			}
 			panic(err)
 		}
+		// mirror the callee's writes into the host projections the
+		// caller still reads — all of them, not just resolved args:
+		// a no-arg func mutating a captured map has no resolved arg
+		// to push through.
+		m.syncRegistered(vc)
 		nout := t.NumOut()
 		var rs []runtime.Value
 		if tup, ok := r.(*runtime.Tuple); ok {
