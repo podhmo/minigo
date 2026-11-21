@@ -20,4 +20,16 @@ func main() {
 	type A struct{ X [2]any }
 	ma := map[A]int{A{[2]any{nil, 1}}: 5}
 	fmt.Println(ma[A{[2]any{e, 1}}], ma[A{[2]any{p, 1}}])
+	concreteUnderNamedIface()
+}
+
+type myErr struct{ msg string }
+
+func (myErr) Error() string { return "x" }
+
+func concreteUnderNamedIface() {
+	type K struct{ X any }
+	var e3 E = myErr{"a"}
+	m := map[K]int{K{myErr{"a"}}: 9}
+	fmt.Println(m[K{e3}], m[K{E(myErr{"a"})}])
 }

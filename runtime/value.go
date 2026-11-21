@@ -735,7 +735,13 @@ func (r *IndexRef) Get() (Value, bool) {
 	if m := r.mapOf(); m != nil {
 		// a missing key reports no value — callers needing the zero
 		// go through the VM's index path, which knows the elem typedef.
-		v, ok := m.Get(Unwrap(r.Key))
+		// an interface-keyed map hashes the key's dynamic type —
+		// Named tags must survive like in [IndexRef.Set].
+		k := r.Key
+		if !m.IfaceKey {
+			k = Unwrap(k)
+		}
+		v, ok := m.Get(k)
 		if !ok || !SharedElem(v) {
 			// interior access on a non-reference element must not
 			// resolve: `m[k]` reads a copy in Go, so writes like
@@ -835,8 +841,10 @@ func Copy(v Value) Value {
 		case int64, float64, bool, string, complex128:
 			return x
 		}
-		// assignment copies the underlying value but keeps the declared tag
-		return Tag(x.Typ, Copy(x.V))
+		// assignment copies the underlying value but keeps the declared
+		// tag — built directly, not via Tag, so a payload's own tag
+		// (Named{T, Named{U, v}}) survives the copy.
+		return &Named{Typ: x.Typ, V: Copy(x.V)}
 	}
 	return v
 }
@@ -1324,10 +1332,18 @@ type typedKey struct {
 // CanonicalKey; composites already key by type.
 func IfaceKeyOf(v Value) Value {
 	if tk, ok := typedScalarKeyOf(v); ok {
-		if ck, isNaN := tk.v.(mapKey); isNaN {
-			return ck
-		}
+		// keep tk whole: a NaN payload's nonce lives inside its
+		// mapKey repr, so the outer tag must not be peeled off —
+		// peeling would collapse NS(st) onto st.
 		return tk
+	}
+	if n, ok := v.(*Named); ok && n.Typ != nil &&
+		(n.Typ.Kind == KindInterface || n.Typ.IfaceBase ||
+			(n.Typ.Spec == nil && ifaceUnderlyingSpell(TypUnderlyingSpelling(n.Typ)))) {
+		// a declared-over-interface tag is not a dynamic type:
+		// `E(err)` keys like err — the same peel typedScalarKeyOf
+		// declines to tag on.
+		return IfaceKeyOf(n.V)
 	}
 	return CanonicalKey(v)
 }
@@ -1347,6 +1363,25 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 				return typedKey{}, false
 			}
 			p = Unwrap(mv)
+		}
+		// a declared type over an interface carries no tag: the
+		// interface's dynamic type lives in the payload — `type E
+		// error; E(err)` keys like err, and a nil E keys like nil.
+		// KindInterface covers literal interface decls; `type E error`
+		// and `type A any` stay KindNamedBasic and answer through
+		// their declaration's resolved flag (a shadowed `type error =
+		// int` decl does not set it).
+		if x.Typ.Kind == KindInterface || x.Typ.IfaceBase ||
+			(x.Typ.Spec == nil && ifaceUnderlyingSpell(TypUnderlyingSpelling(x.Typ))) {
+			return typedKey{}, false
+		}
+		// a nil interface carries no dynamic type — `var e E` for
+		// `type E error` keys like plain nil, tag or not. (E's
+		// td is KindNamedBasic, not KindInterface, so the payload
+		// shape is the tell here.)
+		switch p.(type) {
+		case Nil, *TypedNil, *IfaceNil:
+			return typedKey{}, false
 		}
 		var typ string
 		switch {
@@ -1368,10 +1403,21 @@ func typedScalarKeyOf(v Value) (typedKey, bool) {
 		case int64, float64, float32, string, bool, complex64, complex128:
 			return typedKey{typ: typ, v: CanonicalKey(p)}, true
 		}
-		return typedKey{}, false
+		// a declared type over a non-scalar still carries its own
+		// tag: NS(st) keys apart from St, and C(ch) from chan int.
+		// An unhashable payload panics inside CanonicalKey like a
+		// bare key would.
+		return typedKey{typ: typ, v: CanonicalKey(p)}, true
 	case *GoValue:
 		if p, rt, ok := HostNamedScalar(x); ok {
 			return typedKey{typ: hostTypeTag(rt), v: p}, true
+		}
+	case *Chan:
+		// `make(C)` and `var c C` carry the declared type on the
+		// channel value itself — key it like the C(x) conversion's
+		// Named wrap so both forms of one channel key alike.
+		if x.Typ != nil && x.Typ.Name != "" && x.Typ.Kind != KindAlias {
+			return typedKey{typ: typeTagOf(x.Typ), v: x}, true
 		}
 	case int64, float64, string, bool, complex128, *Struct, *Slice:
 		return typedKey{}, false
@@ -1440,6 +1486,12 @@ func typeTagOf(td *TypeDef) string {
 			if !strings.HasPrefix(name, td.Pkg.Path+".") {
 				name = td.Pkg.Path + "." + name
 			}
+		}
+		if td.Local && td.Spec != nil && td.Pkg != nil && td.Pkg.Fset != nil {
+			// func-local `type C chan int` decls share the pkg+name
+			// tag across scopes — Go gives each decl its own type, so
+			// the decl position splits them.
+			name = fmt.Sprintf("%s@%s", name, td.Pkg.Fset.Position(td.Spec.Name.Pos()))
 		}
 		if len(td.TParams) > 0 || len(td.OuterArgs) > 0 {
 			// an instantiated generic is a different type per type
@@ -2024,6 +2076,14 @@ type TypeDef struct {
 	// in two different functions are distinct types (unlike package-level
 	// types, which dedupe by package path + name).
 	Local bool
+
+	// IfaceBase marks a declared type whose underlying type is an
+	// interface — `type E error`, `type A any`, and interface-decl
+	// chains resolve this at declaration time: a Named value tagged
+	// with it carries no static map-key tag — the payload's dynamic
+	// type decides. (KindInterface covers literal interface decls;
+	// this covers the ident-spelled ones KindNamedBasic keeps.)
+	IfaceBase bool
 
 	// Gen is the decl's `·gen` index — gc numbers each non-alias
 	// function-local type in package source order and spells it inside
@@ -3340,4 +3400,14 @@ func packageTypeSpec(fn *Function, name string) *ast.TypeSpec {
 		}
 	}
 	return nil
+}
+
+// ifaceUnderlyingSpell reports whether s spells an interface type —
+// [TypUnderlyingSpelling] renders `type E error` as "error" and
+// `type A any` / `interface{...}` decls under "interface{". Decls
+// minted through a resolver set [TypeDef.IfaceBase] instead, which a
+// shadowed builtin name answers correctly; the spelling stays for
+// typedefs synthesized without decl context.
+func ifaceUnderlyingSpell(s string) bool {
+	return s == "error" || strings.HasPrefix(s, "interface{")
 }

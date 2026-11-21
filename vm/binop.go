@@ -175,6 +175,11 @@ func isCompareOp(op bytecode.BinOp) bool {
 // the interface nil rules from eqlValue.
 func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 	a, b = v.materialize(f, a), v.materialize(f, b)
+	// An interface-underlying tag is never the dynamic type: `E(e)`
+	// for `type E error` and `A(n)` for `type A any` hold the
+	// payload's concrete type, so the declared name unwraps before
+	// the (type, value) pair comparison — `E(e) == e` is true.
+	a, b = unwrapIfaceTag(a), unwrapIfaceTag(b)
 	// a nil interface equals nil: `var a any; a == nil` is true — the
 	// pair rule below only applies when a dynamic type exists. A typed
 	// nil still carries its type, so `any((*int)(nil)) == nil` is false.
@@ -229,6 +234,19 @@ func (v *VM) ifaceEql(f *frame, a, b runtime.Value) bool {
 		return false
 	}
 	return v.eqlValue(a, b)
+}
+
+// unwrapIfaceTag peels a declared-over-interface Named: the dynamic
+// type an interface holds is the payload's, never `type E error`'s
+// declared name.
+func unwrapIfaceTag(x runtime.Value) runtime.Value {
+	for {
+		n, ok := x.(*runtime.Named)
+		if !ok || n.Typ == nil || (!n.Typ.IfaceBase && n.Typ.Kind != runtime.KindInterface) {
+			return x
+		}
+		x = n.V
+	}
 }
 
 // isIfaceNilValue reports whether x carries no dynamic type — an

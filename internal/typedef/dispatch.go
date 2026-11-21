@@ -297,7 +297,16 @@ func (r *Resolver) TypeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Meth
 	// valid programs the set is empty.
 	if td.Kind == runtime.KindPointer && td.Spec == nil {
 		if et, err := r.ElemOf(td); err == nil && et != nil {
-			td, ptr = et, true
+			et = r.PeelAliasTd(et)
+			if et == nil {
+				unsure = true
+			} else if u, uerr := r.Underlying(et); uerr == nil && u != nil && u.Kind == runtime.KindInterface {
+				// *E for an interface type E has an empty method set —
+				// a pointer to interface carries no methods in gc.
+				return &runtime.MethodSet{Unsure: unsure}, nil
+			} else {
+				td, ptr = et, true
+			}
 		} else {
 			unsure = true
 		}
@@ -683,6 +692,34 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		u, uerr := r.Underlying(td)
 		if uerr != nil || u == nil {
 			unsure = true
+		} else if u != td && u.Kind == runtime.KindInterface {
+			// a defined type over an interface type is itself an
+			// interface type (`type E error`, `type W E`): its method
+			// set adds the underlying interface's requirements at this
+			// level. The members ride as iface dispatch so a struct
+			// embedding the type promotes them exactly like an
+			// embedded `error` — `struct{ E }.Error()` selects on the
+			// stored interface value.
+			for m := range r.IfaceReqSet(u) {
+				names[m] = true
+				if p := PlainReqName(m); p != m {
+					names[p] = true
+				}
+				if td.Methods[m] == nil && td.Methods[PlainReqName(m)] == nil {
+					members[m] = &runtime.PromotedMember{Depth: 0, Via: "iface", Method: true}
+					if p := PlainReqName(m); p != m && td.Methods[p] == nil {
+						// the pkg-qualified requirement is also
+						// selectable under its plain name — same as
+						// the embedded-interface arm below.
+						members[p] = &runtime.PromotedMember{Depth: 0, Via: "iface", Method: true}
+					}
+				}
+			}
+			for m, sf := range r.IfaceSigFuncs(u) {
+				if funcs[m] == nil {
+					funcs[m] = sf
+				}
+			}
 		} else if u != td && u.Kind == runtime.KindStruct {
 			if u.HostNew != nil {
 				for m, fd := range hostFieldDepths(u.HostType()) {

@@ -147,13 +147,22 @@ func (v *VM) convert(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error
 	// an interface conversion keeps the dynamic pair: the value
 	// satisfies the interface's methods AS its dynamic type —
 	// `interface{}(F(3))` stays a main.F, never the unwrapped float64.
-	if td.Kind == runtime.KindInterface {
+	// A defined-over-interface target (`type A any`, `type E error`)
+	// tags the pair without unwrapping it — A(N(1))'s dynamic type
+	// stays N, like gc.
+	if td.Kind == runtime.KindInterface || td.IfaceBase {
 		ok, err := v.ifaceSatisfied(td, x)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+		}
+		if td.IfaceBase {
+			// Named never nests under Tag (it unwraps its payload),
+			// so build the pair directly — A(N(1)) keeps the
+			// payload's N tag beneath A's declared one.
+			return &runtime.Named{Typ: td, V: x}, nil
 		}
 		return x, nil
 	}
@@ -869,7 +878,7 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 	if _, isNil := x.(runtime.Nil); isNil {
 		return v.zeroValue(f, td)
 	}
-	if td.Kind == runtime.KindInterface {
+	if td.Kind == runtime.KindInterface || td.IfaceBase {
 		// an untyped constant binds an interface at its default type —
 		// `var a any = 'a'` holds a rune, not the lazy constant.
 		x = v.materialize(f, x)
@@ -881,8 +890,23 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 			}
 			return &runtime.IfaceNil{Typ: tn.Typ}
 		}
+		if isIfaceNilValue(x) {
+			// a nil interface value binds any interface slot — its
+			// (empty) method set never gates the assignment.
+			if td.IfaceBase {
+				return &runtime.Named{Typ: td, V: x}
+			}
+			return x
+		}
 		if !v.satisfiesIface(f, td, x) {
 			f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
+		}
+		if td.IfaceBase {
+			// a defined-over-interface slot stamps its declared tag on
+			// the payload's pair: `var a A = N(1)` holds an N dynamic
+			// type under A, so `a == N(1)` is true like gc. Built
+			// directly, not via Tag, so the payload's own tag stays.
+			return &runtime.Named{Typ: td, V: x}
 		}
 		return x
 	}

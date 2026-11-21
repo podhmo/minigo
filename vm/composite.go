@@ -819,6 +819,12 @@ func (v *VM) namedMember(f *frame, n *runtime.Named, name string, recv runtime.V
 		}
 		return &runtime.BoundMethod{Recv: r, Fn: m}
 	}
+	if td != nil && (td.IfaceBase || td.Kind == runtime.KindInterface) {
+		// a declared-over-interface tag has no members of its own
+		// beyond declared overrides (checked above): `e.Error()` on
+		// `type E error` dispatches on the payload the interface holds.
+		return v.selectMember(f, n.V, name)
+	}
 	// fields live on the underlying struct value — promoted fields of the
 	// underlying type are stored as fields on it, but promoted METHODS of
 	// the underlying type are not part of the named type's method set. A
@@ -2315,7 +2321,13 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 			// Get is gated for copies; the raw element read lands on
 			// the map element itself (writable only when it is
 			// reference-shaped) or the map zero for a missing key.
-			x, found := m.Get(runtime.Unwrap(b.Key))
+			// an interface-keyed map hashes the key's dynamic
+			// type — keep a Named key's tag like IndexRef.Get.
+			k := b.Key
+			if !m.IfaceKey {
+				k = runtime.Unwrap(k)
+			}
+			x, found := m.Get(k)
 			if !found {
 				x = v.index(f, b.Base, b.Key)
 			}
@@ -2327,7 +2339,11 @@ func (v *VM) refThrough(f *frame, base runtime.Value) (runtime.Value, bool) {
 		}
 		switch cb := runtime.Unwrap(bv).(type) {
 		case *runtime.Map:
-			x, found := cb.Get(runtime.Unwrap(b.Key))
+			k := b.Key
+			if !cb.IfaceKey {
+				k = runtime.Unwrap(k)
+			}
+			x, found := cb.Get(k)
 			if !found {
 				x = v.index(f, bv, b.Key)
 			}

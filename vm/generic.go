@@ -1082,11 +1082,35 @@ func reflectTypeExpr(rt hostbridge.Type) ast.Expr {
 // inference. Composite builtin values get anonymous kinds (a []int arg
 // binds T to "some slice" — enough for `var z T` and T(x) conversions).
 func (v *VM) typeOfValue(x runtime.Value) *runtime.TypeDef {
+	return v.typeOfValueDepth(x, 0)
+}
+
+// maxTyperefDepth bounds the ref walk: a cyclic ref (`var a any;
+// p := &a; a = p`) bottoms out on the declared typedef the ref
+// already carries instead of recursing forever.
+const maxTyperefDepth = 256
+
+// refDeclTyp is the declared element typedef a ref carries when one
+// is known — the cyclic-ref answer typeOfValueDepth stops on.
+func refDeclTyp(x runtime.Value) *runtime.TypeDef {
+	switch r := x.(type) {
+	case *runtime.Cell:
+		return r.Typ
+	case *runtime.FieldRef:
+		return r.Def
+	}
+	return nil
+}
+
+func (v *VM) typeOfValueDepth(x runtime.Value, depth int) *runtime.TypeDef {
 	if dv, ok := runtime.Deref(x); ok {
+		if depth >= maxTyperefDepth {
+			return refDeclTyp(x)
+		}
 		// a pointer argument: T binds to a pointer-ish typedef — the
 		// element has no AST on this path, so Anon stays nil and
 		// elem-typed operations on it degrade to traps.
-		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.typeOfValue(dv)}
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Elem: v.typeOfValueDepth(dv, depth+1)}
 	}
 	switch xv := x.(type) {
 	case int64:
