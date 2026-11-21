@@ -239,6 +239,233 @@ func (e *Engine) lenOperandCalls(ctx *runtime.TypeDef, ex ast.Expr) bool {
 	return calls
 }
 
+// callResultTypOf answers a call's single-result typedef from the
+// callee's declared signature: `p.F(v)` under IndexedOnly resolves
+// p.F's FuncType and returns its one result's typedef, without ever
+// calling F. A member that is not a source function, a signature with
+// more than one result, or a result spelling a type parameter reports
+// unknown — the intrinsic or gate stays silent like before.
+func (e *Engine) callResultTypOf(ctx *runtime.TypeDef, fun ast.Expr, depth int) (*runtime.TypeDef, bool, error) {
+	if depth > 8 {
+		return nil, false, nil
+	}
+	var m runtime.Value
+	switch t := ast.Unparen(fun).(type) {
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			return nil, false, nil
+		}
+		p, err := e.importPackageAt(ctx, id.Name)
+		if err != nil {
+			return nil, false, err
+		}
+		if p == nil {
+			return nil, false, nil
+		}
+		m, err = p.Member(t.Sel.Name, e.materialize)
+		if err != nil {
+			return nil, false, nil
+		}
+	case *ast.Ident:
+		if ctx == nil || ctx.Pkg == nil {
+			return nil, false, nil
+		}
+		var err error
+		m, err = ctx.Pkg.Member(t.Name, e.materialize)
+		if err != nil {
+			return nil, false, nil
+		}
+	default:
+		return nil, false, nil
+	}
+	f, ok := m.(*runtime.Function)
+	if !ok || f.Decl == nil || f.Decl.Type == nil || f.Decl.Type.Results == nil {
+		return nil, false, nil
+	}
+	res := f.Decl.Type.Results
+	if len(res.List) != 1 || len(res.List[0].Names) > 1 {
+		// more than one result can't be a value operand anyway.
+		return nil, false, nil
+	}
+	rt := res.List[0].Type
+	if resultSpellsParam(f.Decl, rt) {
+		// `F[T any](v T) T` or `G[T]() [1]T` — the result binds at the
+		// call site, and resolving T against the package's decls would
+		// answer a same-named package type instead.
+		return nil, false, nil
+	}
+	// keep the declared `*` levels — `*ClientTrace` is a nilable
+	// pointer, and resolving to its pointee would answer a named
+	// struct for the nil check.
+	td, err := e.starKeepingTypedef(&runtime.TypeDef{Pkg: f.Pkg, File: f.File}, rt)
+	if err != nil {
+		return nil, false, nil
+	}
+	return td, false, nil
+}
+
+// foldArrayLens walks a type expression and publishes the constant
+// length of every array it contains — resolveTypeRef mints array
+// typedefs without running their length expression, and readers like
+// minireflect.Len only accept a literal or a [FoldArrayLen] fold.
+func (e *Engine) foldArrayLens(from *runtime.TypeDef, x ast.Expr) {
+	ast.Inspect(x, func(n ast.Node) bool {
+		at, ok := n.(*ast.ArrayType)
+		if !ok || at.Len == nil {
+			return true
+		}
+		if _, done := runtime.FoldedArrayLen(at); done {
+			return true
+		}
+		if n, ok := e.constIntValue(from, at.Len); ok {
+			runtime.FoldArrayLen(at, n)
+		}
+		return true
+	})
+}
+
+// constIntValue evaluates an integer-constant expression in a package
+// context — literals, unary/binary arithmetic, and named constants
+// (local or qualified). It never runs code: unsafe.Sizeof's argument
+// must not evaluate, and neither does a `[N]T` in a signature.
+func (e *Engine) constIntValue(from *runtime.TypeDef, x ast.Expr) (int64, bool) {
+	switch t := ast.Unparen(x).(type) {
+	case *ast.BasicLit:
+		cv := constant.MakeFromLiteral(t.Value, t.Kind, 0)
+		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+			return iv, true
+		}
+	case *ast.UnaryExpr:
+		v, ok := e.constIntValue(from, t.X)
+		if !ok {
+			return 0, false
+		}
+		cv := constant.UnaryOp(t.Op, constant.MakeInt64(v), 0)
+		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+			return iv, true
+		}
+	case *ast.BinaryExpr:
+		a, ok := e.constIntValue(from, t.X)
+		if !ok {
+			return 0, false
+		}
+		b, ok := e.constIntValue(from, t.Y)
+		if !ok {
+			return 0, false
+		}
+		// constant.BinaryOp rejects shifts — they go through Shift.
+		// Go defines x >> 64 as 0 (x >= 0), and a SHL that large can't
+		// spell an array length, so only counts under 64 reach Shift.
+		if t.Op == token.SHL || t.Op == token.SHR {
+			if b < 0 {
+				return 0, false
+			}
+			if b >= 64 {
+				return 0, t.Op == token.SHR && a >= 0
+			}
+			cv := constant.Shift(constant.MakeInt64(a), t.Op, uint(b))
+			if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+				return iv, true
+			}
+			return 0, false
+		}
+		cv := constant.BinaryOp(constant.MakeInt64(a), t.Op, constant.MakeInt64(b))
+		if iv, ok := constant.Int64Val(constant.ToInt(cv)); ok {
+			return iv, true
+		}
+	case *ast.Ident:
+		v, ok := e.constValueOf(from, t.Name)
+		return v, ok
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		if !ok {
+			return 0, false
+		}
+		p, err := e.importPackageAt(from, id.Name)
+		if err != nil || p == nil {
+			return 0, false
+		}
+		return e.constValueOf(&runtime.TypeDef{Pkg: p, File: from.File}, t.Sel.Name)
+	}
+	return 0, false
+}
+
+// constValueOf answers a named constant's int64 value: the package's
+// bound globals first (UConst), then the index's const decls
+// materialized lazily — `const N = 4` declared below the use site.
+func (e *Engine) constValueOf(from *runtime.TypeDef, name string) (int64, bool) {
+	if from == nil || from.Pkg == nil {
+		return 0, false
+	}
+	if gv, ok := from.Pkg.Globals.Get(name); ok {
+		if u, ok := gv.(*runtime.UConst); ok {
+			if iv, ok := constant.Int64Val(constant.ToInt(u.V)); ok {
+				return iv, true
+			}
+		}
+	}
+	if from.Pkg.Index != nil {
+		if d := from.Pkg.Index.Consts[name]; d != nil {
+			if mv, err := e.materialize(from.Pkg, d); err == nil {
+				if u, ok := mv.(*runtime.UConst); ok {
+					if iv, ok := constant.Int64Val(constant.ToInt(u.V)); ok {
+						return iv, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// funcDeclHasParam reports whether name is one of d's declared type
+// parameters — compile/typehint.go's funcTypeHasParam counterpart for
+// the run-time resolver.
+func funcDeclHasParam(d *ast.FuncDecl, name string) bool {
+	tps := d.Type.TypeParams
+	if tps == nil {
+		return false
+	}
+	for _, tp := range tps.List {
+		for _, n := range tp.Names {
+			if n.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// resultSpellsParam reports whether a result type expression spells
+// any of the func's declared type parameters, at any depth — `T`,
+// `[8]T`, `map[string]T`, `Pair[T, U]` all count.
+func resultSpellsParam(d *ast.FuncDecl, rt ast.Expr) bool {
+	found := false
+	ast.Inspect(rt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if f, ok := n.(*ast.Field); ok {
+			// a field's NAME is not a type reference — only its type
+			// expression can spell a type parameter. `struct{ T int }`
+			// returning from F[T] is a concrete answer, not T.
+			ast.Inspect(f.Type, func(m ast.Node) bool {
+				if id, ok := m.(*ast.Ident); ok && funcDeclHasParam(d, id.Name) {
+					found = true
+				}
+				return !found
+			})
+			return false
+		}
+		if id, ok := n.(*ast.Ident); ok && funcDeclHasParam(d, id.Name) {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 // valueTypOf implements the Hooks.DeferredValueTyp hook (M4-7c): the
 // typedef a value expression carries — a qualified package member's
 // declared or inferred type, or an untyped constant's default type.
@@ -275,12 +502,14 @@ func (e *Engine) valueTypDepth(ctx *runtime.TypeDef, x ast.Expr, depth int) (*ru
 		return e.valueTypDepth(ctx, t.X, depth+1)
 	case *ast.CallExpr:
 		// a conversion T(v) carries T's typedef; anything else is a
-		// call whose result type this resolver cannot infer.
-		td, err := e.resolveTypeRef(ctx, t.Fun)
-		if err != nil {
-			return nil, false, nil
+		// call whose result typedef comes from the callee's declared
+		// signature — never by running the call (`unsafe.Sizeof`
+		// evaluates nothing, and neither does the gate).
+		td, err := e.starKeepingTypedef(ctx, t.Fun)
+		if err == nil && td != nil {
+			return td, false, nil
 		}
-		return td, false, nil
+		return e.callResultTypOf(ctx, t.Fun, depth+1)
 	case *ast.SelectorExpr:
 		id, ok := t.X.(*ast.Ident)
 		if !ok {

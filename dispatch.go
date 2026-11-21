@@ -1135,6 +1135,7 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 		}
 		return e.instantiateRef(from, base, t.Indices), nil
 	case *ast.ArrayType:
+		e.foldArrayLens(from, t)
 		return &runtime.TypeDef{Kind: runtime.KindSlice, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
 	case *ast.MapType:
 		return &runtime.TypeDef{Kind: runtime.KindMap, Anon: t, Pkg: from.Pkg, File: from.File, Binds: from.Binds, LocalTypes: from.LocalTypes}, nil
@@ -1300,7 +1301,13 @@ func (e *Engine) resolveTypeRef(from *runtime.TypeDef, x ast.Expr) (*runtime.Typ
 // keeps the expression's own shape: `*int` resolves to a pointer
 // typedef, parens count their inner stars the same way.
 func (e *Engine) deferredTypeOf(site *bytecode.CallSite, ctx *runtime.TypeDef) (*runtime.TypeDef, error) {
-	expr := site.Expr
+	return e.starKeepingTypedef(ctx, site.Expr)
+}
+
+// starKeepingTypedef resolves a type expression while keeping its
+// leading `*` levels as pointer typedefs — resolveTypeRef strips them,
+// and a nilability or spelling judgment needs the pointer.
+func (e *Engine) starKeepingTypedef(ctx *runtime.TypeDef, expr ast.Expr) (*runtime.TypeDef, error) {
 	var stars []*ast.StarExpr
 	for {
 		switch t := expr.(type) {
