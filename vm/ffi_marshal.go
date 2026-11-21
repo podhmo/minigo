@@ -33,6 +33,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -2124,7 +2125,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 				// before the goroutine starts — it may already be dead,
 				// which marking is harmless for; a nil receiver is not.
 				if p != nil {
-					defer p.watchCallFrom(goroutineID())()
+					defer p.WatchCallFrom(goroutineID())()
 				}
 				defer func() {
 					if r := recover(); r != nil {
@@ -2139,7 +2140,7 @@ func callReflectFunc(name string, m reflect.Value, vc runtime.VMCaller, args []r
 			}()
 			// the join can park indefinitely — wakeable only when the
 			// call itself can time out (see blockingHostMethods).
-			unpark := vcPark(vc, parkWake{misc: wakeable})
+			unpark := vcPark(vc, process.Wake{Misc: wakeable})
 			defer unpark()
 			select {
 			case <-done:

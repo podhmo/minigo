@@ -28,6 +28,7 @@ import (
 
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
@@ -194,7 +195,7 @@ type VM struct {
 	// foreign goroutine (context.AfterFunc, an http handler) checks it
 	// while the owner's ReleaseProc clears it — so it is atomic; read it
 	// once into a local for a check-then-use.
-	proc      atomic.Pointer[proc]
+	proc      atomic.Pointer[process.Proc]
 	procHolds int
 	// procDead records that this VM's process ended — a dead process
 	// spawns nothing, so a timer or host callback bound to a finished

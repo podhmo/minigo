@@ -24,6 +24,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/podhmo/minigo/internal/process"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -239,7 +240,7 @@ func (v *VM) iterNext(f *frame, it *runtime.Iterator, nvars int, elemRead bool) 
 		if nvars == 2 {
 			f.trap("range over channel allows at most one iteration variable")
 		}
-		w := parkWake{}
+		w := process.Wake{}
 		if it.HostChan {
 			// a host channel is evaluated per receive: a feed that died
 			// between iterations (a stopped timer) no longer wakes.

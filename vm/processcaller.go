@@ -1,6 +1,9 @@
 package vm
 
-import "github.com/podhmo/minigo/runtime"
+import (
+	"github.com/podhmo/minigo/internal/process"
+	"github.com/podhmo/minigo/runtime"
+)
 
 // processCaller is the caller a host builtin may retain. Its execution methods
 // keep the process in which it was obtained, even after the public VM is reused
@@ -14,7 +17,7 @@ func (c processCaller) bindProc() runtime.VMCaller { return c }
 
 type processCaller struct {
 	*VM
-	p *proc
+	p *process.Proc
 }
 
 // bindCaller leaves synchronous-only and foreign callers alone. A bare VM used
@@ -46,7 +49,7 @@ func (c processCaller) CallCatching(fn runtime.Value, args []runtime.Value) (run
 
 func (c processCaller) call(fn runtime.Value, args []runtime.Value, catch bool) (runtime.Value, error) {
 	select {
-	case <-c.p.done:
+	case <-c.p.Done():
 		return nil, procExit{}
 	default:
 	}
@@ -62,7 +65,7 @@ func (c processCaller) call(fn runtime.Value, args []runtime.Value, catch bool) 
 	c.callMu.Unlock()
 	// Preserve the existing distinction between a blocking host helper's
 	// joined reentry, a genuinely asynchronous panic, and FuncMap catching.
-	failProc := !catch && !c.p.isSyncCaller(gid)
+	failProc := !catch && !c.p.IsSyncCaller(gid)
 	t := c.anchor().spawn(fn, args, nil, nil, failProc)
 	err := t.Wait()
 	return t.Result, err
@@ -150,16 +153,16 @@ func (v *VM) bindProc() runtime.VMCaller {
 // ownerCaller share the promoted answer; processCaller's proc is fixed
 // at bind time instead.
 type currentProcBearer interface {
-	currentProc() *proc
+	currentProc() *process.Proc
 }
 
-func (v *VM) currentProc() *proc           { return v.proc.Load() }
-func (c processCaller) currentProc() *proc { return c.p }
+func (v *VM) currentProc() *process.Proc           { return v.proc.Load() }
+func (c processCaller) currentProc() *process.Proc { return c.p }
 
 // vcParker is the parkable callers' capability — park belongs to the
 // VM regardless of which caller wrapper is held.
 type vcParker interface {
-	parkCaller(w parkWake) func()
+	parkCaller(w process.Wake) func()
 }
 
-func (v *VM) parkCaller(w parkWake) func() { return v.park(w) }
+func (v *VM) parkCaller(w process.Wake) func() { return v.park(w) }
