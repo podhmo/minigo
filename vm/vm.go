@@ -617,7 +617,7 @@ func overwriteArrayElems(dst, src *runtime.Slice) {
 	for i := range dst.Elems {
 		di, dok := runtime.Unwrap(dst.Elems[i]).(*runtime.Slice)
 		si, sok := runtime.Unwrap(src.Elems[i]).(*runtime.Slice)
-		if dok && sok && isArrayTyp(di.Typ) && isArrayTyp(si.Typ) && len(di.Elems) == len(si.Elems) {
+		if dok && sok && runtime.ArrayTypedef(di.Typ) && runtime.ArrayTypedef(si.Typ) && len(di.Elems) == len(si.Elems) {
 			overwriteArrayElems(di, si)
 			continue
 		}
