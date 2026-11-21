@@ -103,12 +103,15 @@ type sessionState struct {
 
 	builtins *runtime.Env
 
-	mu    sync.Mutex
-	pkgs  map[string]*runtime.Package // by import path
-	byDir map[string]*runtime.Package // synthetic packages by dir
-	files map[string]*runtime.Package // single-file packages by abs path
-	names *bind.Names                 // host-bound packages (sessions inherit)
-	srcs  map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
+	mu              sync.Mutex
+	pkgs            map[string]*runtime.Package // by import path
+	byDir           map[string]*runtime.Package // synthetic packages by dir
+	files           map[string]*runtime.Package // single-file packages by abs path
+	names           *bind.Names                 // installed host-bound packages (sessions inherit)
+	pending         *bind.Pending               // registered but not yet installed bound packages
+	preservePkgs    map[string]bool             // source pkgs kept in e.pkgs during a bound install
+	templateFuncMap *runtime.TypeDef            // this session's FuncMap typedef (per-registry; P2-12)
+	srcs            map[string]*runtime.Package // source packages SourceOf builds past a bound shadow or a deny mode
 	// lenient builds (inspect.DirOf/FileOf/PackageOf) are privately
 	// cached — a lenient package in e.pkgs would hide a redeclare error
 	// from a later strict load, and a strict package in e.byDir would
@@ -284,6 +287,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			files:        map[string]*runtime.Package{},
 			filesLenient: map[string]*runtime.Package{},
 			names:        bind.NewNames(),
+			pending:      bind.NewPending(),
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
@@ -305,7 +309,7 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 		res = nil
 	}
 	e.resolver = res
-	e.installStdlib()
+	e.registerStdlib()
 	return e
 }
 
@@ -477,6 +481,7 @@ func (e *Engine) NewSession() *Engine {
 			byDir:        map[string]*runtime.Package{},
 			files:        map[string]*runtime.Package{},
 			names:        bind.NewNames(),
+			pending:      bind.NewPending(),
 			srcs:         map[string]*runtime.Package{},
 			pkgsLenient:  map[string]*runtime.Package{},
 			byDirLenient: map[string]*runtime.Package{},
@@ -484,7 +489,7 @@ func (e *Engine) NewSession() *Engine {
 		},
 	}
 	s.builtins = builtins(s)
-	s.installStdlib()
+	s.registerStdlib()
 	// sessions inherit the parent's host bindings: a script importing a
 	// custom bound package must resolve identically in the new session.
 	// Intrinsic packages the session already bound itself keep the
@@ -821,8 +826,7 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		Name:     cfg.name,
 		Globals:  runtime.NewEnv(),
 		Specials: e.specials,
-		// bound paths without a dot in the first element stand in for the
-		// GOROOT package of that name ("strings", "fmt", "unsafe").
+		// bound paths without a dot in the first element stand in for GOROOT.
 		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
 	p.SetState(runtime.Ready)
@@ -832,10 +836,8 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		}
 		v = hostSymbol(cfg.name+"."+k, v)
 		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
-			// the same BuiltinFunc may be bound under several paths
-			// (minigo.dev/x and its module path): the first owner wins,
-			// but a re-Bind under the SAME path must re-point at the
-			// new live package object, not the stale one
+			// a BuiltinFunc bound under several paths keeps its first
+			// owner; a re-Bind re-points at the new live package
 			bf.Pkg = p
 		}
 		if td, ok := v.(*runtime.TypeDef); ok && td.Pkg == nil {
@@ -844,65 +846,15 @@ func (e *Engine) Bind(importPath string, symbols map[string]runtime.Value, opts 
 		p.Globals.Set(k, v)
 	}
 	e.mu.Lock()
-	e.pkgs[importPath] = p
+	e.pending.Clear(importPath)
+	if _, skip := e.preservePkgs[importPath]; !skip {
+		e.pkgs[importPath] = p
+	}
 	e.names.Set(importPath, p)
 	e.mu.Unlock()
 }
 
-// hostSymbol converts a plain Go value in a [Engine.Bind] symbol map to its
-// script form; runtime values pass through unchanged.
-func hostSymbol(name string, v runtime.Value) runtime.Value {
-	switch v.(type) {
-	case *runtime.BuiltinFunc, *runtime.TypeDef, *runtime.GoValue, int64, float64, string, bool:
-		return v // the common cases, without reflect
-	case nil:
-		return runtime.NIL
-	}
-	t := reflect.TypeOf(v)
-	base := t
-	if base.Kind() == reflect.Pointer {
-		base = base.Elem()
-	}
-	if base.PkgPath() == runtimePkgPath {
-		return v
-	}
-	if t.Kind() == reflect.Func {
-		return WrapFunc(name, v)
-	}
-	if t.Name() != "" && t.PkgPath() != "" && (t.Kind() <= reflect.Complex128 || t.Kind() == reflect.String) {
-		return v // named host scalars (time.Duration) are script values as is
-	}
-	return ValueOf(v)
-}
-
 var runtimePkgPath = reflect.TypeOf(runtime.Nil{}).PkgPath()
-
-// BoundPackages returns the sorted import paths of every host-bound
-// package: std intrinsics and packages registered with [Engine.Bind].
-func (e *Engine) BoundPackages() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Paths()
-}
-
-// BoundOf returns the host-bound package registered for path, or nil when
-// path is not bound. Unlike [Engine.Package] and [Engine.SourceOf] it
-// never loads source, and it ignores [PackageMode]: a [ModeDeny] path
-// still reports its registration.
-func (e *Engine) BoundOf(path string) *runtime.Package {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Lookup(path)
-}
-
-// BoundSymbols returns the sorted symbol names a bound package exposes to
-// scripts, after [WithHostPolicy] filtering; ok is false when importPath
-// is not bound.
-func (e *Engine) BoundSymbols(importPath string) (names []string, ok bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.names.Symbols(importPath)
-}
 
 func lastElem(path string) string {
 	for i := len(path) - 1; i >= 0; i-- {
@@ -938,6 +890,9 @@ func (e *Engine) loadPathMode(ctx context.Context, fromDir, path string, lenient
 	mode := e.pkgModes[path]
 	if mode == ModeDeny {
 		return nil, fmt.Errorf("minigo: import of %q denied by package policy", path)
+	}
+	if mode != ModeSource {
+		e.installBound(path)
 	}
 	e.mu.Lock()
 	if p, ok := e.pkgs[path]; ok && (mode != ModeSource || p.Index != nil) {
@@ -1025,7 +980,11 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	// path takes the same private build: deny gates imports, not reading,
 	// and the private cache keeps the denied package out of the stores
 	// [Engine.Package] and DirOf answer from.
-	if !e.names.Bound(path) && e.pkgModes[path] != ModeDeny {
+	e.mu.Lock()
+	installed := e.names.Bound(path)
+	denied := e.pkgModes[path] == ModeDeny
+	e.mu.Unlock()
+	if !installed && !e.pending.Registered(path) && !denied {
 		return e.loadPath(ctx, path)
 	}
 	e.mu.Lock()
@@ -1040,6 +999,9 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	meta, err := e.resolver.Locate(ctx, "", path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve %q: %w", path, err)
+	}
+	if e.pkgModes[meta.ImportPath] != ModeSource {
+		e.installBound(meta.ImportPath)
 	}
 	e.buildMu.Lock()
 	defer e.buildMu.Unlock()
@@ -1068,6 +1030,12 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 // redeclaration check for inspect callers that must see duplicates.
 func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime.Package, error) {
 	spike.NoteBuildDuringCompile()
+	if e.pkgModes[meta.ImportPath] == ModeDeny {
+		return nil, fmt.Errorf("minigo: import of %q denied by package policy", meta.ImportPath)
+	}
+	if e.pkgModes[meta.ImportPath] != ModeSource {
+		e.installBound(meta.ImportPath)
+	}
 	// serialize whole builds so two goroutines cold-loading the same
 	// package converge on one object (the indexed gate closes in
 	// indexFiles for concurrent member access)
@@ -1089,10 +1057,6 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 		return p, nil
 	}
 	e.mu.Unlock()
-
-	if e.pkgModes[meta.ImportPath] == ModeDeny {
-		return nil, fmt.Errorf("minigo: import of %q denied by package policy", meta.ImportPath)
-	}
 
 	p := e.newPackage(meta.ImportPath, meta.Name, meta.Dir)
 	p.Standard = meta.Standard

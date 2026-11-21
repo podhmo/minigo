@@ -68,7 +68,9 @@
   - [x] `bind.Env` インタフェース（`internal/bind`）を導入し、エンジン捕捉のクロージャを `h.env` 経由に変更（`bindenv.go` アダプタ）（PR #1144）
   - [x] 残り: `names` ビューへの移行（`BoundPackages`/`BoundSymbols`/`BoundOf`/`vet`/`SourceOf`/`NewSession` の優先順位・bound-shadow チェック）（PR #1145）
 - [x] **P2-11 stdlib: `hostTwin` を install の入口につなぐ**: P2-10 の名前レジストリを使い、登録済みの stdlib パスについて、typedef を検索する前に対象パッケージの install を保証する入口を通す。この段階では起動時の即時構築を続ける。未登録のパスは従来どおり既存パッケージだけを検索する。完了条件: `time` を import しないスクリプトに別のパッケージから `time.Time`（例 `ctx.Deadline()` の戻り値）を渡し、対応する typedef を使えることをテストで固定する。（PR #1146）[references/stdlib-lazy.md](./references/stdlib-lazy.md)
-- [ ] **P2-12 stdlib: パッケージ単位の遅延構築**: P2-11 の入口で、`internal/stdlib/<path>` ごとの `Install(r, env)` を初回利用時に実行する。グローバルな `templateFuncMap` もここでレジストリ単位にする（バグとしてはルートの [TODO.md](../../../TODO.md) で管理している）。完了条件: P2-11 の回帰テストが通り、`time` のテーブルが初回の `hostTwin` 検索で構築されることを確認する。`NewSession` のベンチで差分を報告する（ベースラインでは install が実行時間の 60〜70%）。
+- [-] **P2-12 stdlib: パッケージ単位の遅延構築**: P2-11 の入口で、`internal/stdlib/<path>` ごとの `Install(r, env)` を初回利用時に実行する。グローバルな `templateFuncMap` もここでレジストリ単位にする（バグとしてはルートの [TODO.md](../../../TODO.md) で管理している）。完了条件: P2-11 の回帰テストが通り、`time` のテーブルが初回の `hostTwin` 検索で構築されることを確認する。`NewSession` のベンチで差分を報告する（ベースラインでは install が実行時間の 60〜70%）。
+  - [x] 遅延構築の仕組み（`bind.Pending` + installbound.go の入口、`templateFuncMap` のセッション化、ベンチ差分 0.47ms→10µs）: PR #1147
+  - [ ] 残り: `e.installX` を `internal/stdlib/<path>` ファイルへ移す（root helper 層の切り出しが先 — P2-9/P2-14 と同じ地層）
 - [ ] **P2-13 純粋なシグネチャの bind を生成する**: 約半分のエントリを `gen-intrinsics` で生成し、`// Code generated` ヘッダ付きでチェックインする。完了条件: 生成したパッケージに、source 解釈版との parity テストがある。[references/stdlib-lazy.md](./references/stdlib-lazy.md)
 - [ ] **P2-14 `internal/execution` と `internal/source` を抽出する**: ライフサイクルの状態機械を `runtime/package.go` と `minigo.go` から移す。`embed.go`、`parse.go`、`parsecache.go` は `internal/source` へ移す。完了条件: root と `vm.go` がそれぞれ約 3,000 行を下回る。
 

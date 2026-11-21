@@ -14,7 +14,6 @@ import (
 	"strconv"
 
 	"github.com/podhmo/minigo/index"
-	"github.com/podhmo/minigo/runtime"
 )
 
 // stubPanic is the marker body of a stub-package member: a declaration that
@@ -182,23 +181,6 @@ func (e *Engine) scanStubCalls(ctx context.Context, root ast.Node, imports map[s
 		})
 		return true
 	})
-}
-
-// registeredVetSymbol reports whether path.Name is already intercepted:
-// a special form the compiler emits OpSpecialCall for, or a symbol in a
-// host-bound package.
-func (e *Engine) registeredVetSymbol(path, name string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if _, ok := e.specials[runtime.SymbolID{PackagePath: path, Name: name}]; ok {
-		return true
-	}
-	if b := e.names.Lookup(path); b != nil {
-		if _, ok := b.Globals.Get(name); ok {
-			return true
-		}
-	}
-	return false
 }
 
 // stubMember reports whether path.Name resolves to a stub declaration: a
