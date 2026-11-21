@@ -582,9 +582,11 @@ func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value
 		return nil, err // constant not representable — Go's compile error
 	}
 	if !declaredType(td) && u.DefaultName() == name {
-		// `int(c)`/`float64(c)` — the bare constant already
-		// materializes to the target's type.
-		return u, nil
+		// `int(c)`/`float64(c)` — the constant is still a constant,
+		// but a TYPED one: `int(5)/2.0` is gc's integer 2, not the
+		// untyped 2.5. Tagging predeclared basics keys them like the
+		// bare materialized value (opaqueKeyOf peels the tag back).
+		return runtime.Tag(td, u), nil
 	}
 	// a narrower float target rounds the constant's payload: Go
 	// evaluates `float32(c)` in float32 precision, so `float64(float32
@@ -1221,34 +1223,13 @@ func constToBasic(u *runtime.UConst, name string) (runtime.Value, bool) {
 }
 
 // untypedConstArg reports whether a call argument still rides an
-// untyped-constant box: a bare UConst, or one tagged only with its own
-// default builtin type (`'a'` under rune). A const carrying any other
-// declared or converted type — `const k T = ...`, `int8(3)` — binds
-// like a value of that type instead.
+// untyped-constant box — a bare UConst. A tagged const is TYPED even
+// when the tag names the constant's own default (`int(5)`, `rune('a')`
+// are gc's typed constants), so inference reads the tag as the type
+// and the untyped operand adapts: first(int(5), 2.0) → T=int.
 func (v *VM) untypedConstArg(x runtime.Value) bool {
-	u, ok := constPayload(x)
-	if !ok {
-		return false
-	}
-	if n, ok := x.(*runtime.Named); ok && n.Typ != nil {
-		if n.Typ.Spec != nil {
-			return false
-		}
-		if tagIsNamed(n.Typ) {
-			name := basicNameOf(n.Typ)
-			if name == "" {
-				return false
-			}
-			// a builtin-tagged const is typed: only a tag equal to the
-			// constant's own default keeps it untyped — `int8(3)`
-			// binds int8, never int.
-			dtd := v.typeOfValue(u)
-			if dtd == nil || name != basicNameOf(dtd) {
-				return false
-			}
-		}
-	}
-	return true
+	_, ok := x.(*runtime.UConst)
+	return ok
 }
 
 // constFits is the constant representability check across a bind
