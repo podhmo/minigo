@@ -690,6 +690,15 @@ func (v *VM) FieldTypes(td *runtime.TypeDef) ([]*runtime.TypeDef, error) {
 	return v.H.FieldTypes(td)
 }
 
+// Underlying implements [runtime.VMCaller] by delegating to
+// [Hooks].Underlying; it fails when that hook is nil.
+func (v *VM) Underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+	if v.H.Underlying == nil {
+		return nil, fmt.Errorf("cannot resolve underlying type")
+	}
+	return v.H.Underlying(td)
+}
+
 // ElemOf implements [runtime.VMCaller] by delegating to [Hooks].ElemOf;
 // it fails when that hook is nil.
 func (v *VM) ElemOf(td *runtime.TypeDef) (*runtime.TypeDef, error) {
