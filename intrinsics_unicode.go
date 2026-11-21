@@ -56,7 +56,7 @@ func (e *Engine) installUnicode(h *hostHelpers) {
 // runePred adapts a script `func(rune) bool` to the host signature for
 // strings.*Func calls; a panic inside the callback propagates through
 // the host call like Go's.
-func runePred(v runtime.VMCaller, fn runtime.Value) func(rune) bool {
+func runePred(v runtime.ScriptCaller, fn runtime.Value) func(rune) bool {
 	return func(r rune) bool {
 		res := callOrPanic(v, fn, []runtime.Value{int64(r)})
 		b, _ := res.(bool)

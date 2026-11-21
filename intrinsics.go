@@ -929,7 +929,7 @@ func sliceTypOf(v any) *runtime.TypeDef {
 // helpers: its elements and element typedef (nil when unknown). A nil
 // slice has no elements. ok is false for anything else — a host slice
 // box — which the caller compares host-side.
-func scriptSliceArg(vc runtime.VMCaller, v runtime.Value) ([]runtime.Value, *runtime.TypeDef, bool) {
+func scriptSliceArg(vc runtime.ElemTyper, v runtime.Value) ([]runtime.Value, *runtime.TypeDef, bool) {
 	var typ *runtime.TypeDef
 	if n, ok := v.(*runtime.Named); ok {
 		typ, v = n.Typ, n.V
@@ -1092,7 +1092,7 @@ func strArgs(a []any) []string {
 // in Go a failure inside strings.Map's callback just propagates as a
 // panic, and a trap or process exit keeps its own kind through
 // asScriptPanic.
-func callOrPanic(v runtime.VMCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
+func callOrPanic(v runtime.ScriptCaller, fn runtime.Value, args []runtime.Value) runtime.Value {
 	r, err := v.Call(fn, args)
 	if err != nil {
 		panic(err)
@@ -1309,13 +1309,13 @@ func sliceElems(s *runtime.Slice) []runtime.Value {
 }
 
 // callBool runs a script predicate callback for its bool result.
-func callBool(vc runtime.VMCaller, fn runtime.Value, args ...runtime.Value) bool {
+func callBool(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) bool {
 	b, _ := runtime.Unwrap(callOrPanic(vc, fn, args)).(bool)
 	return b
 }
 
 // callInt runs a script cmp-style callback for its int result.
-func callInt(vc runtime.VMCaller, fn runtime.Value, args ...runtime.Value) int64 {
+func callInt(vc runtime.ScriptCaller, fn runtime.Value, args ...runtime.Value) int64 {
 	return int64Of(callOrPanic(vc, fn, args))
 }
 

@@ -191,7 +191,7 @@ func goJSON(c runtime.VMCaller, v any) any {
 // pointers: re-encountering one means a reference cycle, which gc
 // answers with UnsupportedValueError (a jsonCycle marker carries that
 // error out through the host encoder's channel).
-func goJSONSeen(c runtime.VMCaller, v any, seen map[any]bool) any {
+func goJSONSeen(c runtime.MemberShapeCaller, v any, seen map[any]bool) any {
 	// a value whose method set offers MarshalJSON encodes itself —
 	// gc's marshalerEncoder calls it instead of walking the value by
 	// shape. A nil pointer/interface answers null below without a call
@@ -389,7 +389,7 @@ const jsonCyclePrefix = "encountered a cycle via "
 // set applies. Every other key stringifies by kind. A script method
 // error surfaces as a *jsonScriptErr so it can ride out through
 // encoding/json's error channel like a top-level failure.
-func jsonMapKeyName(c runtime.VMCaller, k runtime.Value, kt *runtime.TypeDef) any {
+func jsonMapKeyName(c runtime.MemberCaller, k runtime.Value, kt *runtime.TypeDef) any {
 	if s, ok := runtime.Unwrap(k).(string); ok && (kt == nil || kt.Kind != runtime.KindInterface) {
 		// gc uses a string-kinded key directly, before MarshalText.
 		return s
@@ -470,7 +470,7 @@ func jsonFieldKey(def *runtime.TypeDef, name string) (key string, named, omitEmp
 // through the resolved typedef's Kind. A hole typedef for an
 // unresolvable declaration keeps its AST: an interface literal there
 // still counts.
-func jsonFieldIsIface(c runtime.VMCaller, def *runtime.TypeDef, i int) bool {
+func jsonFieldIsIface(c runtime.FieldTyper, def *runtime.TypeDef, i int) bool {
 	if c == nil {
 		return false
 	}
@@ -766,7 +766,7 @@ func jsonMarshalResult(r runtime.Value) (b []byte, e runtime.Value, ok bool) {
 // recording a call panic as fatal — gc lets it propagate — and a
 // non-nil error return as the competing callErr at the current path.
 // ok=false means the call itself blew up and decoding must stop.
-func jsonCallMethod(c runtime.VMCaller, m runtime.Value, lit []byte, ectx *jsonErrCtx) bool {
+func jsonCallMethod(c runtime.ScriptCaller, m runtime.Value, lit []byte, ectx *jsonErrCtx) bool {
 	r, cerr := c.Call(m, []runtime.Value{scriptVal(lit)})
 	if cerr != nil {
 		if ectx.fatal == nil {
@@ -1034,7 +1034,7 @@ func jsonBareName(td *runtime.TypeDef) string {
 // prior decodes into a fresh zero slot, and a bare value decodes through
 // a cell around it — a whole-value `*u = ...` assignment in the method
 // reaches the field through the returned cell.
-func unmarshalRecv(prior runtime.Value, c runtime.VMCaller, td *runtime.TypeDef) (runtime.Value, *runtime.Cell) {
+func unmarshalRecv(prior runtime.Value, c runtime.Zeroer, td *runtime.TypeDef) (runtime.Value, *runtime.Cell) {
 	switch p := prior.(type) {
 	case *runtime.Cell:
 		return p, nil
@@ -1050,7 +1050,7 @@ func unmarshalRecv(prior runtime.Value, c runtime.VMCaller, td *runtime.TypeDef)
 	}
 }
 
-func priorOr(prior runtime.Value, c runtime.VMCaller, td *runtime.TypeDef) runtime.Value {
+func priorOr(prior runtime.Value, c runtime.Zeroer, td *runtime.TypeDef) runtime.Value {
 	if prior != nil {
 		return prior
 	}
@@ -1077,7 +1077,7 @@ type jsonFieldEntry struct {
 // promoted, and `,omitempty`/`,string` options on an anonymous embed
 // are ignored (the promoted fields' own tags govern). A non-struct
 // embed (e.g. a named int) behaves like a named field.
-func jsonStructFields(c runtime.VMCaller, td *runtime.TypeDef) []jsonFieldEntry {
+func jsonStructFields(c runtime.SeqTyper, td *runtime.TypeDef) []jsonFieldEntry {
 	var out []jsonFieldEntry
 	// Cycle guard on type IDENTITY, not the typedef pointer: embed
 	// resolution (jsonResolveTypName) can rebuild a fresh typedef per
@@ -1159,7 +1159,7 @@ func jsonEmbedded(st *runtime.TypeDef, i int) bool {
 // through the caller's ResolveType hook (package index, LocalTypes,
 // generic binds, import selectors), falling back to the package-level
 // elemTyp approximation.
-func jsonEmbedTyp(c runtime.VMCaller, st *runtime.TypeDef, i int) *runtime.TypeDef {
+func jsonEmbedTyp(c runtime.ExprResolver, st *runtime.TypeDef, i int) *runtime.TypeDef {
 	for k, ei := range st.EmbedIdx {
 		if ei != i {
 			continue
@@ -1180,7 +1180,7 @@ func jsonEmbedTyp(c runtime.VMCaller, st *runtime.TypeDef, i int) *runtime.TypeD
 // selectors all resolve the way embedded-field specs do elsewhere in
 // the VM. An unresolvable expression degrades to the elemTyp
 // approximation rather than dropping the field.
-func jsonResolveTypName(c runtime.VMCaller, st *runtime.TypeDef, e ast.Expr) *runtime.TypeDef {
+func jsonResolveTypName(c runtime.ExprResolver, st *runtime.TypeDef, e ast.Expr) *runtime.TypeDef {
 	// A type embedding itself names the decl's own name — the decl-time
 	// LocalTypes snapshot predates it and the package index only holds
 	// package-level types — so peel stars/parens and compare against
@@ -1217,7 +1217,7 @@ func jsonResolveTypName(c runtime.VMCaller, st *runtime.TypeDef, e ast.Expr) *ru
 // and named pointer types all peel the way the engine's member walks
 // do. When the hook can't resolve (nil caller, missing import) the
 // declared AST's immediate pointee keeps the walk terminating.
-func jsonPeelPtr(c runtime.VMCaller, td *runtime.TypeDef) *runtime.TypeDef {
+func jsonPeelPtr(c runtime.ElemTyper, td *runtime.TypeDef) *runtime.TypeDef {
 	for td != nil {
 		if td.Kind != runtime.KindPointer {
 			if _, ok := td.TypeExpr().(*ast.StarExpr); !ok {
@@ -1248,7 +1248,7 @@ func jsonPeelPtr(c runtime.VMCaller, td *runtime.TypeDef) *runtime.TypeDef {
 // following a live embedded struct, or allocating a nil pointer
 // embed's pointee the way gc allocates on decode. ok=false when the
 // field holds no struct value.
-func jsonEmbedStruct(c runtime.VMCaller, s *runtime.Struct, idx int, ftd *runtime.TypeDef) (*runtime.Struct, bool) {
+func jsonEmbedStruct(c runtime.ZeroElemTyper, s *runtime.Struct, idx int, ftd *runtime.TypeDef) (*runtime.Struct, bool) {
 	f := s.Fields[idx]
 	if st := runtime.StructOf(f); st != nil {
 		return st, true
@@ -1287,7 +1287,7 @@ func jsonReadPath(s *runtime.Struct, path []int) (runtime.Value, bool) {
 // jsonPathIsIface reports whether the leaf field reached by path is
 // declared as an interface type — needed for `,string` marshal, which
 // gc applies by declared kind.
-func jsonPathIsIface(c runtime.VMCaller, td *runtime.TypeDef, path []int) bool {
+func jsonPathIsIface(c runtime.ShapeTyper, td *runtime.TypeDef, path []int) bool {
 	cur := td
 	for h := 0; h < len(path)-1; h++ {
 		cur = jsonPeelPtr(c, jsonEmbedTyp(c, cur, path[h]))
@@ -1666,7 +1666,7 @@ func jsonShape(c runtime.VMCaller, dec any, td *runtime.TypeDef, prior runtime.V
 // declared name through the enclosing typedef's package context (the
 // synthetic approximation in mapElemTyps carries no method set, and
 // the key's UnmarshalText probe needs the real typedef).
-func jsonMapKeyTyp(c runtime.VMCaller, td *runtime.TypeDef) *runtime.TypeDef {
+func jsonMapKeyTyp(c runtime.ExprResolver, td *runtime.TypeDef) *runtime.TypeDef {
 	mt, ok := td.TypeExpr().(*ast.MapType)
 	if !ok {
 		return nil
