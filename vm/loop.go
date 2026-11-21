@@ -189,17 +189,27 @@ func (v *VM) loop(f *frame) {
 				// a const binding always needs the ReadOnly flag — it
 				// keeps a cell even on a plain slot.
 				f.setLocalCell(int(ins.A), &runtime.Cell{Elem: valueCopy(x), ReadOnly: true})
-			} else if _, boxed := f.boxedCell(int(ins.A)); boxed {
+			} else if c, boxed := f.boxedCell(int(ins.A)); boxed {
 				// a fresh cell per bind: an earlier captured ref keeps
 				// pointing at the previous value, as Go's variable
-				// identity requires.
-				f.setLocalCell(int(ins.A), &runtime.Cell{Elem: valueCopy(x)})
+				// identity requires. An unpublished cell has no such
+				// observer — overwrite it in place.
+				if f.cellsLeaked || f.cellsShared {
+					f.setLocalCell(int(ins.A), &runtime.Cell{Elem: valueCopy(x)})
+				} else {
+					*c = runtime.Cell{Elem: valueCopy(x)}
+				}
 			} else {
 				f.locals[ins.A] = valueCopy(x)
 			}
 		case bytecode.OpRenewVar:
 			if c, boxed := f.boxedCell(int(ins.A)); boxed {
-				f.setLocalCell(int(ins.A), &runtime.Cell{Elem: c.Elem})
+				// a renewed binding rebinds the variable identity — a
+				// captured ref must keep the old cell. Unpublished
+				// cells have no observer and renew in place.
+				if f.cellsLeaked || f.cellsShared {
+					f.setLocalCell(int(ins.A), &runtime.Cell{Elem: c.Elem})
+				}
 			}
 			f.ltyps[ins.A] = nil
 		case bytecode.OpLocal:

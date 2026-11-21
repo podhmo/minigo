@@ -659,36 +659,25 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 	// Boxed cells come out of one block — a cell per local was the
 	// interpreter's largest allocation source (a frame per call,
 	// NLocals+2 objects each); addressability is unchanged since
-	// locals[i] may still be replaced or captured. A chunk that cannot
-	// leak its cells recycles the block the pooled frame carries; a
-	// chunk that can allocates fresh cells every call.
-	esc := chunkCellsEscape(ch)
-	nCells := 0
-	if esc {
-		for i := 0; i < ch.NLocals; i++ {
-			if ch.Boxed == nil || (i < len(ch.Boxed) && ch.Boxed[i]) {
-				nCells++
-			}
-		}
-	} else {
-		// a non-escaping chunk keeps one backing cell per slot: boxed
-		// slots start on theirs, and a plain slot promoted by a
-		// transient ref takes cells[i] — no allocation per promotion.
-		nCells = ch.NLocals
-	}
+	// locals[i] may still be replaced or captured. Every chunk lays
+	// the pooled block out one cell per slot: boxed slots start on
+	// theirs, and a plain slot promoted by a ref takes cells[i] — no
+	// allocation per promotion. Whether the chunk can leak is decided
+	// per call, not statically: a pooled cell that actually publishes
+	// flags the frame cellsLeaked and freeFrame drops the block like
+	// cellsShared, so frames that only carry ref-bearing code they
+	// never execute still recycle. chunkCellsEscape feeds only the
+	// spike metric now.
+	chunkCellsEscape(ch)
+	nCells := ch.NLocals
 	var cells []runtime.Cell
 	if nCells > 0 {
-		if esc {
-			cells = make([]runtime.Cell, nCells)
+		if cap(fr.cells) < nCells {
+			fr.cells = make([]runtime.Cell, nCells)
 			v.profAllocs++
-		} else {
-			if cap(fr.cells) < nCells {
-				fr.cells = make([]runtime.Cell, nCells)
-				v.profAllocs++
-			}
-			cells = fr.cells[:nCells]
-			fr.cellsAligned = true
 		}
+		cells = fr.cells[:nCells]
+		fr.cellsAligned = true
 	}
 	if cap(fr.locals) < ch.NLocals {
 		fr.locals = make([]runtime.Value, ch.NLocals)
@@ -707,19 +696,11 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 		v.profAllocs++
 	}
 	refs := fr.slotRefs[:nCells]
-	ci := 0
 	for i := 0; i < ch.NLocals; i++ {
 		if ch.Boxed == nil || (i < len(ch.Boxed) && ch.Boxed[i]) {
-			// aligned blocks back a slot at its own index so a later
-			// promotion can take the same cell; escaping chunks pack.
-			j := i
-			if esc {
-				j = ci
-			}
-			cells[j].Elem = runtime.NIL
-			refs[j].c = &cells[j]
-			fr.locals[i] = &refs[j]
-			ci++
+			cells[i].Elem = runtime.NIL
+			refs[i].c = &cells[i]
+			fr.locals[i] = &refs[i]
 		} else {
 			fr.locals[i] = runtime.NIL
 		}
