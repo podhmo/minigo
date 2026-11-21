@@ -402,11 +402,11 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 	switch td.Kind {
 	case runtime.KindAlias:
 		if u := v.peelAlias(td); u != nil && u != td {
-			return v.convertFrom(u, x, srcTd)
+			return v.convertFrom(u, x, srcTag)
 		}
 	case runtime.KindNamedBasic:
 		if u := v.peelNamed(td); u != nil && u != td {
-			cv, err := v.convertFrom(u, x, srcTd)
+			cv, err := v.convertFrom(u, x, srcTag)
 			if err != nil {
 				return nil, err
 			}

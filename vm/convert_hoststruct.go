@@ -81,7 +81,14 @@ func (v *VM) hostStructBox(x runtime.Value, u, srcTag *runtime.TypeDef) (*runtim
 		if tag == nil {
 			tag = srcTag
 		}
-		if !sameTypeDef(tag, u) || rtT != wantT {
+		// a `*p` read tags the source with the pointee's interned
+		// typedef — it spells the same host struct by HostIdent, not
+		// the bound type's declared name (`Tpl(*t)`).
+		same := sameTypeDef(tag, u)
+		if !same && tag.HostIdent != nil {
+			same = tag.HostIdent == wantT
+		}
+		if !same || rtT != wantT {
 			return nil, false
 		}
 		return gv, true
