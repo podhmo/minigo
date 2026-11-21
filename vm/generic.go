@@ -938,7 +938,11 @@ func (v *VM) hostTypedefOfNew(rt hostbridge.Type) *runtime.TypeDef {
 			return td
 		}
 	}
-	return &runtime.TypeDef{Name: rt.String()}
+	// keep the reflect type on the minted descriptor: with no name the
+	// spelling is all the intern table could key on, and a HostIdent
+	// keys it canonically (host:<pkgpath>:<name>, or the unnamed
+	// composite's path-based key) — no hollow name-only descriptor.
+	return &runtime.TypeDef{Name: rt.String(), HostIdent: rt}
 }
 
 // funcTypedefOf is the func-value typedef shared by argTypedef and

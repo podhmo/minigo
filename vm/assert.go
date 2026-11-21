@@ -1250,7 +1250,7 @@ func stampContainerTyp(x runtime.Value, td *runtime.TypeDef) runtime.Value {
 // hostTypedefIs reports whether td denotes the host type rt: a bare
 // HostIdent stamp canonicalizes to rt's bound or source twin, so
 // interned descriptors agree exactly when td is that twin —
-// [runtime.HostTwinOf] remains the fallback for typedefs the intern
+// [hostbridge.HostTwinOf] remains the fallback for typedefs the intern
 // table cannot key.
 func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 	if rt == nil || td == nil {
@@ -1303,7 +1303,7 @@ func (v *VM) hostTypedefIs(rt hostbridge.Type, td *runtime.TypeDef) bool {
 			}
 		}
 	}
-	return runtime.HostTwinOf(rt, td)
+	return hostbridge.HostTwinOf(rt, td)
 }
 
 // HostNamedTwin is [VM.hostTypedefIs] for intrinsics holding only a
@@ -1316,8 +1316,18 @@ func (v *VM) sameTypedef(a, b *runtime.TypeDef) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	if v.internTypedef(a) == v.internTypedef(b) {
+	ca, cb := v.internTypedef(a), v.internTypedef(b)
+	if ca == cb {
 		return true
+	}
+	// A canonical-descriptor upgrade can swap the interned pointer
+	// between the two lookups; identity is the key, not the pointer
+	// generation, so compare the keys of the canonical answers.
+	if v.H.TypeIDOf != nil && ca != nil && cb != nil {
+		ka, kb := v.H.TypeIDOf(ca), v.H.TypeIDOf(cb)
+		if ka != "" && ka != "?" && ka == kb {
+			return true
+		}
 	}
 	// the spelled acceptance needs actual content on both sides — a
 	// fabricated bare {Kind: Slice} descriptor would equal every other

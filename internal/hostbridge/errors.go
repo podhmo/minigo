@@ -153,12 +153,12 @@ var hostErrTwins = []struct {
 
 // hostNamedIsOf answers source-twin identity through the caller's intern
 // table when it has one ([runtime.HostNamedTwinner]); thinner callers
-// keep [runtime.HostNamedIs]'s name+path compare.
+// keep the name+path residual compare ([HostNamedIs]).
 func hostNamedIsOf(c any, rt reflect.Type, td *runtime.TypeDef) bool {
 	if tw, ok := c.(runtime.HostNamedTwinner); ok {
 		return tw.HostNamedTwin(rt, td)
 	}
-	return runtime.HostNamedIs(rt, td)
+	return HostNamedIs(rt, td)
 }
 
 // twinNilHost returns the real host (*T)(nil) for a script typed nil

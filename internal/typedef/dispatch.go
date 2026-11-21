@@ -324,6 +324,11 @@ func (r *Resolver) TypeMethodInfoU(td *runtime.TypeDef, ptr bool) (*runtime.Meth
 		for i := 0; i < t.NumMethod(); i++ {
 			set[t.Method(i).Name] = true
 		}
+		// the walk's name set carries declared methods reflect never
+		// lists (a source twin's unexported methods); union them in.
+		for name := range ms.Names {
+			set[name] = true
+		}
 		return &runtime.MethodSet{Names: set, Funcs: ms.Funcs, Unsure: ms.Unsure}, nil
 	}
 	if td.HostScalar != nil && len(td.Methods) == 0 {
@@ -539,12 +544,16 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		return &runtime.MethodSet{Names: names, Funcs: funcs, Depths: depths}
 	}
 	if td.HostNew != nil {
-		// a bound host type's methods live on its reflect method set,
-		// not in td.Methods: enumerate them by name so a script struct
-		// embedding one (`struct{ bytes.Buffer }`, `struct{ *os.File }`)
-		// satisfies interfaces through the promoted methods. The func
-		// map stays empty — host members keep their name-only pass and
-		// resolve through member selection at call time.
+		// a bound host type's methods live on its reflect method set:
+		// enumerate them by name so a script struct embedding one
+		// (`struct{ bytes.Buffer }`, `struct{ *os.File }`) satisfies
+		// interfaces through the promoted methods. Host members keep
+		// their name-only pass and resolve through member selection at
+		// call time. td.Methods still contributes — a source twin of a
+		// host type declares the unexported methods reflect never lists
+		// (`exprNode` on go/ast's node types), and a typedef interned
+		// first as a name-only tag gains its HostNew from a later
+		// minted descriptor without losing them.
 		rt := td.HostType()
 		if rt == nil {
 			return &runtime.MethodSet{Unsure: true}
@@ -556,6 +565,7 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		}
 		depths := hostDepths(rt)
 		names := map[string]bool{}
+		funcs := map[string]*runtime.Function{}
 		members := map[string]*runtime.PromotedMember{}
 		for m, d := range depths {
 			names[m] = true
@@ -567,7 +577,21 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		for m, fd := range hostFieldDepths(rt) {
 			members[m] = &runtime.PromotedMember{Depth: fd, Via: "host"}
 		}
-		return &runtime.MethodSet{Names: names, Depths: depths, Members: members}
+		for name, m := range td.Methods {
+			if m == nil || len(m.TParams) > 0 {
+				continue // a generic method contributes no interface method
+			}
+			if m.PtrRecv && !ptr {
+				continue // pointer receivers live only on *T's method set
+			}
+			names[name] = true
+			funcs[name] = m
+			if k := ReqKey(td.Pkg, name); k != name {
+				names[k] = true
+				funcs[k] = m
+			}
+		}
+		return &runtime.MethodSet{Names: names, Funcs: funcs, Depths: depths, Members: members}
 	}
 	names := map[string]bool{}
 	funcs := map[string]*runtime.Function{}

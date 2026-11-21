@@ -84,6 +84,14 @@ func (e *Engine) typeIDOf(td *runtime.TypeDef) runtime.TypeID {
 		if rt0.Name() != "" {
 			return hostTypeID(rt0, args)
 		}
+		// a minted named typedef's carrier is the unnamed *T box: key on
+		// the element's host type so the descriptor lands under the same
+		// `host:<pkgpath>:<name>` key whether or not the declared package
+		// is loaded yet (the name-only fallback spells the package's
+		// short name — "fs.FileMode" — which never converges on io/fs).
+		if rt0.Kind() == reflect.Pointer && rt0.Elem().Name() != "" && td.Name == rt0.Elem().String() {
+			return hostTypeID(rt0.Elem(), args)
+		}
 		// the carrier is unnamed (a *box pointer): the bound typedef's
 		// declared name is the represented type's identity.
 		if pkg, name, ok := splitHostName(td.Name); ok {
@@ -164,7 +172,37 @@ func (e *Engine) internTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 	if tid == "" || tid == "?" {
 		return td
 	}
+	if got, ok := e.typeIntern.Lookup(tid); ok {
+		// A name-only tag interned before the carrier arrives must not
+		// shadow it: the stored descriptor gains the box so the
+		// canonical typedef still answers the method-set walk.
+		if up := carrierUpgrade(got, td); up != got {
+			e.typeIntern.Replace(tid, up)
+			return up
+		}
+		return got
+	}
 	return e.typeIntern.Of(tid, td)
+}
+
+// carrierUpgrade lets a name-only twin wear the arriving descriptor's
+// host box: `HostNew`/`HostScalar` are what the method-set walk and the
+// tag-safety compare read, so a tag interned first would otherwise
+// erase methods for every later lookup of the same type identity.
+func carrierUpgrade(twin, td *runtime.TypeDef) *runtime.TypeDef {
+	if twin == nil || td == nil {
+		return twin
+	}
+	if twin.HostNew != nil || twin.HostScalar != nil {
+		return twin
+	}
+	if td.HostNew == nil && td.HostScalar == nil {
+		return twin
+	}
+	cp := twin.CloneUncached()
+	cp.HostNew = td.HostNew
+	cp.HostScalar = td.HostScalar
+	return cp
 }
 
 // canonicalTypedef resolves a host-stamped twin to the engine's own
@@ -184,7 +222,7 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 	}
 	if td.HostIdent != nil {
 		if twin := e.hostTwin(td.HostIdent); twin != nil {
-			return twin
+			return carrierUpgrade(twin, td)
 		}
 		rt := td.HostIdent
 		if rt.Kind() == reflect.Pointer {
@@ -216,7 +254,7 @@ func (e *Engine) canonicalTypedef(td *runtime.TypeDef) *runtime.TypeDef {
 		}
 		if rt0.Name() != "" && td.Name == rt0.String() {
 			if twin := e.hostTwin(rt0); twin != nil {
-				return twin
+				return carrierUpgrade(twin, td)
 			}
 		}
 		return td

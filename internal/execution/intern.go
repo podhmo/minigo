@@ -66,3 +66,13 @@ func (t *Intern[K, V]) Len() int {
 	t.m.Range(func(_, _ any) bool { n++; return true })
 	return n
 }
+
+// Replace stores v for k unconditionally — callers upgrade the
+// canonical descriptor in place when a later arrival carries more
+// (e.g. a host box a name-only tag lacked).
+func (t *Intern[K, V]) Replace(k K, v V) {
+	if t == nil {
+		return
+	}
+	t.m.Store(k, v)
+}

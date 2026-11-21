@@ -2,11 +2,13 @@ package typedef
 
 import (
 	"bufio"
+	"go/ast"
 	"io"
 	"reflect"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // hostDepths pins the promotion depth a bound host type's method set is
@@ -62,5 +64,36 @@ func TestHostDepths(t *testing.T) {
 				t.Errorf("depths mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// A typedef interned first as a name-only tag gains HostNew from the
+// carrier that arrives later; a source twin of a host type declares the
+// unexported methods reflect never lists (exprNode on go/ast's nodes).
+// The HostNew walk must keep both — losing the declared set made an
+// inferred *ast.Ident fail the ast.Expr constraint.
+func TestMethodWalkHostCarriesDeclaredMethods(t *testing.T) {
+	td := &runtime.TypeDef{
+		Name:    "ast.Ident",
+		Kind:    runtime.KindStruct,
+		HostNew: func() any { return &ast.Ident{} },
+		Methods: map[string]*runtime.Function{
+			"exprNode": {Name: "exprNode"},
+		},
+	}
+	r := New(Deps{})
+	ms := r.MethodWalkU(td, true, map[walkKey]bool{})
+	if !ms.Names["exprNode"] || ms.Funcs["exprNode"] == nil {
+		t.Fatalf("declared method missing from host walk: names=%v funcs=%v", ms.Names, ms.Funcs)
+	}
+	if !ms.Names["End"] {
+		t.Fatalf("reflect method missing from host walk: %v", ms.Names)
+	}
+	mi, err := r.TypeMethodInfoU(td, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mi.Names["exprNode"] {
+		t.Fatalf("declared method missing from method info: %v", mi.Names)
 	}
 }

@@ -3,6 +3,8 @@ package minigo
 import (
 	"go/ast"
 	"go/token"
+	"io/fs"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -639,5 +641,71 @@ func TestInstKeyTypeID(t *testing.T) {
 	// a non-typedef bind cannot key an instantiation.
 	if k := e.instKey(mkFn(map[string]runtime.Value{"T": int64(1)})); k != "" {
 		t.Fatalf("non-typedef bind keyed %q, want \"\"", k)
+	}
+}
+
+// the intern-widening pins (TODO: intern 表拡張): name-only mints and
+// minted pointers over named host types must converge on the bound
+// typedef's canonical host:<pkgpath>:<name> key — the same key a bound
+// td reaches through splitHostName.
+func TestTypeIDHostMintKeysCanonically(t *testing.T) {
+	e := NewEngine(".")
+
+	// a bound typedef spells "io/fs.FileMode"; everything else minted for
+	// the same type must share its key.
+	newMode := func() any { m := fs.FileMode(0); return &m }
+	bound := &runtime.TypeDef{Name: "io/fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
+	want := e.typeIDOf(bound)
+	if want != "host:io/fs:FileMode" {
+		t.Fatalf("bound typedef keys %q, want host:io/fs:FileMode", want)
+	}
+
+	// name-only mint with the reflected identity attached (vm's
+	// hostTypedefOf path) keys the same way.
+	named := &runtime.TypeDef{Name: "fs.FileMode", HostIdent: reflect.TypeOf(fs.FileMode(0))}
+	if diff := cmp.Diff(want, e.typeIDOf(named)); diff != "" {
+		t.Errorf("name-only mint key mismatch (-want +got):%s", diff)
+	}
+
+	// minted pointer-carrier typedef (vm's hostTypedefOfNew path: HostNew
+	// returns *fs.FileMode) keys on the element's package path, not the
+	// package-name fragment of td.Name.
+	mint := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
+	if diff := cmp.Diff(want, e.typeIDOf(mint)); diff != "" {
+		t.Errorf("pointer-carrier mint key mismatch (-want +got):%s", diff)
+	}
+}
+
+// a name-only tag interned before the carrier-bearing mint must not
+// stay canonical: the stored descriptor gains the box, or every later
+// lookup of the identity loses the host methods.
+func TestTypeIDInternUpgradesNameOnlyTag(t *testing.T) {
+	e := NewEngine(".")
+	newMode := func() any { m := fs.FileMode(0); return &m }
+
+	// the tag hostbridge mints for an interface element's zero —
+	// name and HostIdent, deliberately no carrier.
+	tag := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic,
+		HostIdent: reflect.TypeOf(fs.FileMode(0))}
+	got := e.internTypedef(tag)
+	if got.HostNew != nil {
+		t.Fatalf("first intern should keep the tag td (no carrier)")
+	}
+
+	// the carrier mint arrives later under the same key: canonical is a
+	// twin wearing the box, not the bare tag.
+	mint := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic, HostNew: newMode}
+	canon := e.internTypedef(mint)
+	if canon.HostNew == nil {
+		t.Fatalf("canonical typedef lost the carrier: %+v", canon)
+	}
+	if diff := cmp.Diff("fs.FileMode", canon.Name); diff != "" {
+		t.Errorf("canonical name mismatch (-want +got):%s", diff)
+	}
+	// and a third lookup returns the upgraded descriptor.
+	tag2 := &runtime.TypeDef{Name: "fs.FileMode", Kind: runtime.KindNamedBasic,
+		HostIdent: reflect.TypeOf(fs.FileMode(0))}
+	if e.internTypedef(tag2) != canon {
+		t.Errorf("re-intern did not return the upgraded canonical")
 	}
 }
