@@ -55,10 +55,10 @@ migration; history above that point lives in the source repository.
 - [x] **maps seq helpers over host maps stay eager and untyped**: `maps.Keys`/`Values` of a host `map[any]any` (a `GoValue`, not a `runtime.Map`) fall back to `seqOf` over a snapshot with no `iter.Seq[K]` type, and `maps.All`/`Insert` reject it.
 - [x] **unbound stdlib members met reviewing the host-twin fixes**: `slices.ContainsFunc`, `slices.Compare`, `slices.Replace`, `maps.EqualFunc` all trap `undefined:`. The comparing ones should reuse `VMCaller.Equal`/`lessScript` so host named basics keep meeting their source twins. (Bound together with `slices.CompactFunc`/`CompareFunc`/`IsSortedFunc`/`MaxFunc`/`MinFunc`.)
 - [ ] **ordering/key gaps left by the host-twin review of #982–#986** (each wrong on main too):
-  - [ ] **uint64 above MaxInt64 in the ordering helpers**: `slices.Sort`/`BinarySearch`/`Min` read payloads through `orderScalar`/`numOf` (int64, float64), so a `uint64` (or a host named basic) above `math.MaxInt64` misorders.
-  - [ ] **`slices.Max`/`Min` with NaN and signed zero**: go's `slices.Max` propagates NaN and orders `-0` before `+0` for the result; `lessScript` ranks NaN first and treats ±0 as equal.
+  - [x] **uint64 above MaxInt64 in the ordering helpers**: `slices.Sort`/`BinarySearch`/`Min` read payloads through `orderScalar`/`numOf` (int64, float64), so a `uint64` (or a host named basic) above `math.MaxInt64` misorders.
+  - [x] **`slices.Max`/`Min` with NaN and signed zero**: go's `slices.Max` propagates NaN and orders `-0` before `+0` for the result; `lessScript` ranks NaN first and treats ±0 as equal.
   - [ ] **fmt key order of a mixed-type `map[any]`**: `fmt.Println(map[any]string{"s": "s", 1: "i"})` prints `map[s:s 1:i]` in go (internal/fmtsort orders by kind first) and `map[1:i s:s]` here.
-  - [ ] **`json.Marshal(map[any]int{...})` should fail**: go reports `json: unsupported type: map[interface {}]int`.
+  - [-] **`json.Marshal(map[any]int{...})` should fail**: go reports `json: unsupported type: map[interface {}]int`. Stale premise — gc 1.27 marshals `map[any]int{1:2,"s":3}` to `{"1":2,"s":3}` without error, so minigo matching that is correct.
   - [ ] **`map[any]` keys of named chan and converted struct types collide**: `type C chan int` values key like the plain `chan int`, and `NS(st)` for `type NS St` keys like `St` (`IfaceKeyOf` types scalars only; chans key by identity, structs by their own Def).
 - [x] **Correct extract-schema plugin flag help**: the `-plugin` help string now advertises `func(*extschema.Config)` hooks, matching the hook-selection signature and the Go docs.
 
