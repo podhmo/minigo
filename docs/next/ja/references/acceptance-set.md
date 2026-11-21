@@ -23,3 +23,8 @@
 | `compile.TestSelMemberSyntheticTypeEntry` | ユニットテスト | is-type の判定が失われる | `selMember` を直接テストしている |
 
 M4-7 を終えた時点で、これらがすべて「強制 Deferred」のモードでも通ることを確かめる。gc の拒否は、コンパイル時ではなく実行時の `TRAP` になってよい（I2）。ただしメッセージは同じでなければならない。
+
+## テスト側のラベル（M0-7）
+
+- `testdata/difffuzz/<case>/COMPILE_TIME_FACT` — 上表の `TestDiffRegressions/*` の各ケースにマーカーファイルを置き、依存している事実を 1 行で書いている。`TestDiffRegressions` は存在を読んで `t.Log` に出す。
+- `TestNetHTTPRoundtrip`（`minigo_test.go`）と `compile.TestSelMemberSyntheticTypeEntry`（`compile/sel_member_test.go`）には `Compile-time fact (M0-7)` のコメントを付けた。

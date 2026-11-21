@@ -1,0 +1,1 @@
+compile-time fact: whether an operand can be nil (selNilable)

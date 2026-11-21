@@ -502,6 +502,9 @@ func TestStdlibIntrinsics(t *testing.T) {
 // (readMIMEHeader), script values crossing host io.Reader/Writer
 // boundaries, and bound context/sync-atomic leaves all line up for a
 // `200 OK` answer.
+// Compile-time fact (M0-7): the operands' static types decide whether
+// `==` lowers to an interface comparison (selPkgMemberOpTyp).
+// docs/next/ja/references/acceptance-set.md.
 func TestNetHTTPRoundtrip(t *testing.T) {
 	e := newEngine(t)
 	got := run(t, e, "./testdata/httpio", "Roundtrip")

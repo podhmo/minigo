@@ -51,6 +51,13 @@ func TestDiffRegressions(t *testing.T) {
 			expectErr := err == nil
 			_, statErr := os.Stat(filepath.Join(dir, "PENDING"))
 			pending := statErr == nil
+			// COMPILE_TIME_FACT (M0-7) labels cases whose expected
+			// result leans on a compile-time fact — the file's text
+			// names which. They are the M4-7/M4-8 acceptance set:
+			// docs/next/ja/references/acceptance-set.md.
+			if fact, err := os.ReadFile(filepath.Join(dir, "COMPILE_TIME_FACT")); err == nil {
+				t.Log(strings.TrimSpace(string(fact)))
+			}
 			// A case with a want.stderr file also compares stderr (e.g.
 			// builtin print/println output). Builtins write to os.Stderr
 			// directly, so the run happens with os.Stderr redirected to
