@@ -981,7 +981,23 @@ func CanonicalKey(v Value) Value {
 			return NIL
 		}
 		return mapKey{typ: typeTagOf(x.Typ), repr: "nil"}
-	case *Cell, *FieldRef, *IndexRef, *Chan:
+	case *Cell:
+		// Go allocates a zero-size pointee at the shared zerobase, so
+		// pointers to it may compare equal — the choice the spec
+		// allows, and the same one binop's `==` already takes. Key by
+		// the pointee typedef: two *F keys meet while *F and *G stay
+		// apart, matching the interface equality gc gives. A cell whose
+		// declared type is an interface holds a real (nonzero) slot:
+		// `var x any = struct{}{}` — `&x` is the slot's own address and
+		// stays distinct even while x holds a zero-size value.
+		if IsZeroSizeValue(x.Elem) &&
+			(x.Typ == nil || x.Typ.Kind != KindInterface) {
+			if tag := zeroSizePointeeTag(x); tag != "" {
+				return mapKey{typ: tag, repr: "zerobase"}
+			}
+		}
+		return x
+	case *FieldRef, *IndexRef, *Chan:
 		// pointer-shaped keys hash by identity — the wrapper itself
 		// is comparable and stable.
 		return x
@@ -1755,6 +1771,45 @@ func IsZeroSizeValue(v Value) bool {
 		return ok && at.Len != nil
 	}
 	return false
+}
+
+// zeroSizePointeeTag renders the canonical key tag for a cell holding
+// a zero-size value — the pointee's typedef, or its struct definition
+// for an untyped composite literal. "" when neither is known; the key
+// then falls back to pointer identity.
+func zeroSizePointeeTag(c *Cell) string {
+	tag := ""
+	if c.Typ != nil {
+		tag = zbTagOf(c.Typ)
+	} else if st, ok := c.Elem.(*Struct); ok && st.Def != nil {
+		tag = zbTagOf(st.Def)
+	} else if sl, ok := c.Elem.(*Slice); ok && sl.Typ != nil {
+		// a new()/composite array cell carries no cell-level Typ —
+		// the array typedef sits on the value instead.
+		tag = zbTagOf(sl.Typ)
+	}
+	if tag == "" {
+		return ""
+	}
+	return "zb:" + tag
+}
+
+// zbTagOf keys a zero-size pointee by its type. A named type keys by
+// its package-qualified name; an anonymous type renders its full type
+// syntax, since anonTag collapses signatures (`[0]func()` vs
+// `[0]func(int)` are distinct types sharing one zerobase each).
+func zbTagOf(td *TypeDef) string {
+	if td.Name != "" {
+		return typeTagOf(td)
+	}
+	// an anonymous type spells its full syntax — TypSpelling resolves
+	// local type names, folds array lengths (`[0][N]int` keyed by a
+	// const N evaluates N per scope) and qualifies selectors, where
+	// anonTag would collapse them all.
+	if e := td.TypeExpr(); e != nil {
+		return TypSpelling(e, td)
+	}
+	return typeTagOf(td)
 }
 
 // Map is a map value: a header over a [mapStore]. Pairs is keyed by the
