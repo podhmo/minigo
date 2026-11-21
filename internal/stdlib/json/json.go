@@ -184,6 +184,17 @@ type jsonDecFlags struct {
 }
 
 func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags) (runtime.Value, error) {
+	return jsonInjectLevel(v, data, node, target, flags, true, 0)
+}
+
+// jsonInjectLevel is jsonInject: top marks the slot the caller named,
+// where an interface declaration decides decode-vs-descend; the
+// pointer-descent recursion passes false because a pointer cell can
+// carry a stale interface tag from its `any` assignment while it
+// stores the pointee's value. depth bounds the descent — a
+// self-referencing pointer chain (a = &a) must error, not exhaust
+// the interpreter's stack.
+func jsonInjectLevel(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.Value, flags jsonDecFlags, top bool, depth int) (runtime.Value, error) {
 	{
 		if prior0, _ := runtime.Deref(target); jsonNilish(prior0) {
 			if ptd := derefTyp(v.TypeOf(target)); ptd != nil && ptd.Kind == runtime.KindPointer {
@@ -200,11 +211,69 @@ func jsonInject(v runtime.VMCaller, data []byte, node *jsonDom, target runtime.V
 			return jsonErrResult(r), nil
 		}
 		prior, _ := runtime.Deref(target)
+		// a conversion result boxes the host value itself
+		// (json.RawMessage(s) stores RawMessage, where `var r
+		// json.RawMessage` stores *RawMessage) — pointer methods like
+		// UnmarshalJSON escape the member probe. gc's indirect reaches
+		// them because &r is addressable: mint an address box, call
+		// the pointer method on it, then write the pointee back.
+		// A value stored under an interface-typed cell skips this: gc
+		// decodes into the interface itself (a string literal replaces
+		// the time.Time a `var a any` holds), while a pointer inside it
+		// (any = &t) is descended into — both land below.
+		isIfaceSlot := top && jsonCellIsIface(target)
+		if !isIfaceSlot {
+			if r, done, err := jsonUnmarshalHostVal(v, data, prior, prior, target); done || err != nil {
+				return r, err
+			}
+		}
+		if dv, isRef := runtime.Deref(prior); isRef {
+			// gc's indirect: an interface descends into a held
+			// pointer for any non-null literal — under `null` only
+			// when the pointee is itself a pointer — while a plain
+			// pointer level descends for non-null only and lets the
+			// nil land at this level. depth caps the walk so a
+			// self-referencing chain errors instead of exhausting
+			// the interpreter stack.
+			var descend bool
+			if isIfaceSlot {
+				_, dvIsPtr := runtime.Deref(dv)
+				descend = domVal(node) != nil || dvIsPtr
+			} else {
+				descend = domVal(node) != nil
+			}
+			if descend {
+				if depth >= 64 {
+					return nil, fmt.Errorf("json: pointer indirection exceeds depth limit (self-referencing value?)")
+				}
+				return jsonInjectLevel(v, data, node, prior, flags, false, depth+1)
+			}
+		}
+		if isIfaceSlot {
+			if it := target.(*runtime.Cell).Typ; domVal(node) != nil && jsonIfaceHasMethods(it) {
+				// a method-ful interface holding a non-pointer value:
+				// gc refuses the literal outright (NumMethod>0 never
+				// reaches value()) — a fmt.Stringer cell does not
+				// take a string.
+				return stdlib.ErrVal(&jsonUnmarshalTypeError{
+					value: jsonValueName(domVal(node)),
+					typ:   runtime.DisplayName(it),
+				}), nil
+			}
+		}
 		ectx := &jsonErrCtx{keepNum: flags.Number, strict: flags.Strict}
-		if std := derefTyp(v.TypeOf(target)); std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
+		// decode type: the declared pointee, except an interface-typed
+		// cell decodes as the interface itself — TypeOf reports the
+		// held value's type (time.Time), where gc replaces the cell's
+		// content by the literal's shape.
+		decTyp := derefTyp(v.TypeOf(target))
+		if isIfaceSlot {
+			decTyp = target.(*runtime.Cell).Typ
+		}
+		if std := decTyp; std != nil && std.Kind == runtime.KindStruct && std.Name != "" {
 			ectx.strct = jsonBareName(std)
 		}
-		sv := jsonShape(v, node, derefTyp(v.TypeOf(target)), prior, ectx)
+		sv := jsonShape(v, node, decTyp, prior, ectx)
 		if !runtime.SetRef(target, sv) {
 			return nil, fmt.Errorf("json: cannot assign to %T", target)
 		}
@@ -580,6 +649,130 @@ type jsonCallErr struct {
 // a same-named method with a different signature does not implement
 // json.Unmarshaler, so its value decodes by shape. Host-callable
 // methods carry no Decl and are assumed conforming.
+// jsonCellIsIface reports whether target is a cell declared as an
+// interface type (a `var a any` slot) — gc decodes into such a slot
+// itself rather than consulting the held value's UnmarshalJSON.
+func jsonCellIsIface(target runtime.Value) bool {
+	c, ok := target.(*runtime.Cell)
+	return ok && c.Typ != nil && c.Typ.Kind == runtime.KindInterface
+}
+
+// jsonIfaceHasMethods approximates gc's NumMethod>0 on an interface
+// typedef: declared methods count directly; embedded elements count
+// unless they are provably empty (`any` or an `interface{}` literal
+// with no methods). A named or inline embed we cannot prove empty is
+// treated as method-ful — matching gc for io.Reader-style embeds.
+// `any` spells the builtin only until a `type any` declaration shadows
+// it in the embed's scope — the shadow resolves through the typedef's
+// function-local declarations first, then its declaring package's
+// index (never the caller's running package, which shadows nothing).
+func jsonIfaceHasMethods(td *runtime.TypeDef) bool {
+	return jsonIfaceHasMethodsDepth(td, 0)
+}
+
+func jsonIfaceHasMethodsDepth(td *runtime.TypeDef, depth int) bool {
+	if len(td.MReqs) != 0 {
+		return true
+	}
+	for _, e := range td.IEmbeds {
+		if jsonEmbedHasMethods(td.Pkg, td.LocalTypes, e, depth+1) {
+			return true
+		}
+	}
+	if len(td.IEmbeds) == 0 && td.Spec != nil {
+		// a defined type over a non-literal spec — `type E error`
+		// inherits the spec's method set.
+		return jsonEmbedHasMethods(td.Pkg, td.LocalTypes, td.Spec.Type, depth+1)
+	}
+	return false
+}
+
+// jsonEmbedHasMethods reports whether one embedded element carries
+// methods; depth bounds the shadowed-`any` resolution chain. pkg and
+// locals are the scope the element's names resolve in — the typedef's
+// own declaring package and function-local type table, never the
+// caller's running package (which shadows nothing here). Descending
+// into a package-level spec drops locals: that spec's names live at
+// package scope.
+func jsonEmbedHasMethods(pkg *runtime.Package, locals map[string]*runtime.TypeDef, e ast.Expr, depth int) bool {
+	if depth > 16 {
+		return true
+	}
+	switch ex := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		if lt, ok := locals[ex.Name]; ok {
+			return lt != nil && jsonIfaceHasMethodsDepth(lt, depth+1)
+		}
+		if pkg != nil && pkg.Index != nil {
+			if tdi := pkg.Index.Types[ex.Name]; tdi != nil && tdi.Decl != nil {
+				if ts, ok := tdi.Decl.Spec.(*ast.TypeSpec); ok {
+					return jsonEmbedHasMethods(pkg, nil, ts.Type, depth+1)
+				}
+			}
+		}
+		// unresolvable: the builtin `any` is empty; a bound or
+		// imported named embed is conservatively method-ful —
+		// matching gc for io.Reader-style embeds.
+		return ex.Name != "any"
+	case *ast.IndexExpr:
+		return jsonEmbedHasMethods(pkg, locals, ex.X, depth+1)
+	case *ast.IndexListExpr:
+		// a generic instantiation keeps the origin's method set —
+		// `type A = Empty[int]` resolves to Empty's spec.
+		return jsonEmbedHasMethods(pkg, locals, ex.X, depth+1)
+	case *ast.InterfaceType:
+		if ex.Methods == nil {
+			return false
+		}
+		for _, f := range ex.Methods.List {
+			if len(f.Names) != 0 {
+				return true
+			}
+			// an embedded element (no Names) counts only when it is
+			// itself method-ful — `interface{ any }` stays empty.
+			if jsonEmbedHasMethods(pkg, locals, f.Type, depth+1) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+// jsonUnmarshalHostVal tries the UnmarshalJSON pointer method on a
+// host value box: it mints an address box over a copy of the pointee
+// (gc's indirect reaches pointer methods because &x is addressable),
+// calls through it, then writes the new pointee back through dst.
+// held is the script value carrying the Named tag the write-back
+// must keep. done is false when no such method exists.
+func jsonUnmarshalHostVal(v runtime.VMCaller, data []byte, pointee, held, dst runtime.Value) (runtime.Value, bool, error) {
+	gv, ok := runtime.Unwrap(pointee).(*runtime.GoValue)
+	if !ok {
+		return nil, false, nil
+	}
+	rv := reflect.ValueOf(gv.V)
+	if !rv.IsValid() || rv.Kind() == reflect.Pointer {
+		return nil, false, nil
+	}
+	pv := reflect.New(rv.Type())
+	pv.Elem().Set(rv)
+	m, ok := runtime.IfaceMember(v, &runtime.GoValue{V: pv.Interface()}, "UnmarshalJSON")
+	if !ok || !jsonUnmarshalShape(m) {
+		return nil, false, nil
+	}
+	r, cerr := v.Call(m, []runtime.Value{stdlib.ScriptVal(data)})
+	if cerr != nil {
+		return nil, true, cerr
+	}
+	var back runtime.Value = &runtime.GoValue{V: pv.Elem().Interface()}
+	if n, ok := held.(*runtime.Named); ok && n.Typ != nil {
+		back = runtime.Tag(n.Typ, back)
+	}
+	runtime.SetRef(dst, back)
+	return jsonErrResult(r), true, nil
+}
+
 func jsonUnmarshalShape(m runtime.Value) bool {
 	b, ok := m.(*runtime.BoundMethod)
 	if !ok {

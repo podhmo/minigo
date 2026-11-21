@@ -169,11 +169,22 @@ func (m *Marshal) HostSliceConv(vc runtime.VMCaller, td *runtime.TypeDef, x runt
 		return nil, false, nil
 	}
 	rt := td.HostType()
-	if rt == nil || rt.Kind() != reflect.Slice {
+	if rt == nil {
+		return nil, false, nil
+	}
+	// a bound type may box its *T (encoding/json.RawMessage's HostNew
+	// returns &RawMessage{}): the slice type is the pointee, and a
+	// conversion produces the VALUE box — HostSliceOf reads a slice
+	// box through len/index where a pointer box would stay opaque.
+	rtp := rt
+	if rt.Kind() == reflect.Pointer {
+		rt = rt.Elem()
+	}
+	if rt.Kind() != reflect.Slice {
 		return nil, false, nil
 	}
 	if _, rv, ok := HostSliceOf(x); ok {
-		if rv.Type() == rt {
+		if rv.Type() == rtp || rv.Type() == rt {
 			return x, true, nil
 		}
 		if !rv.Type().ConvertibleTo(rt) {
@@ -183,6 +194,13 @@ func (m *Marshal) HostSliceConv(vc runtime.VMCaller, td *runtime.TypeDef, x runt
 	}
 	switch s := x.(type) {
 	case *runtime.Slice:
+		// a script slice that still carries its host backing (a
+		// projected buf.Bytes()) shares it like a host-to-host
+		// conversion — writes through either alias reach the same
+		// array, as Go's []byte -> T conversion does.
+		if s.Host.IsValid() && s.Host.Type().ConvertibleTo(rt) {
+			return runtime.Tag(td, &runtime.GoValue{V: s.Host.Convert(rt).Interface()}), true, nil
+		}
 		hv, err := m.ToReflect(s, rt, vc)
 		if err != nil {
 			return nil, true, err

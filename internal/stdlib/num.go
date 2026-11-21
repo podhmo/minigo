@@ -136,5 +136,11 @@ func ByteSlice(v any) []byte {
 		}
 		return out
 	}
+	// a named byte slice — json.RawMessage (jsontext.Value), a host
+	// []byte typedef — misses the []byte case above because a type
+	// switch needs the exact dynamic type.
+	if rv := reflect.ValueOf(v); rv.IsValid() && rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 {
+		return rv.Bytes()
+	}
 	return nil
 }
