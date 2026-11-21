@@ -12,6 +12,10 @@ func main() {
 	var s string
 	select {
 	case v := <-inner.Ch:
+		var zero inner.Int
+		if v != zero {
+			panic("unexpected receive value")
+		}
 		fmt.Println(v == s)
 	default:
 	}

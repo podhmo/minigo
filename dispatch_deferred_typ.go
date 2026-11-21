@@ -32,11 +32,9 @@ func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runti
 	if p.Index == nil {
 		return nil, false, nil
 	}
-	var d *index.Decl
-	if c := p.Index.Consts[name]; c != nil {
-		d = c
-	} else if v := p.Index.Vars[name]; v != nil {
-		d = v
+	d := p.Index.Consts[name]
+	if d == nil {
+		d = p.Index.Vars[name]
 	}
 	if d == nil {
 		return nil, false, nil
@@ -56,12 +54,12 @@ func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runti
 	} else if d.NameIdx < len(vs.Values) {
 		val = vs.Values[d.NameIdx]
 	}
+	if effType == nil && d.Kind == index.VarDecl {
+		effType = p.Index.BuiltinMakeType(val)
+	}
 	if effType != nil {
 		td, err := e.resolveTypeRef(mctx, effType)
 		return td, false, err
-	}
-	if val == nil {
-		return nil, false, nil
 	}
 	return e.valueTypDepth(mctx, val, depth+1)
 }
