@@ -54,7 +54,7 @@
 | `Initializer(decl)` | 初期化式（`TypeExpr` として） | 式の中身を見たいとき |
 | `Value(pkg, name)` | メンバの実値。const は**materialized scalar**（untyped→Go 値、named basic→underlying scalar）、var は書き込み可能 cell（`*v` で読む） | 構造体型 const は scalar でないため runtime 値のまま |
 | `TypeOf(decl)` | `*runtime.TypeDef` | 型同一性の比較用 |
-| `AST(x)` / `Body(funcDecl)` | 生 AST / 関数本体 `Node` | 生 AST 経由で host reflect facade に落とす逃げ道。host 擬似 decl では trap |
+| `AST(x)` / `Body(funcDecl)` / `Spec(varConstTypeDecl)` | 生 AST / 関数本体 `Node` / spec `Node` | 生 AST 経由で host reflect facade に落とす逃げ道。host 擬似 decl では trap。`Spec` は var/const の ValueSpec・type の TypeSpec を `Node` ビューの根にする |
 | `Nodes(node)` | 子 Node 一覧（Role つき） | Body 以下の走査 |
 | `Expr(node)` | 式ノードを `TypeExpr` 化（宣言ファイルの名前解決つき） | |
 

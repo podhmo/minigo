@@ -229,6 +229,14 @@ func AST(x any) any { panic("minigo intrinsic") }
 // and non-func declarations.
 func Body(s *Decl) *Node { panic("minigo intrinsic") }
 
+// Spec returns the spec of a var, const or type declaration as a [Node]
+// — ValueSpec for var and const, TypeSpec for type — whose children
+// ([Nodes]) are its names, declared type and initializer values, so a
+// const's initializer expression or a type spec's internals take the
+// same typed view a func body gets through [Body]. It traps for host
+// and func declarations.
+func Spec(s *Decl) *Node { panic("minigo intrinsic") }
+
 // Nodes returns n's child nodes in source order, each with Role set to the
 // go/ast field it fills: a CallExpr's children are Fun then Args, an
 // IfStmt's are those of Init, Cond, Body and Else that are present, and a
