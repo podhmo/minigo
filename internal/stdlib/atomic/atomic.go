@@ -1,4 +1,4 @@
-package minigo
+package stdatomic
 
 import (
 	"fmt"
@@ -8,10 +8,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
 
-func (e *Engine) installSyncAtomic(h *hostHelpers) {
+func Install(bind stdlib.Bind, h stdlib.Helpers) {
 	// sync/atomic: the source implementation reinterprets values through
 	// unsafe.Pointer, so the package is bound instead. The scalar types
 	// are real host values; Value and Pointer[T] share a mutex-guarded
@@ -20,21 +21,21 @@ func (e *Engine) installSyncAtomic(h *hostHelpers) {
 	// the pointer-taking functions operate on script cells through
 	// Deref/SetRef — atomic in intent, since a script &x has no host
 	// address to hand the real runtime.
-	e.bindBound("sync/atomic", map[string]runtime.Value{
-		"Bool":    hostType("sync/atomic.Bool", func() any { return &atomic.Bool{} }),
-		"Int32":   hostType("sync/atomic.Int32", func() any { return &atomic.Int32{} }),
-		"Int64":   hostType("sync/atomic.Int64", func() any { return &atomic.Int64{} }),
-		"Uint32":  hostType("sync/atomic.Uint32", func() any { return &atomic.Uint32{} }),
-		"Uint64":  hostType("sync/atomic.Uint64", func() any { return &atomic.Uint64{} }),
-		"Uintptr": hostType("sync/atomic.Uintptr", func() any { return &atomic.Uintptr{} }),
-		"Value":   hostType("sync/atomic.Value", func() any { return &atomicBox{} }),
+	bind("sync/atomic", map[string]runtime.Value{
+		"Bool":    stdlib.HostType("sync/atomic.Bool", func() any { return &atomic.Bool{} }),
+		"Int32":   stdlib.HostType("sync/atomic.Int32", func() any { return &atomic.Int32{} }),
+		"Int64":   stdlib.HostType("sync/atomic.Int64", func() any { return &atomic.Int64{} }),
+		"Uint32":  stdlib.HostType("sync/atomic.Uint32", func() any { return &atomic.Uint32{} }),
+		"Uint64":  stdlib.HostType("sync/atomic.Uint64", func() any { return &atomic.Uint64{} }),
+		"Uintptr": stdlib.HostType("sync/atomic.Uintptr", func() any { return &atomic.Uintptr{} }),
+		"Value":   stdlib.HostType("sync/atomic.Value", func() any { return &AtomicBox{} }),
 		// generic: a host reflect instantiation is impossible, so the
 		// typedef declares T and HostNew boxes the same cell for every
 		// instantiation — the stored script values carry the typing.
 		"Pointer": &runtime.TypeDef{
 			Name: "sync/atomic.Pointer", Kind: runtime.KindStruct,
 			TParams: []string{"T"},
-			HostNew: func() any { return &atomicBox{} },
+			HostNew: func() any { return &AtomicBox{} },
 		},
 		"AddInt32":              atomicOp("atomic.AddInt32", atomicOpAdd),
 		"AddInt64":              atomicOp("atomic.AddInt64", atomicOpAdd),
@@ -78,12 +79,12 @@ func (e *Engine) installSyncAtomic(h *hostHelpers) {
 	})
 }
 
-// atomicBox backs the bound sync/atomic Value and Pointer[T]: the cell
+// AtomicBox backs the bound sync/atomic Value and Pointer[T]: the cell
 // holds script values verbatim under a mutex so Load hands back the same
 // objects Store received (a host atomic.Value would serve identically —
 // the boundary already decides what crosses — but the box keeps the
 // semantics obvious and needs no per-instantiation host type).
-type atomicBox struct {
+type AtomicBox struct {
 	mu sync.Mutex
 	v  any
 }
@@ -206,10 +207,10 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 			}
 			return true, nil
 		}
-		n := int64Of(cur)
+		n := stdlib.Int64Of(cur)
 		var nv runtime.Value = n
 		if op == atomicOpAdd {
-			n += int64Of(args[1])
+			n += stdlib.Int64Of(args[1])
 			nv = n
 			if wordTd != nil {
 				w, err := atomicWord(vc, wordTd, n)
@@ -226,9 +227,9 @@ func atomicOp(name string, op atomicOpKind) *runtime.BuiltinFunc {
 		}
 		switch op {
 		case atomicOpAnd:
-			n &= int64Of(args[1])
+			n &= stdlib.Int64Of(args[1])
 		case atomicOpOr:
-			n |= int64Of(args[1])
+			n |= stdlib.Int64Of(args[1])
 		}
 		nv = n
 		if wordTd != nil {
@@ -268,26 +269,26 @@ func atomicWord(vc runtime.VMCaller, td *runtime.TypeDef, x runtime.Value) (runt
 	return cv, nil
 }
 
-func (b *atomicBox) Load() (old any) {
+func (b *AtomicBox) Load() (old any) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.v
 }
 
-func (b *atomicBox) Store(x any) {
+func (b *AtomicBox) Store(x any) {
 	b.mu.Lock()
 	b.v = x
 	b.mu.Unlock()
 }
 
-func (b *atomicBox) Swap(x any) (old any) {
+func (b *AtomicBox) Swap(x any) (old any) {
 	b.mu.Lock()
 	old, b.v = b.v, x
 	b.mu.Unlock()
 	return old
 }
 
-func (b *atomicBox) CompareAndSwap(old, new any) (swapped bool) {
+func (b *AtomicBox) CompareAndSwap(old, new any) (swapped bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !atomicCellEq(b.v, old) {

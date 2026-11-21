@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	stdatomic "github.com/podhmo/minigo/internal/stdlib/atomic"
+
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
@@ -38,13 +40,13 @@ func srcTd(pkg *runtime.Package, file *syntax.File, pos token.Pos, name string) 
 func TestTypeIDHostKeyIsTheRepresentedType(t *testing.T) {
 	e := NewEngine(".")
 
-	// atomic.Value and atomic.Pointer[T] share the *atomicBox carrier:
+	// atomic.Value and atomic.Pointer[T] share the *stdatomic.AtomicBox carrier:
 	// the key comes from the declared represented name, not the box.
-	vtd := hostType("sync/atomic.Value", func() any { return &atomicBox{} })
+	vtd := hostType("sync/atomic.Value", func() any { return &stdatomic.AtomicBox{} })
 	ptd := &runtime.TypeDef{
 		Name: "sync/atomic.Pointer", Kind: runtime.KindStruct,
 		TParams: []string{"T"}, Binds: map[string]runtime.Value{"T": runtime.BasicTypedef("int")},
-		HostNew: func() any { return &atomicBox{} },
+		HostNew: func() any { return &stdatomic.AtomicBox{} },
 	}
 	if diff := cmp.Diff(false, e.typeIDOf(vtd) == e.typeIDOf(ptd)); diff != "" {
 		t.Errorf("Value vs Pointer key%s", diff)
@@ -54,7 +56,7 @@ func TestTypeIDHostKeyIsTheRepresentedType(t *testing.T) {
 	ps := &runtime.TypeDef{
 		Name: "sync/atomic.Pointer", Kind: runtime.KindStruct,
 		TParams: []string{"T"}, Binds: map[string]runtime.Value{"T": runtime.BasicTypedef("string")},
-		HostNew: func() any { return &atomicBox{} },
+		HostNew: func() any { return &stdatomic.AtomicBox{} },
 	}
 	if e.typeIDOf(ptd) == e.typeIDOf(ps) {
 		t.Errorf("Pointer[int] and Pointer[string] key alike: %q", e.typeIDOf(ptd))
@@ -162,7 +164,7 @@ func TestTypeIDAnonymousIsStructural(t *testing.T) {
 // vtdForKey is the Value-typedef for the anonymous-composition case.
 func vtdForKey(t *testing.T, e *Engine) *runtime.TypeDef {
 	t.Helper()
-	return hostType("sync/atomic.Value", func() any { return &atomicBox{} })
+	return hostType("sync/atomic.Value", func() any { return &stdatomic.AtomicBox{} })
 }
 
 // M4-7a: a deferred fact's answer keeps the expression's own shape —

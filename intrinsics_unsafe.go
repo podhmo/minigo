@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
+	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/minireflect"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -87,7 +88,7 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 			return &runtime.IndexRef{Base: sl, Key: int64(0)}, nil
 		}},
 		"String": &runtime.BuiltinFunc{Name: "unsafe.String", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			elems, err := unsafeElems(args[0], args[1])
+			elems, err := stdlib.UnsafeElems(args[0], args[1])
 			if err != nil {
 				return nil, err
 			}
@@ -104,7 +105,7 @@ func (e *Engine) installUnsafe(h *hostHelpers) {
 				}
 				return nil, errors.New("unsafe: ptr is nil and len is not zero")
 			}
-			elems, err := unsafeElems(args[0], args[1])
+			elems, err := stdlib.UnsafeElems(args[0], args[1])
 			if err != nil {
 				return nil, err
 			}
@@ -333,35 +334,4 @@ func unsafeBytes(str string) *runtime.Slice {
 		el[i] = runtime.ByteValue(str[i])
 	}
 	return &runtime.Slice{Elems: el, Typ: &runtime.TypeDef{Kind: runtime.KindSlice, Anon: &ast.ArrayType{Elt: ast.NewIdent("byte")}}}
-}
-
-func unsafeElems(p, nv runtime.Value) ([]runtime.Value, error) {
-	n := int(int64Of(hostbridge.GoNative(nv)))
-	if p == nil || p == runtime.NIL {
-		if n == 0 {
-			return nil, nil
-		}
-		return nil, errors.New("unsafe: ptr is nil and len is not zero")
-	}
-	if tn, ok := runtime.Unwrap(p).(*runtime.TypedNil); ok {
-		// a typed nil pointer follows the same nil rule — len 0 is a
-		// legal no-op, anything else panics like an untyped nil.
-		if tn.Typ != nil && tn.Typ.Kind == runtime.KindPointer {
-			if n == 0 {
-				return nil, nil
-			}
-			return nil, errors.New("unsafe: ptr is nil and len is not zero")
-		}
-		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
-	}
-	ref, ok := runtime.Unwrap(p).(*runtime.IndexRef)
-	if !ok {
-		return nil, fmt.Errorf("unsafe: unsupported pointer %T (only element pointers)", p)
-	}
-	sl := ref.Slice()
-	i, _ := runtime.Unwrap(ref.Key).(int64)
-	if sl == nil || int(i)+n > cap(sl.Elems) {
-		return nil, errors.New("unsafe: pointer range out of bounds")
-	}
-	return sl.Elems[i : int(i)+n : int(i)+n], nil
 }

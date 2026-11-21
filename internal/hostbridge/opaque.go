@@ -32,7 +32,7 @@ func OpaqueKeyPosition(recv, name string, i int) bool {
 		return i == 1 && (name == "CompareAndSwap" || name == "CompareAndDelete")
 	case "*context.valueCtx":
 		return name == "Value" && i == 0
-	case "*minigo.atomicBox":
+	case "*stdatomic.AtomicBox":
 		return name == "CompareAndSwap" && i == 0
 	}
 	return false
