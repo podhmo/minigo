@@ -13,24 +13,24 @@ import (
 // package's typedefs (`time.Second` binds a bare int64 but time
 // declares Duration), or — for source packages — the declaration's
 // written or inferred type read in the declaring file's scope.
-func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runtime.TypeDef, error) {
+func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runtime.TypeDef, bool, error) {
 	if depth > 8 {
-		return nil, nil
+		return nil, false, nil
 	}
 	m, err := p.Member(name, e.materialize)
 	if err != nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	if td := memberTyp(m); td != nil {
-		return td, nil
+	if td, untyped := memberTyp(m); td != nil {
+		return td, untyped, nil
 	}
 	if p.Globals != nil {
 		if td := hostScalarTypedef(p, m); td != nil {
-			return td, nil
+			return td, false, nil
 		}
 	}
 	if p.Index == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	var d *index.Decl
 	if c := p.Index.Consts[name]; c != nil {
@@ -39,11 +39,11 @@ func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runti
 		d = v
 	}
 	if d == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	vs, ok := d.Spec.(*ast.ValueSpec)
 	if !ok {
-		return nil, nil
+		return nil, false, nil
 	}
 	mctx := &runtime.TypeDef{Pkg: p, File: d.File}
 	effType := vs.Type
@@ -57,10 +57,11 @@ func (e *Engine) memberTypOf(p *runtime.Package, name string, depth int) (*runti
 		val = vs.Values[d.NameIdx]
 	}
 	if effType != nil {
-		return e.resolveTypeRef(mctx, effType)
+		td, err := e.resolveTypeRef(mctx, effType)
+		return td, false, err
 	}
 	if val == nil {
-		return nil, nil
+		return nil, false, nil
 	}
 	return e.valueTypDepth(mctx, val, depth+1)
 }

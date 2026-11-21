@@ -116,7 +116,13 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 		}
 		yt = opTyp{te: yt.dte, dte: yt.dte}
 	}
-	if xt.deferred || yt.deferred || nilGate {
+	// a spelled type name whose package question is still open —
+	// `time.Duration(5)` under IndexedOnly — is also a deferred fact:
+	// the run-time gate resolves the qualified name once its package
+	// materializes.
+	teDeferred := (xt.te != nil && c.typExprDeferred(xt.te)) ||
+		(yt.te != nil && c.typExprDeferred(yt.te))
+	if xt.deferred || yt.deferred || nilGate || teDeferred {
 		// the same operands the static gate declines stay undecided:
 		// an untyped constant adopts the other operand's type, and an
 		// interface-typed operand's legality is assignability, not
@@ -145,6 +151,9 @@ func (c *compiler) opGate(x, y ast.Expr, pos token.Pos, inSwitch bool) bool {
 				}
 				sites[i] = c.exprSite(dx, o.x.Pos())
 				mask |= 1 << i
+				if o.ot.maybeUntyped {
+					mask |= 1 << (i + 2)
+				}
 			default:
 				te := o.ot.te
 				if te == nil {
@@ -286,7 +295,7 @@ func (c *compiler) exprSiteAt(x ast.Expr, teFile *syntax.File, pos token.Pos) in
 func (c *compiler) typExprDeferred(te ast.Expr) bool {
 	if sel, ok := c.unfoldTypExpr(te, 4).(*ast.SelectorExpr); ok {
 		if ref, _, ok := c.selTypRef(sel); ok {
-			return askIndexed(ref).Kind != semantics.Found
+			return c.askIndexed(ref).Kind != semantics.Found
 		}
 	}
 	return false
@@ -304,7 +313,7 @@ func (c *compiler) typExprDeferred(te ast.Expr) bool {
 // drives `==` lowering and gc-parity rejections. The typed-const
 // defaulting path alone would be a hint; the rest is not.
 func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef) opTyp {
-	res := askIndexed(ref)
+	res := c.askIndexed(ref)
 	if res.Kind == semantics.Deferred {
 		ot := opTyp{deferred: true, dexpr: x}
 		// an untyped const stays untyped through the deferral — `p.C`
@@ -312,7 +321,9 @@ func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef
 		// operand, so it must never feed the run-time gate a default
 		// type. The materialized package (res.Val survives the
 		// downgrade) answers which members are untyped consts; dte is
-		// kept so a switch tag still pins to the default type.
+		// kept so a switch tag still pins to the default type. Under
+		// IndexedOnly no package materializes — maybeUntyped hands the
+		// untyped-const question to the run-time gate.
 		if p := res.Val; p != nil {
 			if v, ok := p.Globals.Get(x.Sel.Name); ok {
 				if uc, isU := v.(*runtime.UConst); isU {
@@ -329,6 +340,8 @@ func (c *compiler) selPkgMemberOpTyp(x *ast.SelectorExpr, ref *runtime.ImportRef
 					}
 				}
 			}
+		} else {
+			ot.maybeUntyped = true
 		}
 		return ot
 	}

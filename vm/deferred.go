@@ -14,7 +14,11 @@ import (
 type deferredBox struct {
 	td   *runtime.TypeDef
 	cnst bool
-	err  error
+	// untyped marks a DeferredValueTyp answer whose resolved value is
+	// an untyped constant — the gate treats it as adopting when the
+	// site's mask marks the operand maybe-untyped.
+	untyped bool
+	err     error
 }
 
 // deferredCache is a CallSite's memo. A chunk is shared across a
@@ -48,11 +52,11 @@ func (v *VM) deferredType(f *frame, site *bytecode.CallSite) (*runtime.TypeDef, 
 }
 
 func (v *VM) deferredResolve(f *frame, site *bytecode.CallSite, resolve func(ctx *runtime.TypeDef) *deferredBox) (*runtime.TypeDef, error) {
-	td, _, err := v.deferredResolve3(f, site, resolve)
-	return td, err
+	b, _ := v.deferredResolve3(f, site, resolve)
+	return b.td, b.err
 }
 
-func (v *VM) deferredResolve3(f *frame, site *bytecode.CallSite, resolve func(ctx *runtime.TypeDef) *deferredBox) (*runtime.TypeDef, bool, error) {
+func (v *VM) deferredResolve3(f *frame, site *bytecode.CallSite, resolve func(ctx *runtime.TypeDef) *deferredBox) (*deferredBox, error) {
 	ctx, pinned := site.Ctx.(*runtime.TypeDef)
 	key, cacheable := "", true
 	if !pinned {
@@ -67,8 +71,7 @@ func (v *VM) deferredResolve3(f *frame, site *bytecode.CallSite, resolve func(ct
 		}
 	}
 	if !cacheable {
-		b := resolve(ctx)
-		return b.td, b.cnst, b.err
+		return resolve(ctx), nil
 	}
 	c, _ := site.Cache.Load().(*deferredCache)
 	if c == nil {
@@ -90,5 +93,5 @@ func (v *VM) deferredResolve3(f *frame, site *bytecode.CallSite, resolve func(ct
 		}
 		c.mu.Unlock()
 	}
-	return b.td, b.cnst, b.err
+	return b, b.err
 }

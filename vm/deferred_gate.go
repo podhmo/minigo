@@ -11,7 +11,7 @@ import (
 // deferredConst answers an OpConstExpr site: is the site's expression a
 // constant expression under the site's context.
 func (v *VM) deferredConst(f *frame, site *bytecode.CallSite) (bool, error) {
-	_, cnst, err := v.deferredResolve3(f, site, func(ctx *runtime.TypeDef) *deferredBox {
+	b, err := v.deferredResolve3(f, site, func(ctx *runtime.TypeDef) *deferredBox {
 		b := &deferredBox{}
 		if v.H.DeferredConst != nil {
 			b.cnst, b.err = v.H.DeferredConst(site, ctx)
@@ -20,20 +20,26 @@ func (v *VM) deferredConst(f *frame, site *bytecode.CallSite) (bool, error) {
 		}
 		return b
 	})
-	return cnst, err
+	if err != nil {
+		return false, err
+	}
+	return b.cnst, nil
 }
 
 // deferredValueTyp answers an OpTypGate value side: the typedef of the
 // site's value expression (`pkg.C` -> the member's declared type).
-func (v *VM) deferredValueTyp(f *frame, site *bytecode.CallSite) (*runtime.TypeDef, error) {
-	td, _, err := v.deferredResolve3(f, site, func(ctx *runtime.TypeDef) *deferredBox {
+func (v *VM) deferredValueTyp(f *frame, site *bytecode.CallSite) (*runtime.TypeDef, bool, error) {
+	b, err := v.deferredResolve3(f, site, func(ctx *runtime.TypeDef) *deferredBox {
 		b := &deferredBox{}
 		if v.H.DeferredValueTyp != nil {
-			b.td, b.err = v.H.DeferredValueTyp(site, ctx)
+			b.td, b.untyped, b.err = v.H.DeferredValueTyp(site, ctx)
 		}
 		return b
 	})
-	return td, err
+	if err != nil {
+		return nil, false, err
+	}
+	return b.td, b.untyped, nil
 }
 
 // typGate answers an OpTypGate: resolve both sides per the value mask
@@ -41,21 +47,31 @@ func (v *VM) deferredValueTyp(f *frame, site *bytecode.CallSite) (*runtime.TypeD
 // differ. A side that resolves to nil or an unnamed typedef stays
 // silent — the compile gate only speaks on certainty.
 func (v *VM) typGate(f *frame, siteA, siteB *bytecode.CallSite, mask int) {
-	resolve := func(site *bytecode.CallSite, asValue bool) *runtime.TypeDef {
+	resolve := func(site *bytecode.CallSite, asValue bool) (*runtime.TypeDef, bool) {
 		var td *runtime.TypeDef
+		var untyped bool
 		var err error
 		if asValue {
-			td, err = v.deferredValueTyp(f, site)
+			td, untyped, err = v.deferredValueTyp(f, site)
 		} else {
 			td, err = v.deferredType(f, site)
 		}
 		if err != nil {
 			panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
 		}
-		return td
+		return td, untyped
 	}
-	tda := resolve(siteA, mask&1 != 0)
-	tdb := resolve(siteB, mask&2 != 0)
+	tda, uta := resolve(siteA, mask&1 != 0)
+	tdb, utb := resolve(siteB, mask&2 != 0)
+	// mask bit2/bit3 mark an operand the compiler could not classify
+	// under IndexedOnly; one resolving to an untyped constant adopts
+	// the other side and stays out of the gate.
+	if mask&4 != 0 && uta {
+		tda = nil
+	}
+	if mask&8 != 0 && utb {
+		tdb = nil
+	}
 	// a `nil` operand resolves to no typedef at all — but it still
 	// gates: against a resolved non-nilable named type gc says
 	// `mismatched types T and untyped nil`.
