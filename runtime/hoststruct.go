@@ -15,7 +15,7 @@ func HostStructTagged(v Value) bool {
 	if !ok || n.Typ == nil {
 		return false
 	}
-	if n.Typ.Kind == KindStruct && n.Typ.HostNew != nil {
+	if n.Typ.HostNew != nil && (n.Typ.Kind == KindStruct || n.Typ.Kind == KindNamedBasic) {
 		return true
 	}
 	if n.Typ.Spec == nil || n.Typ.HostNew != nil {
@@ -114,6 +114,24 @@ func HostValueStructCopy(v Value) (Value, bool) {
 	cp := reflect.New(rv.Type())
 	cp.Elem().Set(rv)
 	return &GoValue{V: cp.Elem().Interface()}, true
+}
+
+// HostPointeeCopy copies the pointee behind a [GoValue] holding a
+// non-nil pointer of any type — the shape a `*p` read mints for a
+// named non-struct host type (`type Counter int`). ok is false for a
+// non-pointer or nil payload, which the caller stores unchanged.
+func HostPointeeCopy(v Value) (Value, bool) {
+	gv, ok := v.(*GoValue)
+	if !ok {
+		return nil, false
+	}
+	rv := reflect.ValueOf(gv.V)
+	if rv.Kind() != reflect.Ptr || rv.IsNil() {
+		return nil, false
+	}
+	cp := reflect.New(rv.Elem().Type())
+	cp.Elem().Set(rv.Elem())
+	return &GoValue{V: cp.Interface()}, true
 }
 
 // HostStructSnapshot copies the host struct v boxes — *T storage or a

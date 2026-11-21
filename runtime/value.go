@@ -448,6 +448,11 @@ func StructOf(v Value) *Struct {
 			v = n.V
 			continue
 		}
+		if _, isGV := v.(*GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return nil
+		}
 		dv, ok := Deref(v)
 		if !ok {
 			return nil
@@ -588,7 +593,7 @@ func (r *DerefRef) Get() (Value, bool) {
 		return nil, false
 	}
 	if _, isRef := loc.(*DerefRef); !isRef {
-		return Deref(loc)
+		return DerefValue(loc)
 	}
 	// A pointer stored through a pointer: walk the chain of locations
 	// iteratively so a cyclic one — `x := any(nil); x = &x` — cannot
@@ -598,7 +603,7 @@ func (r *DerefRef) Get() (Value, bool) {
 	for {
 		d, isRef := loc.(*DerefRef)
 		if !isRef {
-			return Deref(loc)
+			return DerefValue(loc)
 		}
 		if seen[d] {
 			return nil, false
@@ -700,6 +705,11 @@ func (r *IndexRef) container() Value {
 			v = n.V
 			continue
 		}
+		if _, isGV := v.(*GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			return nil
+		}
 		dv, ok := Deref(v)
 		if !ok {
 			return nil
@@ -795,6 +805,8 @@ func Deref(v Value) (Value, bool) {
 		return r.Get()
 	case *DerefRef:
 		return r.Get()
+	case *HostPtrRef:
+		return r.Get()
 	case *Named:
 		return Deref(r.V)
 	}
@@ -840,6 +852,11 @@ func Copy(v Value) Value {
 			if cp, ok := HostStructCopy(x.V); ok {
 				return Tag(x.Typ, cp)
 			}
+			// a `*p` read of a named non-struct host type boxes *T the
+			// same way — `x := *p` must detach from p's storage.
+			if cp, ok := HostPointeeCopy(x.V); ok {
+				return Tag(x.Typ, cp)
+			}
 		}
 		// an immutable scalar payload needs no new box: a Named is never
 		// mutated in place, so the copy can share x (make/copy/append
@@ -871,6 +888,12 @@ func SetRef(v, val Value) bool {
 		return r.Set(val)
 	case *DerefRef:
 		return r.Set(val)
+	case *HostPtrRef:
+		return r.Set(val)
+	case *GoValue:
+		if loc, ok := hostPtrLoc(r); ok {
+			return loc.Set(val)
+		}
 	case *Named:
 		return SetRef(r.V, val)
 	}

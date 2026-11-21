@@ -17,6 +17,11 @@ func BorrowBytes(v runtime.Value) ([]byte, func()) {
 			u = n.V
 			continue
 		}
+		if _, isGV := u.(*runtime.GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			break
+		}
 		if dv, ok := runtime.Deref(u); ok {
 			u = dv
 			continue

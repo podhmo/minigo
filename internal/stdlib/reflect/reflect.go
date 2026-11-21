@@ -85,6 +85,15 @@ func deepEqlSeen(a, b runtime.Value, seen map[devisit]bool, twin func(a, b *runt
 			a, b = an.V, bn.V
 			continue
 		}
+		if _, isGV := a.(*runtime.GoValue); isGV {
+			// a host value is the peel's leaf — the compare below
+			// reads its box; dereferencing a *T box would mint an
+			// endless chain of pointee boxes.
+			break
+		}
+		if _, isGV := b.(*runtime.GoValue); isGV {
+			break
+		}
 		ad, aRef := runtime.Deref(a)
 		bd, bRef := runtime.Deref(b)
 		if aRef != bRef {

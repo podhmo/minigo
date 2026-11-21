@@ -145,6 +145,11 @@ func NilIfaceTyp(x runtime.Value) *runtime.TypeDef {
 func PeelNil(v runtime.Value) (*runtime.TypeDef, bool) {
 	var seen map[runtime.Value]bool
 	for {
+		if _, isGV := v.(*runtime.GoValue); isGV {
+			// a host value is the peel's leaf — dereferencing a *T
+			// box would mint an endless chain of pointee boxes.
+			break
+		}
 		if dv, ok := runtime.Deref(v); ok {
 			if seen == nil {
 				seen = map[runtime.Value]bool{v: true}
@@ -165,6 +170,7 @@ func PeelNil(v runtime.Value) (*runtime.TypeDef, bool) {
 		}
 		return nil, false
 	}
+	return nil, false // the peel ended on a host leaf — never nil
 }
 
 // refDeclTyp recovers the declared type an &-operand points at when it
