@@ -533,6 +533,10 @@ const replHelp = `commands:
                 for debugging nested values (also :p)
   :comp <text>  print completion candidates for a code fragment — the
                 same candidates [TAB] offers while typing (on a terminal)
+  :eval [on|off]  toggle the completion evaluation policy: on lets TAB
+                evaluate a selector's base, so f(). or m[k]. offer the
+                result's members — the call's side effects really run.
+                default off (minimal: no user code runs on TAB)
   :bindings [prefix]  list host-bound (native) import paths; :ls <path>
                       shows a bound package's symbols
   :exit   quit (also :quit, :q, Ctrl-D)
@@ -656,6 +660,23 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 				case ":unpin":
 					r.Unpin()
 					fmt.Fprintln(out, "write mode off")
+				case ":eval":
+					switch strings.TrimSpace(arg) {
+					case "on":
+						r.SetEvalPolicy(repl.EvalBase)
+						fmt.Fprintln(out, "completion eval: base (TAB may evaluate the selector's base — side effects run)")
+					case "off":
+						r.SetEvalPolicy(repl.EvalMinimal)
+						fmt.Fprintln(out, "completion eval: minimal")
+					case "":
+						if r.EvalPolicy() == repl.EvalBase {
+							fmt.Fprintln(out, "completion eval: base (TAB may evaluate the selector's base — side effects run)")
+						} else {
+							fmt.Fprintln(out, "completion eval: minimal")
+						}
+					default:
+						fmt.Fprintln(out, "usage: :eval [on|off]")
+					}
 				case ":ls":
 					lines, err := r.List(ctx, strings.TrimSpace(arg))
 					if err != nil {
@@ -1174,7 +1195,7 @@ func (w writeWithCRLF) Write(p []byte) (int, error) {
 // metaCommands are the `:`-lines the front-end completes itself — the
 // processor-side completer stays out of this namespace.
 var metaCommands = []string{
-	":bindings", ":cd", ":comp", ":doc", ":dump", ":exit", ":help", ":imports", ":importers",
+	":bindings", ":cd", ":comp", ":doc", ":dump", ":eval", ":exit", ":help", ":imports", ":importers",
 	":load", ":ls", ":p",
 	":pin", ":q", ":quit", ":reset", ":unload", ":unpin",
 }

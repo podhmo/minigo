@@ -15,13 +15,18 @@
 // expressions, never runs package init (EnsureReady is avoided; lazy
 // packages stay Indexed). `f().` therefore yields no candidates where
 // an eval-based completer would offer the result's members; the trade
-// keeps TAB free of user-code side effects. Declared types stand in
-// where runtime values are absent: `var s pkg.T` in an uninitialized
-// package still completes through the decl's type expression.
+// keeps TAB free of user-code side effects. A session may opt into the
+// tier above via [REPL.SetEvalPolicy] — EvalBase evaluates a
+// parsed-but-unresolvable base through EvalExpr, so `f().` then offers
+// the result's members at the cost of running the call's side effects.
+// Declared types stand in where runtime values are absent: `var s pkg.T`
+// in an uninitialized package still completes through the decl's type
+// expression.
 
 package repl
 
 import (
+	"context"
 	"go/ast"
 	"go/build"
 	"go/parser"
@@ -40,6 +45,33 @@ import (
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
+
+// EvalPolicy is the IPython-style `evaluation` knob: how much user
+// code completion may run to resolve a selector's base expression.
+type EvalPolicy int
+
+const (
+	// EvalMinimal is the default: base resolution is a pure AST walk
+	// and never runs user code, so `f().` yields no candidates.
+	EvalMinimal EvalPolicy = iota
+	// EvalBase lets a parsed-but-unresolvable base expression evaluate
+	// through the engine's EvalExpr bridge — `f().`, `m[k].` and
+	// `a+b.` then complete against the result value, at the price of
+	// running the expression's side effects on every TAB press.
+	EvalBase
+)
+
+// SetEvalPolicy switches how much user code [REPL.Complete] may run to
+// resolve a selector's base. The default, [EvalMinimal], evaluates
+// nothing — the static walk alone answers.
+func (r *REPL) SetEvalPolicy(p EvalPolicy) {
+	r.evalPolicy = p
+}
+
+// EvalPolicy reports the current completion evaluation policy.
+func (r *REPL) EvalPolicy() EvalPolicy {
+	return r.evalPolicy
+}
 
 // Candidate is one completion suggestion.
 type Candidate struct {
@@ -322,8 +354,36 @@ func (r *REPL) resolveBase(text string) (runtime.Value, bool) {
 		if v, ok := r.resolveExpr(expr); ok {
 			return v, true
 		}
+		// the EvalBase tier: the expression parses but the static walk
+		// cannot answer it (call expressions, non-literal indexes,
+		// operators) — evaluate the base itself when the policy allows.
+		if r.evalPolicy >= EvalBase {
+			if v, ok := r.evalBase(expr); ok {
+				return v, true
+			}
+		}
 	}
 	return nil, false
+}
+
+// evalBase runs a parsed base expression through the EvalExpr bridge —
+// the EvalBase tier. The expression's side effects and package init
+// really happen; a trap, error or panic just yields no candidates.
+func (r *REPL) evalBase(expr ast.Expr) (v runtime.Value, ok bool) {
+	file := r.file()
+	if file == nil {
+		return nil, false
+	}
+	defer func() {
+		if recover() != nil {
+			v, ok = nil, false
+		}
+	}()
+	res, err := r.engine.EvalExpr(context.Background(), r.pkg, file, expr)
+	if err != nil || res == nil || res == runtime.NIL {
+		return nil, false
+	}
+	return res, true
 }
 
 // resolveExpr evaluates an expression statically: it walks idents,
