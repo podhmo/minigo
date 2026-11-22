@@ -52,6 +52,15 @@ type callScopeStack struct {
 	scopes []map[uintptr]*projEntry
 	slices []sliceReg
 	used   map[uintptr]bool
+	// merging is nonzero while a sync/pull merge pass iterates the
+	// scopes. Re-projections a merge drives must not feed back into
+	// the merge machinery: a projection registered mid-merge only
+	// inflates every later pass, and an eager method call's own host
+	// calls re-enter pull/sync — together compounding without bound
+	// (issue #1399). While merging, registerProjected skips new
+	// entries, nested pullUsedEntries/syncRegistered calls no-op, and
+	// struct projections bind callable members lazily.
+	merging int
 }
 
 // callScopes maps goroutine id -> its stack of projection scopes. The
@@ -160,6 +169,22 @@ func (m *Marshal) ownStack() (*callScopeStack, bool) {
 	return v.(*callScopeStack), true
 }
 
+// insideMerge reports whether the calling goroutine is running a
+// sync/pull merge pass — projections a merge builds ride on it (issue
+// #1399): re-projecting eagerly calls the same members the outer
+// projection did, and each eager call's own host calls re-enter the
+// merge. Callable members bind lazily instead.
+func (m *Marshal) insideMerge() bool {
+	st, ok := m.ownStack()
+	if !ok {
+		return false
+	}
+	s := st
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.merging > 0
+}
+
 // registerProjected records v for the duration of the running host
 // call: v is a script map or slice that crossed an `any` parameter as
 // the plain host container out — the projection keeps no method set,
@@ -197,13 +222,20 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	}
 	s := st
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.merging > 0 {
+		// a merge re-projects containers to fresh host values; tracking
+		// each fresh projection would grow the merge set every pass —
+		// the next callback would then merge an ever-larger list
+		// (issue #1399).
+		return
+	}
 	if n := len(s.scopes); n > 0 {
 		s.scopes[n-1][rv.Pointer()] = e
 		if reg != nil {
 			s.slices = append(s.slices, *reg)
 		}
 	}
-	s.mu.Unlock()
 }
 
 // projectedVal returns the merge state registered for the host
