@@ -594,6 +594,13 @@ func TestCompleteIndexTail(t *testing.T) {
 	if !hasCand(r.Complete("(u."), "Greet") {
 		t.Fatalf("Greet missing in (u. -> %v", candNames(r.Complete("(u.")))
 	}
+	// `[` is also a type bracket: `map[` and a generic instantiation
+	// keep package-member completion.
+	for _, line := range []string{`var m2 map[inspectpkg.`, `var p inspectpkg.Pair[inspectpkg.`} {
+		if !hasCand(r.Complete(line), "User") {
+			t.Fatalf("User missing in %s -> %v", line, candNames(r.Complete(line)))
+		}
+	}
 }
 
 func TestCompleteEvalBase(t *testing.T) {

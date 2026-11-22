@@ -144,6 +144,18 @@ func (r *REPL) complete(line string) (start int, cands []Candidate) {
 	c := &completer{r: r, seen: map[string]bool{}}
 	var out []Candidate
 	if ctx.selector {
+		if ctx.idxBase != "" {
+			// a `.`-tail inside an unclosed `[` — suppress member
+			// completion when the bracket's base resolves to a value
+			// (an index slot: `m[k.`); keep it when it names a type
+			// (`List[pkg.` instantiation) or won't resolve (`map[pkg.`
+			// — `map` is a keyword, so the suffix walk finds nothing).
+			if v, ok := r.resolveBase(ctx.idxBase); ok {
+				if _, isType := v.(*runtime.TypeDef); !isType {
+					return ctx.start, nil
+				}
+			}
+		}
 		if v, ok := r.resolveBase(ctx.base); ok {
 			c.members(v, &out, 0)
 		}
@@ -176,6 +188,7 @@ type completionCtx struct {
 	mapkey   bool   // completing a string key inside `m["..."`
 	done     bool   // no completion at this tail (e.g. a closed import literal)
 	base     string // source text of the selector's (or map's) base expression
+	idxBase  string // text before the innermost unclosed `[` around a `.`-tail, if any
 	prefix   string // the partial identifier (or import path) being typed
 	start    int    // byte offset where the replaceable token begins
 	quote    byte   // the delimiter of an unterminated literal ('"' or '`')
@@ -266,21 +279,25 @@ func completeContext(line string) completionCtx {
 		return completionCtx{start: len(line)}
 	}
 	if last.tok == token.PERIOD {
-		if insideUnclosedBracket(toks[:n-1]) {
-			// `m[k.` — a `.`-tail inside an unclosed index slot is not
-			// a selector context worth completing: the base suffix
-			// (`k`) parses as an expression, so the fallback would
-			// offer k's members as a map-index false positive. `(` is
-			// left alone: `(u.` resolving u is correct (grouping).
-			return completionCtx{done: true, start: len(line)}
+		c := completionCtx{selector: true, base: line[:last.off], start: last.off + 1}
+		if o := unclosedBracketOff(toks[:n-1]); o >= 0 {
+			// `m[k.` — the `.`-tail sits inside an unclosed index slot:
+			// the base suffix (`k`) parses, so the fallback would offer
+			// k's members as a map-index false positive. idxBase keeps
+			// the text before the `[` so `complete` can tell index
+			// bases (suppress) from type arguments — `map[pkg.` and
+			// `List[pkg.` are real selector contexts. `(` stays live:
+			// `(u.` resolving u is correct (grouping).
+			c.idxBase = line[:o]
 		}
-		return completionCtx{selector: true, base: line[:last.off], start: last.off + 1}
+		return c
 	}
 	if last.tok == token.IDENT && n >= 2 && toks[n-2].tok == token.PERIOD {
-		if insideUnclosedBracket(toks[:n-2]) {
-			return completionCtx{done: true, start: len(line)}
+		c := completionCtx{selector: true, base: line[:toks[n-2].off], prefix: last.lit, start: last.off}
+		if o := unclosedBracketOff(toks[:n-2]); o >= 0 {
+			c.idxBase = line[:o]
 		}
-		return completionCtx{selector: true, base: line[:toks[n-2].off], prefix: last.lit, start: last.off}
+		return c
 	}
 	if last.tok == token.IDENT {
 		return completionCtx{prefix: last.lit, start: last.off}
@@ -288,30 +305,33 @@ func completeContext(line string) completionCtx {
 	return completionCtx{start: len(line)}
 }
 
-// insideUnclosedBracket reports whether the innermost still-open
-// paren/bracket group in toks is a `[` — a `.`-tail there sits in an
-// index slot, where the suffix fallback's member offer is a false
-// positive. `(`/`]` mismatches are left alone.
-func insideUnclosedBracket(toks []scannedTok) bool {
-	var stack []token.Token
+// unclosedBracketOff returns the offset of the innermost still-open `[`
+// when it tops the paren/bracket stack — a `.`-tail there sits in an
+// index slot. -1 when the innermost group is `(` or everything is
+// closed. `(`/`]` mismatches are left alone.
+func unclosedBracketOff(toks []scannedTok) int {
+	var stack []scannedTok
 	for _, t := range toks {
 		switch t.tok {
 		case token.LPAREN, token.LBRACK:
-			stack = append(stack, t.tok)
+			stack = append(stack, t)
 		case token.RPAREN:
 			stack = popGroup(stack, token.LPAREN)
 		case token.RBRACK:
 			stack = popGroup(stack, token.LBRACK)
 		}
 	}
-	return len(stack) > 0 && stack[len(stack)-1] == token.LBRACK
+	if n := len(stack); n > 0 && stack[n-1].tok == token.LBRACK {
+		return stack[n-1].off
+	}
+	return -1
 }
 
 // popGroup drops the innermost still-open open from the stack; a closer
 // can only match its own kind (`]` inside `(` closes nothing).
-func popGroup(stack []token.Token, open token.Token) []token.Token {
+func popGroup(stack []scannedTok, open token.Token) []scannedTok {
 	for i := len(stack) - 1; i >= 0; i-- {
-		if stack[i] == open {
+		if stack[i].tok == open {
 			return append(stack[:i], stack[i+1:]...)
 		}
 	}
