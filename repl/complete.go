@@ -475,13 +475,9 @@ func (c *completer) scopeNames(out *[]Candidate) {
 // classifying an index-slot tail must not run user code
 // (`getMap()[u.` would call getMap under EvalBase). Returns the
 // resolved value (nil when static resolution cannot answer) and the
-// primary expression the tail parsed to (nil when no suffix parses,
-// e.g. the `map`/`chan` keywords before `[`).
-func (r *REPL) resolveBaseStatic(text string) (runtime.Value, ast.Expr) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil, nil
-	}
+// scanOffsets lists each token's byte offset in text — the
+// parse-suffix scan both base resolvers share.
+func scanOffsets(text string) []int {
 	fset := token.NewFileSet()
 	f := fset.AddFile("repl-complete.go", -1, len(text))
 	var s scanner.Scanner
@@ -494,6 +490,17 @@ func (r *REPL) resolveBaseStatic(text string) (runtime.Value, ast.Expr) {
 		}
 		offs = append(offs, f.Offset(pos))
 	}
+	return offs
+}
+
+// primary expression the tail parsed to (nil when no suffix parses,
+// e.g. the `map`/`chan` keywords before `[`).
+func (r *REPL) resolveBaseStatic(text string) (runtime.Value, ast.Expr) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, nil
+	}
+	offs := scanOffsets(text)
 	var prim ast.Expr
 	for _, off := range offs {
 		expr, err := parser.ParseExpr(text[off:])
@@ -531,18 +538,7 @@ func (r *REPL) resolveBase(text string) (runtime.Value, bool) {
 	if text == "" {
 		return nil, false
 	}
-	fset := token.NewFileSet()
-	f := fset.AddFile("repl-complete.go", -1, len(text))
-	var s scanner.Scanner
-	s.Init(f, []byte(text), nil, 0)
-	var offs []int
-	for {
-		pos, tok, _ := s.Scan()
-		if tok == token.EOF {
-			break
-		}
-		offs = append(offs, f.Offset(pos))
-	}
+	offs := scanOffsets(text)
 	for _, off := range offs {
 		expr, err := parser.ParseExpr(text[off:])
 		if err != nil {
