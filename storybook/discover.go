@@ -117,6 +117,13 @@ func scanDir(dir, tag string) (stories, excluded []Story, err error) {
 		selected := inTagged && !inPlain
 		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 		if err != nil {
+			if !selected {
+				// The file is not part of the tagged build, so a syntax
+				// error in it must not take discovery down — report it
+				// as skipped instead and keep scanning.
+				excluded = append(excluded, Story{Name: name, Pos: path})
+				continue
+			}
 			return nil, nil, err
 		}
 		for _, d := range f.Decls {

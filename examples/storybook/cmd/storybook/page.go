@@ -832,10 +832,13 @@ func (b *Book) Handler() http.Handler {
 		if err != nil {
 			// No stories yet (or a malformed one): show the error in the
 			// nav rather than failing, so the book is usable while the
-			// stories are written.
+			// stories are written — and still name the tag-skipped
+			// stories, since that error can be exactly "no Story funcs".
+			excluded, _ := b.Excluded()
 			if err := indexTmpl.Execute(w, map[string]any{
 				"Dir":       b.Dir,
 				"Err":       err.Error(),
+				"Excluded":  excluded,
 				"ScriptTag": b.ScriptTag(),
 			}); err != nil {
 				slog.ErrorContext(r.Context(), "index", "err", err)

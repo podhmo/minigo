@@ -193,7 +193,7 @@ var FileBudgets = map[string]int{
 	"special/special.go":                             34,
 	"internal/stdlib/importmanager/importmanager.go": 29,
 	"stdlibreg.go":                                   118,
-	"storybook/discover.go":                          257,
+	"storybook/discover.go":                          264,
 	"storybook/storybook.go":                         156,
 	"storybook/watch.go":                             324,
 	"syntax/complit.go":                              30,

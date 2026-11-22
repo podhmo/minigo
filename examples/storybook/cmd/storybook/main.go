@@ -62,26 +62,29 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		b.Src = strings.Split(*src, ",")
 	}
 	stories, err := b.Stories()
-	// -http alone tolerates a discovery failure: the server starts anyway
-	// and the index shows the error, so a book with no stories yet (or one
-	// being added live) still serves. Combined with -list or -o the error
-	// stays fatal — those modes would otherwise succeed on an empty book.
-	if err != nil && (*addr == "" || *list || *out != "") {
-		return err
-	}
-	switch {
-	case *list:
+	// -list still reports on a discovery failure: when every story is
+	// tag-skipped the excluded names are the actionable output.
+	if *list {
 		for _, s := range stories {
 			fmt.Fprintf(stdout, "%s\t%s\t%s\n", s.Name, s.Pos, s.Doc)
 		}
 		// Story funcs outside the tag guard are invisible to discovery;
 		// name them instead of dropping them silently.
-		if excluded, err := b.Excluded(); err == nil {
+		if excluded, e := b.Excluded(); e == nil {
 			for _, s := range excluded {
 				fmt.Fprintf(os.Stderr, "storybook: skipped %s (%s) — not in a //go:build %s file\n", s.Name, s.Pos, *tag)
 			}
 		}
-		return nil
+		return err
+	}
+	// -http alone tolerates a discovery failure: the server starts anyway
+	// and the index shows the error, so a book with no stories yet (or one
+	// being added live) still serves. Combined with -o the error
+	// stays fatal — that mode would otherwise succeed on an empty book.
+	if err != nil && (*addr == "" || *out != "") {
+		return err
+	}
+	switch {
 	case *out != "":
 		return b.Export(ctx, *out, stories)
 	case *addr != "":
