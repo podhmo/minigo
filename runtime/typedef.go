@@ -9,6 +9,7 @@ import (
 
 	"sync/atomic"
 
+	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/syntax"
 )
 
@@ -505,6 +506,16 @@ func structTagKey(tag *ast.BasicLit) string {
 	return strconv.Quote(s)
 }
 
+// pkgDeclaresType reports whether the package's own index declares name
+// as a type — package-local decls shadow dot imports for a bare ident.
+func pkgDeclaresType(pkg *Package, name string) bool {
+	if pkg == nil || pkg.Index == nil {
+		return false
+	}
+	d, ok := pkg.Index.Lookup(name)
+	return ok && d.Kind == index.TypeDecl
+}
+
 // TypGoSpelling renders the type expression e as Go's reflect.Type.String
 // does — `func(int) int`, `interface { M(int) string }`,
 // `struct { x int "tag" }` — resolving names in the context of ctx as
@@ -549,6 +560,35 @@ func TypGoSpelling(e ast.Expr, ctx *TypeDef) string {
 		}
 		if predeclaredTypeName(t.Name) {
 			return canonBasicName(t.Name)
+		}
+		if pkg != nil && file != nil && !pkgDeclaresType(pkg, t.Name) {
+			// a bare ident in type position may name a dot-imported
+			// type — qualify it by the real home's clause name, not
+			// this package's (`import . "strings"` spells
+			// `strings.Builder`, not `embedpkg.Builder`). Package-local
+			// decls shadow dot imports, so they keep the pkg qualifier.
+			for _, ref := range pkg.Imports[file] {
+				if ref.Alias != "." {
+					continue
+				}
+				ip, err := ref.Materialize()
+				if err != nil || ip == nil {
+					continue
+				}
+				// bound packages carry no AST index — their types are
+				// TypeDef globals instead.
+				if ip.Index != nil {
+					if d, ok := ip.Index.Lookup(t.Name); ok && d.Kind == index.TypeDecl {
+						return ip.Name + "." + t.Name
+					}
+				} else if ip.Globals != nil {
+					if v, ok := ip.Globals.Get(t.Name); ok {
+						if _, isTD := v.(*TypeDef); isTD {
+							return ip.Name + "." + t.Name
+						}
+					}
+				}
+			}
 		}
 		if pkg != nil {
 			// Go's Type.String qualifies by package NAME — the main

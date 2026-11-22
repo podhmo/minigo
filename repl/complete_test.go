@@ -762,6 +762,32 @@ func TestCompleteAmbiguousPromoted(t *testing.T) {
 	}
 }
 
+func TestCompletePromotedMethodDetail(t *testing.T) {
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	// embedpkg dot-imports strings; a signature's bare `Builder` must
+	// spell by its real home, not the declaring package's name.
+	evalLines(t, r,
+		`import "./embedpkg"`,
+		`type Outer struct { embedpkg.Emb }`,
+		`var o Outer`,
+	)
+
+	found := false
+	for _, c := range r.Complete("o.") {
+		if c.Name == "Sig" {
+			found = true
+			if c.Detail != "func(*strings.Builder) string" {
+				t.Fatalf("o.Sig Detail = %q, want %q", c.Detail, "func(*strings.Builder) string")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("o. yielded no Sig candidate")
+	}
+}
+
 func TestCompleteImportPaths(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
