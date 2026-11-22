@@ -28,15 +28,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"go/ast"
-	"go/build"
-	"go/parser"
-	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"slices"
-	"strings"
 	"sync"
 
 	"github.com/podhmo/minigo"
@@ -66,181 +60,12 @@ type Book struct {
 	reload *broadcaster // non-nil once Watch is running; nil means off
 }
 
-// StoryKind distinguishes the two story shapes.
-type StoryKind int
-
-const (
-	// KindPrint is `func StoryXxx()` writing HTML to stdout.
-	KindPrint StoryKind = iota
-	// KindHTTP is `func StoryHttpXxx(w http.ResponseWriter, r *http.Request)` —
-	// handler-shaped, so the story exercises real handlers and the recorder
-	// captures status code and headers too.
-	KindHTTP
-)
-
-// Story is a story function found in a tagged file.
-type Story struct {
-	Name string // StoryXxx or StoryHttpXxx
-	Doc  string // first line of the doc comment
-	Pos  string // file:line
-	Kind StoryKind
-	// Group names the render function the story drives — by convention
-	// the last non-builtin unqualified call in the story body, e.g.
-	// RenderUser. An index uses it to lay a template's data-state
-	// variants out together; "" when the body has no such call
-	// (handler stories call methods, so they stay ungrouped).
-	Group string
-}
-
-// IsHTTP reports whether the story is the handler-shaped kind.
-func (s Story) IsHTTP() bool { return s.Kind == KindHTTP }
-
 // Page is one rendered story: body plus, for handler-shaped stories, the
 // recorded status code and response headers.
 type Page struct {
 	Status int
 	Header map[string][]string
 	Body   []byte
-}
-
-// Discover lists the story funcs declared in dir's files that the build
-// tag brings in: files the default build excludes but the tagged build
-// selects. A Story-prefixed func of any other shape is an error, so a
-// typo in the signature does not silently drop the story.
-func Discover(dir, tag string) ([]Story, error) {
-	plain := build.Default
-	tagged := build.Default
-	tagged.BuildTags = append(slices.Clone(tagged.BuildTags), tag)
-	matches, err := filepath.Glob(filepath.Join(dir, "*.go"))
-	if err != nil {
-		return nil, err
-	}
-	fset := token.NewFileSet()
-	var stories []Story
-	for _, path := range matches {
-		name := filepath.Base(path)
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		inTagged, err := tagged.MatchFile(dir, name)
-		if err != nil {
-			return nil, err
-		}
-		inPlain, err := plain.MatchFile(dir, name)
-		if err != nil {
-			return nil, err
-		}
-		if !inTagged || inPlain {
-			continue
-		}
-		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
-		if err != nil {
-			return nil, err
-		}
-		for _, d := range f.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Recv != nil || !strings.HasPrefix(fd.Name.Name, "Story") || !fd.Name.IsExported() {
-				continue
-			}
-			pos := fset.Position(fd.Pos())
-			kind := KindPrint
-			if strings.HasPrefix(fd.Name.Name, "StoryHttp") {
-				if !isHandlerShape(fd.Type) {
-					return nil, fmt.Errorf("%s:%d: %s must be func(http.ResponseWriter, *http.Request)", pos.Filename, pos.Line, fd.Name.Name)
-				}
-				kind = KindHTTP
-			} else if !isStoryShape(fd.Type) {
-				return nil, fmt.Errorf("%s:%d: %s must be func()", pos.Filename, pos.Line, fd.Name.Name)
-			}
-			doc, _, _ := strings.Cut(strings.TrimSpace(fd.Doc.Text()), "\n")
-			// Only print stories group: a handler story calling an
-			// unqualified helper would otherwise point an index at a
-			// grid that cannot frame it.
-			group := ""
-			if kind == KindPrint {
-				group = storyGroup(fd.Body)
-			}
-			stories = append(stories, Story{Name: fd.Name.Name, Doc: doc, Pos: fmt.Sprintf("%s:%d", pos.Filename, pos.Line), Kind: kind, Group: group})
-		}
-	}
-	if len(stories) == 0 {
-		return nil, fmt.Errorf("%s: no Story funcs in files guarded by //go:build %s", dir, tag)
-	}
-	slices.SortFunc(stories, func(x, y Story) int { return strings.Compare(x.Name, y.Name) })
-	return stories, nil
-}
-
-// Stories lists the book's story funcs — [Discover] over the book's
-// Dir and Tag.
-func (b *Book) Stories() ([]Story, error) {
-	return Discover(b.Dir, b.Tag)
-}
-
-// storyGroup reads the render function out of a story body: the last
-// call whose callee is a plain identifier and not a builtin. Stories
-// conventionally end by calling their render function with one data
-// state (RenderUser(&b, u)), so the callee groups the template's
-// variants. Selector calls (RenderUserList.Run, fmt.Print) and builtins
-// (panic, make) never count.
-func storyGroup(body *ast.BlockStmt) string {
-	group := ""
-	ast.Inspect(body, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		if id, ok := call.Fun.(*ast.Ident); ok && !builtins[id.Name] {
-			group = id.Name
-		}
-		return true
-	})
-	return group
-}
-
-var builtins = map[string]bool{
-	"append": true, "cap": true, "clear": true, "close": true,
-	"complex": true, "copy": true, "delete": true, "imag": true,
-	"len": true, "make": true, "max": true, "min": true, "new": true,
-	"panic": true, "print": true, "println": true, "real": true,
-	"recover": true,
-}
-
-// isStoryShape accepts only func() with no results or type parameters.
-func isStoryShape(ft *ast.FuncType) bool {
-	return (ft.TypeParams == nil || len(ft.TypeParams.List) == 0) &&
-		(ft.Params == nil || len(ft.Params.List) == 0) &&
-		(ft.Results == nil || len(ft.Results.List) == 0)
-}
-
-// isHandlerShape accepts func(http.ResponseWriter, *http.Request) — the
-// http.HandlerFunc signature, detected structurally so the import alias
-// does not matter. Parameter names count: one field declaring two names
-// is two parameters, so `func(w, extra http.ResponseWriter, r *Request)`
-// is rejected.
-func isHandlerShape(ft *ast.FuncType) bool {
-	if (ft.TypeParams != nil && len(ft.TypeParams.List) > 0) ||
-		(ft.Results != nil && len(ft.Results.List) > 0) ||
-		ft.Params == nil || len(ft.Params.List) != 2 {
-		return false
-	}
-	n := 0
-	for _, f := range ft.Params.List {
-		if len(f.Names) == 0 {
-			n++
-		} else {
-			n += len(f.Names)
-		}
-	}
-	if n != 2 {
-		return false
-	}
-	sel0, ok0 := ft.Params.List[0].Type.(*ast.SelectorExpr)
-	star, ok1 := ft.Params.List[1].Type.(*ast.StarExpr)
-	if !ok0 || !ok1 {
-		return false
-	}
-	sel1, ok2 := star.X.(*ast.SelectorExpr)
-	return ok2 && sel0.Sel.Name == "ResponseWriter" && sel1.Sel.Name == "Request"
 }
 
 // Render runs one story in a session forked from the book's base engine:

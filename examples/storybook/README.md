@@ -149,7 +149,13 @@ the next reload and does not stop watching.
 
 The index groups stories by the render function they drive — by
 convention the last unqualified call in the story body (`RenderUser`,
-`RenderUserList`), so handler stories stay ungrouped. A filter box at
+`RenderUserList`), so handler stories stay ungrouped. That heuristic is
+a guess: a `//storybook:group <func>` line in the story's doc comment
+declares the group explicitly, which is what to use when the story must
+end on a helper. Story funcs the tag does not select (a missing
+`//go:build story`, a mismatched tag) never reach the index, so the
+sidebar names them under a "skipped" warning and `-list` reports them on
+stderr instead of dropping them silently. A filter box at
 the top of the sidebar narrows the list by name or doc text (`/` focuses
 it, `↑`/`↓` move through the matches, `Enter` opens the first). Each
 group header carries a `grid` chip that opens a side-by-side grid

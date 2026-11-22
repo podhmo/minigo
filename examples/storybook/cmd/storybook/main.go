@@ -74,6 +74,13 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		for _, s := range stories {
 			fmt.Fprintf(stdout, "%s\t%s\t%s\n", s.Name, s.Pos, s.Doc)
 		}
+		// Story funcs outside the tag guard are invisible to discovery;
+		// name them instead of dropping them silently.
+		if excluded, err := b.Excluded(); err == nil {
+			for _, s := range excluded {
+				fmt.Fprintf(os.Stderr, "storybook: skipped %s (%s) — not in a //go:build %s file\n", s.Name, s.Pos, *tag)
+			}
+		}
 		return nil
 	case *out != "":
 		return b.Export(ctx, *out, stories)

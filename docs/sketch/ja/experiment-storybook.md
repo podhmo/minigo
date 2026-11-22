@@ -255,6 +255,11 @@ host map の読み書きは、ハンドラー Story の `StoryHttpListUsersByTag
 - **ベースエンジン + `NewSession()`**: bind・build 設定を共有しつつソースを毎回読み直す（実アプリ規模で 100〜200ms/req）。
 - **`/static/` 配信と viewport 幅切替**: 実 CSS を元のパスで配信し、320/360/768px で確認する。
 
+issue で挙がった discovery 側の摩擦も、その後 example 側で解消した。
+
+- **`Story.Group` の推導が暗黙の契約だった点**: 「Story 本体で最後に呼ぶ無修飾呼び出し」に依存し、末尾にヘルパーを足すと静かにグループが変わる。doc コメントの `//storybook:group <関数名>` で明示宣言できるようにし、ヒューリスティック由来かどうかは `Story.GroupInferred` で判別できるようにした。
+- **`//go:build story` のないファイルの Story が静かに無視される点**: `Book.Excluded()` で tag に選ばれない Story 関数を報告し、index のサイドバーには "skipped" 警告として、`-list` では stderr に表示する。
+
 同時に issue には minigo 本体側の境界（bound パッケージ名の推導、bound 構造体 literal と bound template、script 側 `fs.FS` の受け渡し、missing field が黙って空描画される点 等）も記録されている。これらは example の体裁ではなく minigo API の課題として引き続き検討する（§9）。
 
 ## 9. Future work: ソース関数の部分差し替え

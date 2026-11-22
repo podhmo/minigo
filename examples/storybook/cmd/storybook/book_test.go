@@ -509,6 +509,11 @@ func TestHandler(t *testing.T) {
 	if !strings.Contains(body, `data-src="/grid/RenderUser"`) {
 		t.Error("grid pill misses the grid document")
 	}
+	// Story funcs outside the tag guard surface as a warning instead of
+	// disappearing silently.
+	if !strings.Contains(body, `skipped:`) || !strings.Contains(body, `>StorySkipped<`) {
+		t.Error("index misses the skipped-stories warning")
+	}
 	// ?g previews the variants grid inside the index frame; match the
 	// iframe itself, not just a sidebar pill carrying the same src.
 	rec = httptest.NewRecorder()
