@@ -572,6 +572,30 @@ func TestCompleteSelectors(t *testing.T) {
 	}
 }
 
+func TestCompleteIndexTail(t *testing.T) {
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	evalLines(t, r,
+		`import "./inspectpkg"`,
+		`var u inspectpkg.User`,
+		`var m = map[int]int{1: 1}`,
+		`var k inspectpkg.User`,
+	)
+
+	// a `.`-tail inside an unclosed index slot is not a member
+	// context — k's members would be a false positive.
+	for _, line := range []string{`m[k.`, `m[k.Gr`} {
+		if cands := r.Complete(line); len(cands) != 0 {
+			t.Fatalf("%s yielded %v, want none", line, candNames(cands))
+		}
+	}
+	// grouping parens stay live: `(u.` still resolves u.
+	if !hasCand(r.Complete("(u."), "Greet") {
+		t.Fatalf("Greet missing in (u. -> %v", candNames(r.Complete("(u.")))
+	}
+}
+
 func TestCompleteEvalBase(t *testing.T) {
 	ctx := context.Background()
 	e := minigo.NewEngine("../testdata")

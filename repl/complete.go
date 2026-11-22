@@ -199,6 +199,13 @@ func unclosedLit(lit string) bool {
 	return bs%2 == 1
 }
 
+// scannedTok is a scanned line token with its byte offset.
+type scannedTok struct {
+	tok token.Token
+	lit string
+	off int
+}
+
 // completeContext tokenizes the line and classifies its tail. Only the
 // last two tokens matter: `x.` → selector on x; `x.pa` → selector with
 // prefix "pa"; `pa` → bare prefix "pa"; everything else → bare with an
@@ -208,11 +215,7 @@ func completeContext(line string) completionCtx {
 	f := fset.AddFile("repl-complete.go", -1, len(line))
 	var s scanner.Scanner
 	s.Init(f, []byte(line), nil, 0)
-	var toks []struct {
-		tok token.Token
-		lit string
-		off int
-	}
+	var toks []scannedTok
 	for {
 		pos, tok, lit := s.Scan()
 		if tok == token.EOF {
@@ -223,11 +226,7 @@ func completeContext(line string) completionCtx {
 		if tok == token.SEMICOLON && lit == "\n" {
 			continue
 		}
-		toks = append(toks, struct {
-			tok token.Token
-			lit string
-			off int
-		}{tok, lit, f.Offset(pos)})
+		toks = append(toks, scannedTok{tok, lit, f.Offset(pos)})
 	}
 	n := len(toks)
 	if n == 0 {
@@ -267,15 +266,56 @@ func completeContext(line string) completionCtx {
 		return completionCtx{start: len(line)}
 	}
 	if last.tok == token.PERIOD {
+		if insideUnclosedBracket(toks[:n-1]) {
+			// `m[k.` — a `.`-tail inside an unclosed index slot is not
+			// a selector context worth completing: the base suffix
+			// (`k`) parses as an expression, so the fallback would
+			// offer k's members as a map-index false positive. `(` is
+			// left alone: `(u.` resolving u is correct (grouping).
+			return completionCtx{done: true, start: len(line)}
+		}
 		return completionCtx{selector: true, base: line[:last.off], start: last.off + 1}
 	}
 	if last.tok == token.IDENT && n >= 2 && toks[n-2].tok == token.PERIOD {
+		if insideUnclosedBracket(toks[:n-2]) {
+			return completionCtx{done: true, start: len(line)}
+		}
 		return completionCtx{selector: true, base: line[:toks[n-2].off], prefix: last.lit, start: last.off}
 	}
 	if last.tok == token.IDENT {
 		return completionCtx{prefix: last.lit, start: last.off}
 	}
 	return completionCtx{start: len(line)}
+}
+
+// insideUnclosedBracket reports whether the innermost still-open
+// paren/bracket group in toks is a `[` — a `.`-tail there sits in an
+// index slot, where the suffix fallback's member offer is a false
+// positive. `(`/`]` mismatches are left alone.
+func insideUnclosedBracket(toks []scannedTok) bool {
+	var stack []token.Token
+	for _, t := range toks {
+		switch t.tok {
+		case token.LPAREN, token.LBRACK:
+			stack = append(stack, t.tok)
+		case token.RPAREN:
+			stack = popGroup(stack, token.LPAREN)
+		case token.RBRACK:
+			stack = popGroup(stack, token.LBRACK)
+		}
+	}
+	return len(stack) > 0 && stack[len(stack)-1] == token.LBRACK
+}
+
+// popGroup drops the innermost still-open open from the stack; a closer
+// can only match its own kind (`]` inside `(` closes nothing).
+func popGroup(stack []token.Token, open token.Token) []token.Token {
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == open {
+			return append(stack[:i], stack[i+1:]...)
+		}
+	}
+	return stack
 }
 
 // completer accumulates candidates for one Complete call; seen dedupes

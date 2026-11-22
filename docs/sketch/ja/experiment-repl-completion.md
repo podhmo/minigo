@@ -118,7 +118,7 @@ package ./inspectpkg    dir
 - ~~**same-depth の昇格曖昧性**~~ → 対応済み: 本物は compile error だが、補完は候補を出しつつ `Candidate.Ambiguous` で印をつける（候補を出す側は審判ではない、という割り切りは維持）。フィールド walk が promotion 深度を追跡し、同一深度の2つ目の供給元で印を立てる。浅い供給元は深い側を shadow する（DFS は深い枝を先に辿るので Detail の差し替えと ambiguous 解除が要る）。メソッド側は engine の typedef 平坦化の内側なので対象外。
 - **過剰なメソッド候補（値コンテキストのみ）**: 値基底では `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。型レベル基底（`T.`）は method expression なので値メソッド集合だけに絞ってある（`func (p *T) M` は `T.M` では trap する）。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
 - ~~**昇格メソッドの Detail**~~ → 対応済み: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶ自体は正しいが、dot import された型の裸識別子が「宣言元パッケージの型」として修飾されてしまう問題があった（`import . "strings"` 中の `Builder` が `embedpkg.Builder` と綴られる）。`TypGoSpelling` が裸 ident をファイルの dot import 経由で先に解決するようにし、実家の句名で修飾する（パッケージローカル宣言は dot import に勝つので従来通り）。
-- **suffix fallback の誤爆**: `(u.` は正しく `u` のメンバーを出すが、`m[k.`（開いた index 式の中の `.`）も `k` のメンバーを出してしまう。`.` 末尾のコンテキストを未閉鎖グループ内と区別するには `resolveBase` 側の括弧深度追跡が要る — TODO に積んだ。
+- ~~**suffix fallback の誤爆**~~ → 対応済み: `m[k.`（開いた index 式の中の `.`）が `k` のメンバーを出していた。`completeContext` が括弧深度を追跡し、最内の未閉鎖グループが `[` の `.` 末尾を selector コンテキストから外す（index スロットはメンバー候補の文脈ではない）。`(u.` は `u` を正しく解決するので `(` は対象外。
 - **adapter 系 builtin は Detail が空**: `strings.Compare` など `fn*` ラッパーは `Target` を持たないので reflect シグネチャを描けない。嘘の `func(...) any` より空の方がまし、という判断。
 
 補足 — レビューで見つかった「読み取り版と selectMember の意味論差分」は修正済み（いずれもミラーする側の見落としで、方式の限界ではない）:
