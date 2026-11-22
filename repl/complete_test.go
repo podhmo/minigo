@@ -778,8 +778,8 @@ func TestCompletePromotedMethodDetail(t *testing.T) {
 	for _, c := range r.Complete("o.") {
 		if c.Name == "Sig" {
 			found = true
-			if c.Detail != "func(*strings.Builder) string" {
-				t.Fatalf("o.Sig Detail = %q, want %q", c.Detail, "func(*strings.Builder) string")
+			if diff := cmp.Diff("func(*strings.Builder) string", c.Detail); diff != "" {
+				t.Fatalf("o.Sig Detail mismatch (-want +got):\n%s", diff)
 			}
 		}
 	}
