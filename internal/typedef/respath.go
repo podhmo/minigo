@@ -15,32 +15,50 @@ import (
 // record lives only for the call — nothing persists on the typedefs
 // or the resolver.
 //
-// keys spell the walk for messages; ids hold the decl identities —
-// two decls sharing a name (a package `type A []int` and a function's
-// `type A B` both spell "m.A") are different hops.
+// The record is lazy: seeding costs a pointer store, hops append to
+// small slices (walks stay short), and the key spelling exists only
+// when String/errf needs it — Underlying runs once per coerce on the
+// VM hot path, so the earlier eager map + key-concat showed up in
+// profiles. ids hold the decl identities — two decls sharing a name
+// (a package `type A []int` and a function's `type A B` both spell
+// "m.A") are different hops.
 type respath struct {
-	keys []string
-	ids  map[any]bool
+	seed *runtime.TypeDef
+	hops []*runtime.TypeDef
+	ids  []any
+}
+
+// respathName is the decl name behind a typedef, or "" when there is
+// none — anonymous types open no record (a real cycle can only
+// revisit a named decl).
+func respathName(td *runtime.TypeDef) string {
+	if td == nil {
+		return ""
+	}
+	if td.Name != "" {
+		return td.Name
+	}
+	if td.Spec != nil && td.Spec.Name != nil {
+		return td.Spec.Name.Name
+	}
+	return ""
 }
 
 // key names one hop: the declaring package's path and the decl name,
 // or a marker for a typedef with no decl behind it (synthesized or
 // anonymous types keep the walk interesting only through their hops).
 func respathKey(td *runtime.TypeDef) string {
-	if td == nil {
+	name := respathName(td)
+	switch {
+	case td == nil:
 		return "<nil>"
-	}
-	name := td.Name
-	if name == "" && td.Spec != nil && td.Spec.Name != nil {
-		name = td.Spec.Name.Name
-	}
-	if name == "" {
+	case name == "":
 		return "<expr>"
-	}
-	if td.Pkg != nil && td.Pkg.Path != "" {
+	case td.Pkg != nil && td.Pkg.Path != "":
 		return td.Pkg.Path + "." + name
+	default:
+		return name
 	}
-	return name
 }
 
 // identityOf names the decl a typedef carries: its spec when one was
@@ -58,31 +76,31 @@ func identityOf(td *runtime.TypeDef) any {
 // revisit a named decl, and two anonymous hops would collide on the
 // "<expr>" marker.
 func seedPath(td *runtime.TypeDef) respath {
-	if key := respathKey(td); key != "<expr>" && key != "<nil>" {
-		return respath{keys: []string{key}, ids: map[any]bool{identityOf(td): true}}
+	if respathName(td) == "" {
+		return respath{}
 	}
-	return respath{}
+	return respath{seed: td}
 }
 
 // push appends the typedef a hop resolved to. Unnamed hops are not
 // recorded — synthesized typedefs are fresh objects each hop and can
 // never be the revisit a cycle is looking for.
 func (p respath) push(td *runtime.TypeDef) respath {
-	key := respathKey(td)
-	if key == "<expr>" || key == "<nil>" {
+	if respathName(td) == "" {
 		return p
 	}
 	// copy-on-write: the walk is value-semantic like go-scan's ctx value,
 	// so a sub-chase's hops never leak into the caller's seen set — a
 	// resolveTypeRef inside aliasOf pushing `int` must not read as a
 	// revisit when the outer Underlying later arrives at `int` itself.
-	ids := make(map[any]bool, len(p.ids)+1)
-	for id := range p.ids {
-		ids[id] = true
-	}
-	ids[identityOf(td)] = true
+	hops := make([]*runtime.TypeDef, len(p.hops)+1)
+	copy(hops, p.hops)
+	hops[len(p.hops)] = td
+	p.hops = hops
+	ids := make([]any, len(p.ids)+1)
+	copy(ids, p.ids)
+	ids[len(p.ids)] = identityOf(td)
 	p.ids = ids
-	p.keys = append(p.keys, key)
 	return p
 }
 
@@ -90,10 +108,28 @@ func (p respath) push(td *runtime.TypeDef) respath {
 // on the path — a resolution arriving at it again is a cycle when the
 // chase would keep walking it.
 func (p respath) seen(td *runtime.TypeDef) bool {
-	return p.ids[identityOf(td)]
+	id := identityOf(td)
+	if p.seed != nil && identityOf(p.seed) == id {
+		return true
+	}
+	for _, x := range p.ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
 }
 
-func (p respath) String() string { return strings.Join(p.keys, " -> ") }
+func (p respath) String() string {
+	parts := make([]string, 0, len(p.hops)+1)
+	if p.seed != nil {
+		parts = append(parts, respathKey(p.seed))
+	}
+	for _, td := range p.hops {
+		parts = append(parts, respathKey(td))
+	}
+	return strings.Join(parts, " -> ")
+}
 
 // errf annotates a resolution failure with the walk that reached it.
 func (p respath) errf(format string, args ...any) error {
