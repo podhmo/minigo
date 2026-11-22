@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/podhmo/minigo/index"
@@ -31,6 +32,15 @@ type Resolver struct {
 	builtins      *runtime.Env
 	loadPath      func(ctx context.Context, path string) (*runtime.Package, error)
 	iterSeqTds    sync.Map
+	// underMemo memoizes Underlying(td): a typedef's underlying is
+	// fixed by its declaration context, and the VM's coerce path asks
+	// once per coerced value — caching keeps named-basic coerces off
+	// the resolution machinery (a resolveTypeRef per peel showed up
+	// in the interpreter's call-path profile). The map is immutable:
+	// a miss rebuilds the whole table and republishes it — stores are
+	// rare (one per distinct typedef), and two racing stores at worst
+	// lose an entry that the next call resolves again.
+	underMemo atomic.Pointer[map[*runtime.TypeDef]*runtime.TypeDef]
 }
 
 // Deps are the engine operations the resolver reaches back for.

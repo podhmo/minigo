@@ -67,6 +67,14 @@ type frame struct {
 	base  int
 	sp    int
 	stack []runtime.Value
+	// valsCap is cap(v.vals) at the last stack re-cut. A nested call
+	// growing the arena past its capacity moves v.vals to a new
+	// backing — cap differs, marking this frame's cached view stale:
+	// reads still see its own operands (nothing else writes the
+	// window), but writes must re-cut through refresh first. The
+	// dispatch loop pays one compare per instruction instead of a
+	// re-slice; mutators that re-cut keep the stamp current.
+	valsCap int
 	// tailParked marks a suspended frame whose window a yield's park
 	// copied out of the arena — the matching restore shifts it back.
 	tailParked bool
@@ -93,6 +101,12 @@ type frame struct {
 	// one-frame distance rule
 	retNamed bool // gather named result slots after defers run
 	results  []runtime.Value
+	// res1 backs f.results for the single-result return — the slice
+	// header points at the frame's own scratch instead of a fresh
+	// backing array, so `return x` allocates nothing. Only n==1 may
+	// use it: a multi-result slice escapes as the returned Tuple's
+	// Elems and must not share the pooled frame's storage.
+	res1 [1]runtime.Value
 
 	// boundLo/boundHi bound a re-entrant loop run (range-over-func yield):
 	// the bounded run executes only while boundLo < ip < boundHi and halts
@@ -170,6 +184,7 @@ func freeFrame(f *frame) {
 		}
 	}
 	f.stack = nil
+	f.valsCap = 0
 	f.base, f.sp = 0, 0
 	f.tailParked = false
 	// drop the VM link — a pooled frame must not pin its goroutine's
@@ -185,6 +200,7 @@ func freeFrame(f *frame) {
 	// f.results' backing may be the returned Tuple's Elems — release it
 	// rather than clearing (OpReturn allocates a fresh slice per call).
 	f.results = nil
+	f.res1[0] = nil
 	f.boundLo, f.boundHi = 0, 0
 	f.vpack = nil
 	if f.cellsShared || f.cellsLeaked {
@@ -358,6 +374,7 @@ func (f *frame) push(x runtime.Value) {
 	v.vals = append(v.vals[:f.base+f.sp], x)
 	f.sp++
 	f.stack = v.vals[f.base:]
+	f.valsCap = cap(v.vals)
 }
 
 func (f *frame) pop() runtime.Value {
@@ -384,6 +401,7 @@ func (f *frame) setSp(n int) {
 	clear(f.stack[n:f.sp])
 	f.sp = n
 	f.stack = f.v.vals[f.base : f.base+n]
+	f.valsCap = cap(f.v.vals)
 	if f.base+n < len(f.v.vals) {
 		f.v.vals = f.v.vals[:f.base+n]
 	}
@@ -392,7 +410,10 @@ func (f *frame) setSp(n int) {
 // refresh re-slices the cached window view — needed before a bare
 // f.stack write when a nested call may have grown the arena past this
 // frame's backing array.
-func (f *frame) refresh() { f.stack = f.v.vals[f.base : f.base+f.sp] }
+func (f *frame) refresh() {
+	f.stack = f.v.vals[f.base : f.base+f.sp]
+	f.valsCap = cap(f.v.vals)
+}
 
 // stkSet writes operand i — a bare f.stack[i] write could land in a
 // stale backing array after a nested call grew the arena.

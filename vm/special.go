@@ -259,6 +259,7 @@ func (s *specialCtx) Eval(e ast.Expr) (runtime.Value, error) {
 		base:   len(s.v.vals),
 	}
 	fr.stack = s.v.vals[fr.base:]
+	fr.valsCap = cap(s.v.vals)
 	// share the caller's slots — slot indices line up by construction;
 	// the locals a quoted form can name are all boxed (P4-2a), so they
 	// arrive as shared cell pointers and writes propagate back.

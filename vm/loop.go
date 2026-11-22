@@ -70,10 +70,13 @@ func (v *VM) loop(f *frame) {
 	code := f.ch.Code
 	consts := f.ch.Consts
 	for f.ip < len(code) && (f.boundHi == 0 || (f.ip > f.boundLo && f.ip < f.boundHi)) {
-		// a nested call may have grown the arena past this view's
-		// backing — re-slice so bare f.stack reads/writes this
-		// instruction see the live array.
-		f.refresh()
+		// a nested call may have grown the arena into a new backing —
+		// re-slice the view so bare f.stack reads/writes this
+		// instruction see the live array. cap(v.vals) moves exactly
+		// when the backing does, so a stale view is one compare.
+		if f.valsCap != cap(v.vals) {
+			f.refresh()
+		}
 		ins := code[f.ip]
 		f.ip++
 		switch ins.Op {
@@ -1077,12 +1080,19 @@ func (v *VM) loop(f *frame) {
 				}
 				f.retNamed = true
 			default:
-				f.results = make([]runtime.Value, n)
-				if n > 0 { // a length-0 slice allocates no backing array
-					v.profAllocs++
-				}
-				for i := n - 1; i >= 0; i-- {
-					f.results[i] = f.pop()
+				if n == 1 {
+					// the common single result rides the frame's
+					// scratch slot — no backing array to allocate.
+					f.res1[0] = f.pop()
+					f.results = f.res1[:]
+				} else {
+					f.results = make([]runtime.Value, n)
+					if n > 0 { // a length-0 slice allocates no backing array
+						v.profAllocs++
+					}
+					for i := n - 1; i >= 0; i-- {
+						f.results[i] = f.pop()
+					}
 				}
 			}
 			f.ip = len(code)

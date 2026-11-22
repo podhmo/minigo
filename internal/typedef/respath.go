@@ -181,7 +181,22 @@ func (r *Resolver) aliasOf(td *runtime.TypeDef, p respath) (*runtime.TypeDef, er
 // underlying implements the Hooks.Underlying hook: a KindAlias typedef
 // resolves through its aliased expression to the real typedef.
 func (r *Resolver) Underlying(td *runtime.TypeDef) (*runtime.TypeDef, error) {
-	return r.underlying(td, seedPath(td))
+	if m := r.underMemo.Load(); m != nil {
+		if u, ok := (*m)[td]; ok {
+			return u, nil
+		}
+	}
+	u, err := r.underlying(td, seedPath(td))
+	if err == nil && u != nil {
+		m := map[*runtime.TypeDef]*runtime.TypeDef{td: u}
+		if old := r.underMemo.Load(); old != nil {
+			for k, v := range *old {
+				m[k] = v
+			}
+		}
+		r.underMemo.Store(&m)
+	}
+	return u, err
 }
 
 func (r *Resolver) underlying(td *runtime.TypeDef, p respath) (*runtime.TypeDef, error) {

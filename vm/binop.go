@@ -320,6 +320,40 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 			}
 		}
 	}
+	// bare int64 against int64 or a small integer constant takes the
+	// scalar op directly: the const machinery below materializes an
+	// Int UConst onto int64 the same way, and two int64s share a
+	// domain — `n - 1` in a hot loop pays the type-switch cascade
+	// per operand otherwise.
+	if ai, ok := a.(int64); ok {
+		if bi, ok := b.(int64); ok {
+			switch op {
+			case bytecode.BinAdd, bytecode.BinSub, bytecode.BinMul,
+				bytecode.BinQuo, bytecode.BinRem,
+				bytecode.BinAnd, bytecode.BinOr, bytecode.BinXor, bytecode.BinAndNot,
+				bytecode.BinLss, bytecode.BinLeq, bytecode.BinGtr, bytecode.BinGeq:
+				return intBinOp(f, op, ai, bi)
+			case bytecode.BinEql:
+				return ai == bi
+			case bytecode.BinNeq:
+				return ai != bi
+			}
+		} else if ub, isU := b.(*runtime.UConst); isU && !ub.Wrap && len(ub.WrapOps) == 0 && ub.V.Kind() == constant.Int {
+			if bi, ok := constant.Int64Val(ub.V); ok {
+				switch op {
+				case bytecode.BinAdd, bytecode.BinSub, bytecode.BinMul,
+					bytecode.BinQuo, bytecode.BinRem,
+					bytecode.BinAnd, bytecode.BinOr, bytecode.BinXor, bytecode.BinAndNot,
+					bytecode.BinLss, bytecode.BinLeq, bytecode.BinGtr, bytecode.BinGeq:
+					return intBinOp(f, op, ai, bi)
+				case bytecode.BinEql:
+					return ai == bi
+				case bytecode.BinNeq:
+					return ai != bi
+				}
+			}
+		}
+	}
 	// constant payloads the operands arrived with: an op where every
 	// operand is still a constant is gc's constant EXPRESSION — it
 	// evaluates in the declared type's exact domain and an

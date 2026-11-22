@@ -95,11 +95,12 @@ func joinWait() {
 	wg.Wait()
 }
 
-// cellHolder's local escapes through the return value, so every call
-// allocates a fresh cells block — the allocs view must count them.
-func cellHolder() *int {
+// cellHolder's local escapes through the return value and its two
+// results pack a fresh slice — both allocate per call inside the
+// function, and the allocs view must count them on the callee's line.
+func cellHolder() (*int, int) {
 	x := 0
-	return &x
+	return &x, x
 }
 
 // Ops returns recvLoop's wall time in ms.

@@ -59,16 +59,19 @@ func typedefOf(v runtime.Value) *runtime.TypeDef {
 // binds. Anything unresolvable passes the value through unchanged — an
 // unbound generic traps on use, matching the compile-total contract.
 func (v *VM) inferForFuncTarget(x runtime.Value, td *runtime.TypeDef) (runtime.Value, error) {
+	// a non-function value can never need instantiation — check before
+	// peeling the target typedef so coercing plain values stays off
+	// the Underlying path entirely.
+	fn, wrap := funcTarget(x)
+	if fn == nil || len(fn.TParams) == 0 || !hasUnbound(fn.TParams, fn.Binds) {
+		return x, nil
+	}
 	u := v.peelNamed(td)
 	if u == nil || u.Kind != runtime.KindFunc {
 		return x, nil
 	}
 	sig := runtime.FuncTypeExpr(u)
 	if sig == nil || v.H.ResolveType == nil {
-		return x, nil
-	}
-	fn, wrap := funcTarget(x)
-	if fn == nil || len(fn.TParams) == 0 || !hasUnbound(fn.TParams, fn.Binds) {
 		return x, nil
 	}
 	if fn.Decl == nil || fn.Decl.Type == nil {

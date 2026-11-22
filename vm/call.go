@@ -696,6 +696,7 @@ func (v *VM) prepFrameSeen(cf *frame, callee runtime.Value, args []runtime.Value
 		fr.sp = 0
 	}
 	fr.stack = v.vals[fr.base:]
+	fr.valsCap = cap(v.vals)
 	// locals is a value array: only slots the compiler marked boxed
 	// (P4-2a) — or every slot on an unclassified chunk — get a cell;
 	// plain slots hold their value in place and allocate nothing.
