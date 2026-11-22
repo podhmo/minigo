@@ -259,38 +259,54 @@ func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 	}
 }
 
+// mergeEntries marks the caller's stack as merging and collects the
+// entries the pass will merge (usedOnly picks only consumed ones).
+// A nested pass — a merge-time re-projection's own host calls re-entering
+// sync/pull — returns nil so it cannot rework the same entries and feed
+// the projection feedback loop (issue #1399). Callers defer endMerge.
+func (m *Marshal) mergeEntries(usedOnly bool) (*callScopeStack, []*projEntry) {
+	st, ok := m.ownStack()
+	if !ok {
+		return nil, nil
+	}
+	s := st
+	s.mu.Lock()
+	if s.merging > 0 {
+		s.mu.Unlock()
+		return nil, nil
+	}
+	s.merging++
+	var es []*projEntry
+	for i := range s.scopes {
+		for p, e := range s.scopes[i] {
+			if usedOnly && !s.used[p] {
+				continue
+			}
+			es = append(es, e)
+		}
+	}
+	s.mu.Unlock()
+	return s, es
+}
+
+// endMerge releases the merge pass mergeEntries started.
+func (m *Marshal) endMerge(s *callScopeStack) {
+	s.mu.Lock()
+	s.merging--
+	s.mu.Unlock()
+}
+
 // syncRegistered mirrors every registered projection's script state
 // into its host counterpart. A FuncMap func's writes reach the map by
 // script identity — a closure mutating a captured map touches no arg —
 // so after each callback every entry syncs, not just the resolved
 // ones.
 func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
-	st, ok := m.ownStack()
-	if !ok {
+	s, es := m.mergeEntries(false)
+	if s == nil {
 		return
 	}
-	s := st
-	s.mu.Lock()
-	if s.merging > 0 {
-		// a sync or pull is already iterating this stack — a nested
-		// pass would rework the same entries and feed the projection
-		// feedback loop (issue #1399).
-		s.mu.Unlock()
-		return
-	}
-	s.merging++
-	var es []*projEntry
-	for i := range s.scopes {
-		for _, e := range s.scopes[i] {
-			es = append(es, e)
-		}
-	}
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.merging--
-		s.mu.Unlock()
-	}()
+	defer m.endMerge(s)
 	for _, e := range es {
 		m.syncProjected(e, vc)
 	}
@@ -301,33 +317,11 @@ func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
 // landed after the last callback (or on a child only a callback held,
 // never the arg itself) still reaches the script value.
 func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
-	st, ok := m.ownStack()
-	if !ok {
+	s, es := m.mergeEntries(true)
+	if s == nil {
 		return
 	}
-	s := st
-	s.mu.Lock()
-	if s.merging > 0 {
-		// nested inside a merge pass — same feedback-loop guard as
-		// syncRegistered (issue #1399).
-		s.mu.Unlock()
-		return
-	}
-	s.merging++
-	var es []*projEntry
-	for i := range s.scopes {
-		for p, e := range s.scopes[i] {
-			if s.used[p] {
-				es = append(es, e)
-			}
-		}
-	}
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.merging--
-		s.mu.Unlock()
-	}()
+	defer m.endMerge(s)
 	seen := map[runtime.Value]bool{}
 	for _, e := range es {
 		m.pullProjected(e, vc, seen)
@@ -338,12 +332,5 @@ func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
 // the projection with this pointer — its script value is authoritative
 // now, so write-back must not restore the host copy's stale contents.
 func (m *Marshal) projectedUsed(p uintptr) bool {
-	st, ok := m.ownStack()
-	if !ok {
-		return false
-	}
-	s := st
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.used[p]
+	return m.stackFlag(func(s *callScopeStack) bool { return s.used[p] })
 }
