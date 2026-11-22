@@ -351,12 +351,20 @@ func (r *REPL) resolveBase(text string) (runtime.Value, bool) {
 		if err != nil {
 			continue
 		}
+		// `.` binds tighter than any operator, so a suffix that parses
+		// to a binary or unary expression has the dot bound inside its
+		// operand — `f() == q.` completes on `q`, not on the comparison
+		// (which under EvalBase would also run `f()`'s side effects).
+		// Keep scanning for the primary expression at the tail.
+		if !selectorBase(expr) {
+			continue
+		}
 		if v, ok := r.resolveExpr(expr); ok {
 			return v, true
 		}
 		// the EvalBase tier: the expression parses but the static walk
-		// cannot answer it (call expressions, non-literal indexes,
-		// operators) — evaluate the base itself when the policy allows.
+		// cannot answer it (call expressions, non-literal indexes) —
+		// evaluate the base itself when the policy allows.
 		if r.evalPolicy >= EvalBase {
 			if v, ok := r.evalBase(expr); ok {
 				return v, true
@@ -364,6 +372,17 @@ func (r *REPL) resolveBase(text string) (runtime.Value, bool) {
 		}
 	}
 	return nil, false
+}
+
+// selectorBase reports whether a parsed base text can be what the `.`
+// actually binds to: a primary expression. Binary, unary, star and
+// receive roots mean the selector lives inside their operand instead.
+func selectorBase(x ast.Expr) bool {
+	switch x.(type) {
+	case *ast.BinaryExpr, *ast.UnaryExpr, *ast.StarExpr, *ast.KeyValueExpr:
+		return false
+	}
+	return true
 }
 
 // evalBase runs a parsed base expression through the EvalExpr bridge —

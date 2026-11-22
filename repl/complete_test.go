@@ -563,6 +563,7 @@ func TestCompleteEvalBase(t *testing.T) {
 		`var calls int`,
 		`func tick() inspectpkg.User { calls = calls + 1; return inspectpkg.User{Name: "x"} }`,
 		`m := map[string]inspectpkg.User{"k": {Name: "y"}}`,
+		`q := inspectpkg.User{Name: "q"}`,
 	} {
 		if _, err := r.EvalLine(ctx, line); err != nil {
 			t.Fatalf("EvalLine(%q): %v", line, err)
@@ -579,6 +580,16 @@ func TestCompleteEvalBase(t *testing.T) {
 	}
 
 	r.SetEvalPolicy(EvalBase)
+
+	// a selector binds tighter than any operator: `tick() == q.` is
+	// `tick() == (q.)` — it completes on q's members and must not
+	// evaluate the comparison (nor run tick's side effect).
+	if cands := r.Complete("tick() == q."); !hasCand(cands, "Greet") {
+		t.Fatalf(`tick() == q. missing q's members -> %v`, candNames(cands))
+	}
+	if v, _ := r.EvalLine(ctx, "calls"); r.Display(v) != "0" {
+		t.Fatalf("calls = %v, want 0 — completion evaluated outside the selector's base", r.Display(v))
+	}
 	for _, tc := range []struct {
 		line string
 		want []string
