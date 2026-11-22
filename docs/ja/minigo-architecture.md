@@ -23,7 +23,9 @@ minigo (engine)    Engine, Bind/RegisterSpecial, installStdlib, Vet, WrapFunc
   │   │   └─ index      index.Build: 宣言だけ記録、評価しない
   │   └─ runtime    Value(=any), Cell, TypeDef, Package, Iterator, SpecialContext
   ├─ resolve        Resolver インターフェイス + GoScanResolver（ディレクトリ走査）
-  └─ syntax         ParseFile → *File{AST, Imports}（import 表はファイルスコープ）
+  ├─ syntax         ParseFile → *File{AST, Imports}（import 表はファイルスコープ）
+  ├─ internal/semantics  宣言レベルの型質問 API（TypeDeclOf/FieldPathOf）— index だけから答える
+  └─ internal/source     semantics.Source を runtime ローダに適合させるアダプタ（init には届かない）
 ```
 
 ## 実行の流れ
@@ -129,6 +131,16 @@ minigo run ./app --entry F
 - `coerce(x, td)` は `var x T = v` 相当の assignability を検査 — `*Named`/`Struct.Def`/コンテナの `Typ` を「宣言タグ」として見て、named-to-named の誤代入を「cannot use X as Y」で trap。
 - 無名複合型の要素は `Anon`/`Pkg`/`File` で遅延解決（`compile.typeExpr` と同じ形を `ResolveType` が再現する）。
 - ジェネリクスは `T[Args]` の明示インスタンス化 + 簡易推論（`inferBinds`）。制約 `~T`/union/comparable は概形の実装。
+
+## 宣言質問 API（internal/semantics）
+
+「宣言は何を綴っているか」という型推論の宣言側半分を、index だけから答えるサービス層（rearchitecture 計画の M2/M4 系）。`runtime`/`vm`/`compile` を import せず（archcheck が強制）、スクリプトを実行せず、`runtime.Value` も見ない — 答えは materialize 済みの型ではなく宣言が綴る AST。
+
+- **`Service`** は `Source` インターフェイス（`Indexed` = 既存 index を覗くだけ、`Load` = index まで建てる）越しに読む。init を起動する手段は Source に存在しない。
+- **`Result[T]`** は `Kind` で分類: `Found`（答えあり）/ `Missing`（パッケージにその名前の宣言がない）/ `Deferred`（未 index でポリシーが許さない — エラーではない）/ `Failed`（Err あり）。
+- **`Policy`**: `IndexedOnly`（覗くだけ、ロードしない）/ `AllowIndex`（locate/parse/index まで許すが init は絶対に走らない）。
+- クエリは今のところ2本: `TypeDeclOf(ctx, name, policy)`（名前 → 宣言された型式 `TypeRef{Expr, Ctx}`）と、`FieldPathOf(t, name, policy)`（埋め込みフィールドの BFS 探索。`Index` は reflect の `Field.Index` 規約。同一深度の複数候補は Go 同様 ambiguous で `Failed`）。
+- **`internal/source.View`** が runtime の `ImportRef` を `Source` に適合させる — `Peek`/`IndexAtIndexed` 系の名を持ち、`Package.EnsureReady` はアダプタ上に存在しないので init には構造上到達できない。コンパイラの fact サイト等がここ経由で問い合わせる。
 
 ## ツール
 
