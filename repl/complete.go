@@ -146,11 +146,22 @@ func (r *REPL) complete(line string) (start int, cands []Candidate) {
 	if ctx.selector {
 		if ctx.idxBase != "" {
 			// a `.`-tail inside an unclosed `[` — suppress member
-			// completion when the bracket's base resolves to a value
-			// (an index slot: `m[k.`); keep it when it names a type
-			// (`List[pkg.` instantiation) or won't resolve (`map[pkg.`
-			// — `map` is a keyword, so the suffix walk finds nothing).
-			if v, ok := r.resolveBase(ctx.idxBase); ok {
+			// completion when the bracket's base is a value (an
+			// index slot: `m[k.`); keep it when it names a type
+			// (`List[pkg.` instantiation) or is no expression at all
+			// (`map[pkg.` — `map` is a keyword). Classify statically:
+			// evaluating `getMap()` would run user code.
+			v, prim := r.resolveBaseStatic(ctx.idxBase)
+			switch {
+			case prim == nil:
+				// no expression tail — `map[`/`chan[` keyword.
+			case v == nil && !typeShaped(prim):
+				// a primary the static walk cannot answer and whose
+				// shape can only be a value (call, index, composite).
+				// Ident/Selector tails stay live: `Undeclared[pkg.`
+				// still completes package members.
+				return ctx.start, nil
+			case v != nil:
 				if _, isType := v.(*runtime.TypeDef); !isType {
 					return ctx.start, nil
 				}
@@ -459,6 +470,56 @@ func (c *completer) scopeNames(out *[]Candidate) {
 }
 
 // ---- base-expression resolution (pure AST walk, no eval) ----
+
+// resolveBaseStatic scans like resolveBase but never evaluates —
+// classifying an index-slot tail must not run user code
+// (`getMap()[u.` would call getMap under EvalBase). Returns the
+// resolved value (nil when static resolution cannot answer) and the
+// primary expression the tail parsed to (nil when no suffix parses,
+// e.g. the `map`/`chan` keywords before `[`).
+func (r *REPL) resolveBaseStatic(text string) (runtime.Value, ast.Expr) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, nil
+	}
+	fset := token.NewFileSet()
+	f := fset.AddFile("repl-complete.go", -1, len(text))
+	var s scanner.Scanner
+	s.Init(f, []byte(text), nil, 0)
+	var offs []int
+	for {
+		pos, tok, _ := s.Scan()
+		if tok == token.EOF {
+			break
+		}
+		offs = append(offs, f.Offset(pos))
+	}
+	var prim ast.Expr
+	for _, off := range offs {
+		expr, err := parser.ParseExpr(text[off:])
+		if err != nil || !selectorBase(expr) {
+			continue
+		}
+		if prim == nil {
+			prim = expr
+		}
+		if v, ok := r.resolveExpr(expr); ok {
+			return v, expr
+		}
+	}
+	return nil, prim
+}
+
+// typeShaped reports whether a primary expression can name a type —
+// a bare ident or a package-qualified selector. Calls, indexes and
+// composites before `[` can only be values.
+func typeShaped(e ast.Expr) bool {
+	switch e.(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		return true
+	}
+	return false
+}
 
 // resolveBase parses the selector's base text and resolves it to a value.
 // The whole text is tried first; when it does not parse or resolve

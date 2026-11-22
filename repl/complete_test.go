@@ -594,6 +594,21 @@ func TestCompleteIndexTail(t *testing.T) {
 	if !hasCand(r.Complete("(u."), "Greet") {
 		t.Fatalf("Greet missing in (u. -> %v", candNames(r.Complete("(u.")))
 	}
+	// EvalBase on: classifying the tail must never evaluate the
+	// index-slot base — `getMap()[u.` suppresses without running it.
+	e2 := minigo.NewEngine("../testdata")
+	r2 := New(e2)
+	r2.evalPolicy = EvalBase
+	evalLines(t, r2,
+		`var calls = 0`,
+		`func getMap() map[int]int { calls++; return map[int]int{1:1} }`,
+		`var u = 1`)
+	if cands := r2.Complete("getMap()[u."); len(cands) != 0 {
+		t.Fatalf("getMap()[u. yielded %v, want none", candNames(cands))
+	}
+	if got := cellInt(r2, "calls"); got != 0 {
+		t.Fatalf("getMap()[u. ran getMap %d times", got)
+	}
 	// `[` is also a type bracket: `map[` and a generic instantiation
 	// keep package-member completion.
 	for _, line := range []string{`var m2 map[inspectpkg.`, `var p inspectpkg.Pair[inspectpkg.`} {
@@ -933,4 +948,15 @@ func TestStdlibCandidatesSymlinkedRoot(t *testing.T) {
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("stdlibCandidates mismatch (-want +got):\n%s", diff)
 	}
+}
+
+// cellInt reads a script `var` global's int value from the REPL package.
+func cellInt(r *REPL, name string) int {
+	gv, _ := r.pkg.Globals.Get(name)
+	if c, ok := gv.(*runtime.Cell); ok {
+		if n, ok := c.Elem.(int64); ok {
+			return int(n)
+		}
+	}
+	return -1
 }
