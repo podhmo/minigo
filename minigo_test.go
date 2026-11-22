@@ -3526,12 +3526,14 @@ func TestHTMLTemplateBound(t *testing.T) {
 		run(t, e, "./testdata/htmltmpl", "ParseError"),
 		run(t, e, "./testdata/htmltmpl", "MissingField"),
 		run(t, e, "./testdata/htmltmpl", "MissingMethod"),
+		run(t, e, "./testdata/htmltmpl", "Escaper"),
 	}
 	want := []any{
 		`<p title="&lt;bob&gt;">&lt; &lt;bob&gt; <b>x</b></p>|a&amp;b`,
 		"template: bad:1: unclosed action",
 		`error: template: m:1:2: executing "m" at <.Nope>: can't evaluate field Nope in type *struct { Name interface {}; Badge interface {}; Initial interface {} }`,
 		`error: template: m:1:10: executing "m" at <.Initial.Nope>: can't evaluate field Nope in type interface {}`,
+		`&lt;b&gt;x&lt;/b&gt;&lt;i&gt;y&lt;/i&gt;|a+b%26c`,
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("html/template (-want +got):\n%s", diff)

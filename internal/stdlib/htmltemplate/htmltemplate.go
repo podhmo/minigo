@@ -41,6 +41,13 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, funcMap *runtime.TypeDef) {
 		"JSEscapeString": h.Fn1("template.JSEscapeString", func(a []any) (any, error) {
 			return ht.JSEscapeString(stdlib.Str(a[0])), nil
 		}, ht.JSEscapeString),
+		"HTMLEscaper": h.Fn("template.HTMLEscaper", func(a []any) (any, error) {
+			ss := make([]any, len(a))
+			for i, x := range a {
+				ss[i] = stdlib.Str(x)
+			}
+			return ht.HTMLEscaper(ss...), nil
+		}, ht.HTMLEscaper),
 		"URLQueryEscaper": h.Fn("template.URLQueryEscaper", func(a []any) (any, error) {
 			ss := make([]any, len(a))
 			for i, x := range a {

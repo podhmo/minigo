@@ -53,6 +53,12 @@ func MissingMethod() string {
 	return "error: " + err.Error()
 }
 
+// Escaper calls the variadic html/template escaper helpers on plain
+// strings (issue #1398: HTMLEscaper must be bound like URLQueryEscaper).
+func Escaper() string {
+	return template.HTMLEscaper("<b>x</b>", "<i>y</i>") + "|" + template.URLQueryEscaper("a b&c")
+}
+
 // ParseError recovers Must's panic on a bad template.
 func ParseError() (msg string) {
 	defer func() { msg = recover().(error).Error() }()
