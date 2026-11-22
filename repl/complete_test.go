@@ -41,6 +41,15 @@ func hasCand(cands []Candidate, name string) bool {
 	return false
 }
 
+func requireCands(t *testing.T, cands []Candidate, line string, want ...string) {
+	t.Helper()
+	for _, w := range want {
+		if !hasCand(cands, w) {
+			t.Fatalf("%s missing in %q -> %v", w, line, candNames(cands))
+		}
+	}
+}
+
 func TestCompleteBareNames(t *testing.T) {
 	ctx := context.Background()
 	e := minigo.NewEngine("../testdata")
@@ -605,12 +614,7 @@ func TestCompleteEvalBase(t *testing.T) {
 		{"tick().B", []string{"Base", "Builder"}}, // prefix after the call
 		{"println(tick().", []string{"Greet"}},    // fragment suffix
 	} {
-		cands := r.Complete(tc.line)
-		for _, w := range tc.want {
-			if !hasCand(cands, w) {
-				t.Fatalf("%s missing in %q -> %v", w, tc.line, candNames(cands))
-			}
-		}
+		requireCands(t, r.Complete(tc.line), tc.line, tc.want...)
 	}
 	// the eval really ran — tick's side effect counted.
 	if v, _ := r.EvalLine(ctx, "calls"); r.Display(v) == "0" {
@@ -657,12 +661,7 @@ func TestCompleteMapKeys(t *testing.T) {
 		{`em["say\"`, []string{`say\"hi`}},       // escaped quote stays open
 		{`im["`, []string{"plain"}},              // typed iface keys can't splice
 	} {
-		cands := r.Complete(tc.line)
-		for _, w := range tc.want {
-			if !hasCand(cands, w) {
-				t.Fatalf("%s missing in %q -> %v", w, tc.line, candNames(cands))
-			}
-		}
+		requireCands(t, r.Complete(tc.line), tc.line, tc.want...)
 	}
 
 	// an int-keyed map and a plain slice index offer no keys; the
