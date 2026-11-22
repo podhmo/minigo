@@ -26,6 +26,24 @@ func writePackage(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// storyPackage writes the fixture most tests need — go.mod, an
+// always-built app.go, and storySrc wrapped in the //go:build story
+// header — plus any extra or overriding files.
+func storyPackage(t *testing.T, storySrc string, extra map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"go.mod": "module x\n\ngo 1.26\n",
+		"app.go": "package app\n",
+	}
+	if storySrc != "" {
+		files["story.go"] = "//go:build story\n\npackage app\n\n" + storySrc + "\n"
+	}
+	for name, src := range extra {
+		files[name] = src
+	}
+	return writePackage(t, files)
+}
+
 func TestDiscover(t *testing.T) {
 	dir := writePackage(t, map[string]string{
 		"go.mod": "module x\n\ngo 1.26\n",
@@ -108,11 +126,7 @@ func TestDiscoverRejectsBadShape(t *testing.T) {
 		{"func StoryHttpX(w http.ResponseWriter, r *http.Request) error { return nil }", "StoryHttpX must be func(http.ResponseWriter, *http.Request)"},
 	} {
 		t.Run(tc.decl, func(t *testing.T) {
-			dir := writePackage(t, map[string]string{
-				"go.mod":   "module x\n\ngo 1.26\n",
-				"app.go":   "package app\n",
-				"story.go": "//go:build story\n\npackage app\n\nimport \"net/http\"\n\n" + tc.decl + "\n",
-			})
+			dir := storyPackage(t, "import \"net/http\"\n\n"+tc.decl, nil)
 			_, err := storybook.Discover(dir, "story")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want invalid signature error %q, got %v", tc.want, err)
@@ -125,19 +139,11 @@ func TestDiscoverRejectsBadShape(t *testing.T) {
 // helper must not end up pointing an index at a grid that cannot
 // frame it.
 func TestHTTPStoryStaysUngrouped(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod": "module x\n\ngo 1.26\n",
-		"app.go": "package app\n",
-		"story.go": `//go:build story
-
-package app
-
-import "net/http"
+	dir := storyPackage(t, `import "net/http"
 
 func StoryHttpX(w http.ResponseWriter, r *http.Request) { helper() }
 func helper() {}
-`,
-	})
+`, nil)
 	stories, err := storybook.Discover(dir, "story")
 	if err != nil {
 		t.Fatal(err)
@@ -147,40 +153,10 @@ func helper() {}
 	}
 }
 
-// Files the plain build already selects are not story files, even when
-// they name StoryXxx — discovery only counts what the tag brings in.
-func TestDiscoverIgnoresPlainBuildFiles(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod":  "module x\n\ngo 1.26\n",
-		"app.go":  "package app\n\nfunc StoryAlways() {}\n",
-		"unix.go": "//go:build unix\n\npackage app\n\nfunc StoryUnix() {}\n",
-		"story.go": `//go:build story
-
-package app
-
-func StoryTagged() {}
-`,
-	})
-	stories, err := storybook.Discover(dir, "story")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if diff := cmp.Diff([]string{"StoryTagged"}, []string{stories[0].Name}); diff != "" {
-		t.Errorf("stories (-want +got):\n%s", diff)
-	}
-}
-
 // A //storybook:group doc marker overrides the last-call heuristic, so
 // a story that must end on a helper can still name its render function.
 func TestDiscoverGroupMarker(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod": "module x\n\ngo 1.26\n",
-		"app.go": "package app\n",
-		"story.go": `//go:build story
-
-package app
-
-// StoryMarked renders a but must end on a helper.
+	dir := storyPackage(t, `// StoryMarked renders a but must end on a helper.
 //
 //storybook:group RenderA
 func StoryMarked() { RenderA(); helper() }
@@ -191,8 +167,7 @@ func StoryPlain() { RenderB() }
 func RenderA() {}
 func RenderB() {}
 func helper()  {}
-`,
-	})
+`, nil)
 	stories, err := storybook.Discover(dir, "story")
 	if err != nil {
 		t.Fatal(err)
@@ -220,39 +195,25 @@ func helper()  {}
 // A marker on a handler story has no grid to group into — an explicit
 // marker must not sit there silently doing nothing.
 func TestDiscoverGroupMarkerOnHTTPStory(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod": "module x\n\ngo 1.26\n",
-		"app.go": "package app\n",
-		"story.go": `//go:build story
-
-package app
-
-import "net/http"
+	dir := storyPackage(t, `import "net/http"
 
 //storybook:group RenderA
 func StoryHttpX(w http.ResponseWriter, r *http.Request) {}
-`,
-	})
+`, nil)
 	_, err := storybook.Discover(dir, "story")
 	if err == nil || !strings.Contains(err.Error(), "storybook:group") {
 		t.Fatalf("want marker-on-handler error, got %v", err)
 	}
 }
 
-// Story-prefixed funcs discovery skips — untagged files, files the tag
-// does not select — are reported so a missing //go:build line surfaces
-// instead of failing silently.
+// Files the plain build already selects are not story files, even when
+// they name StoryXxx — discovery only counts what the tag brings in,
+// and the skipped funcs are reported so a missing //go:build line
+// surfaces instead of failing silently.
 func TestExcluded(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod":  "module x\n\ngo 1.26\n",
+	dir := storyPackage(t, "func StoryTagged() {}", map[string]string{
 		"app.go":  "package app\n\nfunc StoryAlways() {}\n",
 		"unix.go": "//go:build unix\n\npackage app\n\nfunc StoryUnix() {}\n",
-		"story.go": `//go:build story
-
-package app
-
-func StoryTagged() {}
-`,
 	})
 	excluded, err := storybook.Excluded(dir, "story")
 	if err != nil {
@@ -277,10 +238,7 @@ func StoryTagged() {}
 // A package with no story funcs is an error, not an empty list —
 // preview servers tolerate it explicitly, silent emptiness does not.
 func TestDiscoverNoStories(t *testing.T) {
-	dir := writePackage(t, map[string]string{
-		"go.mod": "module x\n\ngo 1.26\n",
-		"app.go": "package app\n",
-	})
+	dir := storyPackage(t, "", nil)
 	_, err := storybook.Discover(dir, "story")
 	if err == nil || !strings.Contains(err.Error(), "no Story funcs") {
 		t.Fatalf("want no-stories error, got %v", err)
