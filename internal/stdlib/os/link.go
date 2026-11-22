@@ -31,7 +31,7 @@ func bindLinkOps(ospkg map[string]runtime.Value, h stdlib.Helpers, env intbind.E
 			le.New = stdlib.ScriptPathOf(sn, newp, le.New)
 		}
 		return stdlib.ErrVal(lerr), nil
-	})
+	}, os.Link)
 	ospkg["Symlink"] = h.Fn2("os.Symlink", func(a []any) (any, error) {
 		so, sn := stdlib.Str(a[0]), stdlib.Str(a[1])
 		// the link's target text is stored verbatim — resolving it
@@ -62,7 +62,7 @@ func bindLinkOps(ospkg map[string]runtime.Value, h stdlib.Helpers, env intbind.E
 			le.New = stdlib.ScriptPathOf(sn, newp, le.New)
 		}
 		return stdlib.ErrVal(lerr), nil
-	})
+	}, os.Symlink)
 	ospkg["Readlink"] = h.Fn1("os.Readlink", func(a []any) (any, error) {
 		sp := stdlib.Str(a[0])
 		p, err := env.FsPath(sp)
@@ -71,6 +71,6 @@ func bindLinkOps(ospkg map[string]runtime.Value, h stdlib.Helpers, env intbind.E
 		}
 		t, rerr := os.Readlink(p)
 		return stdlib.RetErr2(t, stdlib.ScriptPathErr(rerr, sp, p))
-	})
+	}, os.Readlink)
 
 }

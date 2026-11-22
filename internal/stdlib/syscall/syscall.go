@@ -56,6 +56,6 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"EDOM":    &runtime.GoValue{V: syscall.EDOM},
 		"ERANGE":  &runtime.GoValue{V: syscall.ERANGE},
 		"ENOSYS":  &runtime.GoValue{V: syscall.ENOSYS},
-		"Getpid":  h.Fn("syscall.Getpid", func(a []any) (any, error) { return int(syscall.Getpid()), nil }),
+		"Getpid":  h.Fn("syscall.Getpid", func(a []any) (any, error) { return int(syscall.Getpid()), nil }, syscall.Getpid),
 	})
 }

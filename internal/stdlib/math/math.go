@@ -77,11 +77,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"Frexp": h.Fn("math.Frexp", func(a []any) (any, error) {
 			frac, exp := math.Frexp(stdlib.FloatOf(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{frac, int64(exp)}}, nil
-		}),
+		}, math.Frexp),
 		"Modf": h.Fn("math.Modf", func(a []any) (any, error) {
 			i, frac := math.Modf(stdlib.FloatOf(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{i, frac}}, nil
-		}),
+		}, math.Modf),
 		"Log2":      h.Fn("math.Log2", func(a []any) (any, error) { return math.Log2(stdlib.FloatOf(a[0])), nil }, math.Log2),
 		"Log10":     h.Fn("math.Log10", func(a []any) (any, error) { return math.Log10(stdlib.FloatOf(a[0])), nil }, math.Log10),
 		"Log1p":     h.Fn("math.Log1p", func(a []any) (any, error) { return math.Log1p(stdlib.FloatOf(a[0])), nil }, math.Log1p),
@@ -94,7 +94,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"Sincos": h.Fn("math.Sincos", func(a []any) (any, error) {
 			s, c := math.Sincos(stdlib.FloatOf(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{s, c}}, nil
-		}),
+		}, math.Sincos),
 		"Cos":             h.Fn("math.Cos", func(a []any) (any, error) { return math.Cos(stdlib.FloatOf(a[0])), nil }, math.Cos),
 		"Tan":             h.Fn("math.Tan", func(a []any) (any, error) { return math.Tan(stdlib.FloatOf(a[0])), nil }, math.Tan),
 		"Asin":            h.Fn("math.Asin", func(a []any) (any, error) { return math.Asin(stdlib.FloatOf(a[0])), nil }, math.Asin),

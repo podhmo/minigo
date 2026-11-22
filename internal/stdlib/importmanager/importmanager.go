@@ -15,7 +15,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		// methods (Add, Qualify, Imports) through the host member lookup.
 		"New": h.Fn("importmanager.New", func(a []any) (any, error) {
 			return importmanager.New(stdlib.Str(a[0])), nil
-		}),
+		}, importmanager.New),
 		// the type itself, so `importmanager.Manager` names a receiver
 		// for method expressions and declarations.
 		"Manager": stdlib.HostType("github.com/podhmo/minigo/pkg/importmanager.Manager", func() any {

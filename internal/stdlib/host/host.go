@@ -22,15 +22,15 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 	}
 
 	if len(env.AllowedRoots()) == 0 {
-		hostpkg["Getenv"] = h.Fn("host.Getenv", func(a []any) (any, error) { return os.Getenv(stdlib.Str(a[0])), nil })
-		hostpkg["Environ"] = h.Fn("host.Environ", func(a []any) (any, error) { return stdlib.StrsSlice(os.Environ()), nil })
+		hostpkg["Getenv"] = h.Fn("host.Getenv", func(a []any) (any, error) { return os.Getenv(stdlib.Str(a[0])), nil }, os.Getenv)
+		hostpkg["Environ"] = h.Fn("host.Environ", func(a []any) (any, error) { return stdlib.StrsSlice(os.Environ()), nil }, os.Environ)
 		hostpkg["Args"] = h.Fn("host.Args", func(a []any) (any, error) { return stdlib.StrsSlice(os.Args), nil })
 		hostpkg["Hostname"] = h.Fn("host.Hostname", func(a []any) (any, error) {
 			return stdlib.RetErr2(os.Hostname())
-		})
+		}, os.Hostname)
 		hostpkg["Getwd"] = h.Fn("host.Getwd", func(a []any) (any, error) {
 			return stdlib.RetErr2(os.Getwd())
-		})
+		}, os.Getwd)
 	}
 
 	for _, path := range []string{"minigo.dev/host", "github.com/podhmo/minigo/host"} {

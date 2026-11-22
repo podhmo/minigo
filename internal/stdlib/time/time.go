@@ -52,7 +52,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 	bind("time", map[string]runtime.Value{
 		// *stdtime.ParseError: errors.As / type asserts on Parse's error.
 		"ParseError": stdlib.HostType("time.ParseError", func() any { return &stdtime.ParseError{} }),
-		"Sleep":      h.Fn("time.Sleep", func(a []any) (any, error) { stdtime.Sleep(durOf(a[0])); return nil, nil }),
+		"Sleep":      h.Fn("time.Sleep", func(a []any) (any, error) { stdtime.Sleep(durOf(a[0])); return nil, nil }, stdtime.Sleep),
 		"After": h.Fnvc("time.After", func(vc runtime.VMCaller, a []any) (any, error) {
 			// a proxy feed like NewTimer's: once the fire is delivered the
 			// channel is dead, and a second receive must count as asleep
@@ -61,17 +61,17 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			// gc hands out a <-chan: a script-side send on it must trap,
 			// not silently succeed on the bidirectional proxy.
 			return (<-chan stdtime.Time)(f.C), nil
-		}),
+		}, stdtime.After),
 		"NewTimer": h.Fnvc("time.NewTimer", func(vc runtime.VMCaller, a []any) (any, error) {
 			t := stdtime.NewTimer(durOf(a[0]))
 			f := newChanFeed(vc, t.C, true)
 			return &TimerChanBox{t: t, C: f.C, feed: f}, nil
-		}),
+		}, stdtime.NewTimer),
 		"NewTicker": h.Fnvc("time.NewTicker", func(vc runtime.VMCaller, a []any) (any, error) {
 			t := stdtime.NewTicker(durOf(a[0]))
 			f := newChanFeed(vc, t.C, false)
 			return &TickerChanBox{t: t, C: f.C, feed: f}, nil
-		}),
+		}, stdtime.NewTicker),
 		"Tick": h.Fnvc("time.Tick", func(vc runtime.VMCaller, a []any) (any, error) {
 			// A non-positive interval returns nil like gc — wrapping it
 			// in a feed would mint a non-nil channel and defeat both
@@ -83,7 +83,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 				return (<-chan stdtime.Time)(f.C), nil
 			}
 			return (<-chan stdtime.Time)(nil), nil
-		}),
+		}, stdtime.Tick),
 		"AfterFunc": &runtime.BuiltinFunc{Name: "time.AfterFunc", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 2 {
 				return nil, errors.New("time.AfterFunc needs 2 args")
@@ -141,7 +141,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"LoadLocation": h.Fn("time.LoadLocation", func(a []any) (any, error) {
 			loc, err := stdtime.LoadLocation(stdlib.Str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(loc), stdlib.ErrVal(err)}}, nil
-		}),
+		}, stdtime.LoadLocation),
 		"UTC":   &runtime.GoValue{V: stdtime.UTC},
 		"Local": &runtime.GoValue{V: stdtime.Local},
 		"Since": h.Fn("time.Since", func(a []any) (any, error) {
@@ -149,11 +149,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 				return stdtime.Since(t), nil
 			}
 			return nil, fmt.Errorf("time.Since: not a Time")
-		}),
+		}, stdtime.Since),
 		"Parse": h.Fn2("time.Parse", func(a []any) (any, error) {
 			t, err := stdtime.Parse(stdlib.Str(a[0]), stdlib.Str(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(t), stdlib.ErrVal(err)}}, nil
-		}),
+		}, stdtime.Parse),
 		"ParseInLocation": h.Fn("time.ParseInLocation", func(a []any) (any, error) {
 			if len(a) != 3 {
 				return nil, errors.New("time.ParseInLocation needs 3 args")
@@ -164,11 +164,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			}
 			t, err := stdtime.ParseInLocation(stdlib.Str(a[0]), stdlib.Str(a[1]), loc)
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(t), stdlib.ErrVal(err)}}, nil
-		}),
+		}, stdtime.ParseInLocation),
 		"ParseDuration": h.Fn1("time.ParseDuration", func(a []any) (any, error) {
 			d, err := stdtime.ParseDuration(stdlib.Str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(d), stdlib.ErrVal(err)}}, nil
-		}),
+		}, stdtime.ParseDuration),
 		"Date": h.Fn("time.Date", func(a []any) (any, error) {
 			if len(a) != 8 {
 				return nil, fmt.Errorf("time.Date needs 8 args, got %d", len(a))
@@ -179,21 +179,21 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			}
 			return &runtime.GoValue{V: stdtime.Date(int(hostbridge.Int64Of(a[0])), stdtime.Month(hostbridge.Int64Of(a[1])),
 				int(hostbridge.Int64Of(a[2])), int(hostbridge.Int64Of(a[3])), int(hostbridge.Int64Of(a[4])), int(hostbridge.Int64Of(a[5])), int(hostbridge.Int64Of(a[6])), loc)}, nil
-		}),
+		}, stdtime.Date),
 		"Unix": h.Fn2("time.Unix", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtime.Unix(hostbridge.Int64Of(a[0]), hostbridge.Int64Of(a[1]))}, nil
-		}),
+		}, stdtime.Unix),
 		"UnixMilli": h.Fn1("time.UnixMilli", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtime.UnixMilli(hostbridge.Int64Of(a[0]))}, nil
-		}),
+		}, stdtime.UnixMilli),
 		"UnixMicro": h.Fn1("time.UnixMicro", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtime.UnixMicro(hostbridge.Int64Of(a[0]))}, nil
-		}),
+		}, stdtime.UnixMicro),
 		// no UnixNano: the name collides with Time.UnixNano and Go never
 		// shipped the package-level func.
 		"FixedZone": h.Fn2("time.FixedZone", func(a []any) (any, error) {
 			return &runtime.GoValue{V: stdtime.FixedZone(stdlib.Str(a[0]), int(hostbridge.Int64Of(a[1])))}, nil
-		}),
+		}, stdtime.FixedZone),
 		"Nanosecond":  stdtime.Nanosecond,
 		"Microsecond": stdtime.Microsecond,
 		"Second":      stdtime.Second,

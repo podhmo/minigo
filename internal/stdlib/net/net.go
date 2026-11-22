@@ -49,88 +49,88 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, unwrapFile func(any) *os.File) 
 		"AddrError":        stdlib.HostType("net.AddrError", func() any { return &net.AddrError{} }),
 		"ParseError":       stdlib.HostType("net.ParseError", func() any { return &net.ParseError{} }),
 		"InvalidAddrError": stdlib.HostType("net.InvalidAddrError", func() any { return net.InvalidAddrError("") }),
-		"Dial":             h.Fn("net.Dial", func(a []any) (any, error) { return stdlib.RetErr2(net.Dial(stdlib.Str(a[0]), stdlib.Str(a[1]))) }),
+		"Dial":             h.Fn("net.Dial", func(a []any) (any, error) { return stdlib.RetErr2(net.Dial(stdlib.Str(a[0]), stdlib.Str(a[1]))) }, net.Dial),
 		"DialIP": h.Fn("net.DialIP", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.DialIP(stdlib.Str(a[0]), ipAddrOf(a[1]), ipAddrOf(a[2])))
-		}),
+		}, net.DialIP),
 		"DialTCP": h.Fn("net.DialTCP", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.DialTCP(stdlib.Str(a[0]), tcpAddrOf(a[1]), tcpAddrOf(a[2])))
-		}),
+		}, net.DialTCP),
 		"DialTimeout": h.Fn("net.DialTimeout", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.DialTimeout(stdlib.Str(a[0]), stdlib.Str(a[1]), stdlib.DurOf(a[2])))
-		}),
+		}, net.DialTimeout),
 		"DialUDP": h.Fn("net.DialUDP", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.DialUDP(stdlib.Str(a[0]), udpAddrOf(a[1]), udpAddrOf(a[2])))
-		}),
+		}, net.DialUDP),
 		"DialUnix": h.Fn("net.DialUnix", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.DialUnix(stdlib.Str(a[0]), unixAddrOf(a[1]), unixAddrOf(a[2])))
-		}),
-		"Listen":   h.Fn("net.Listen", func(a []any) (any, error) { return stdlib.RetErr2(net.Listen(stdlib.Str(a[0]), stdlib.Str(a[1]))) }),
-		"ListenIP": h.Fn("net.ListenIP", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenIP(stdlib.Str(a[0]), ipAddrOf(a[1]))) }),
+		}, net.DialUnix),
+		"Listen":   h.Fn("net.Listen", func(a []any) (any, error) { return stdlib.RetErr2(net.Listen(stdlib.Str(a[0]), stdlib.Str(a[1]))) }, net.Listen),
+		"ListenIP": h.Fn("net.ListenIP", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenIP(stdlib.Str(a[0]), ipAddrOf(a[1]))) }, net.ListenIP),
 		"ListenPacket": h.Fn("net.ListenPacket", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.ListenPacket(stdlib.Str(a[0]), stdlib.Str(a[1])))
-		}),
-		"ListenTCP":  h.Fn("net.ListenTCP", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenTCP(stdlib.Str(a[0]), tcpAddrOf(a[1]))) }),
-		"ListenUDP":  h.Fn("net.ListenUDP", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenUDP(stdlib.Str(a[0]), udpAddrOf(a[1]))) }),
-		"ListenUnix": h.Fn("net.ListenUnix", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenUnix(stdlib.Str(a[0]), unixAddrOf(a[1]))) }),
+		}, net.ListenPacket),
+		"ListenTCP":  h.Fn("net.ListenTCP", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenTCP(stdlib.Str(a[0]), tcpAddrOf(a[1]))) }, net.ListenTCP),
+		"ListenUDP":  h.Fn("net.ListenUDP", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenUDP(stdlib.Str(a[0]), udpAddrOf(a[1]))) }, net.ListenUDP),
+		"ListenUnix": h.Fn("net.ListenUnix", func(a []any) (any, error) { return stdlib.RetErr2(net.ListenUnix(stdlib.Str(a[0]), unixAddrOf(a[1]))) }, net.ListenUnix),
 		"ListenMulticastUDP": h.Fn("net.ListenMulticastUDP", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.ListenMulticastUDP(stdlib.Str(a[0]), netIfaceOf(a[1]), udpAddrOf(a[2])))
-		}),
-		"FileConn":       h.Fn("net.FileConn", func(a []any) (any, error) { return stdlib.RetErr2(net.FileConn(netFileOf(unwrapFile, a[0]))) }),
-		"FileListener":   h.Fn("net.FileListener", func(a []any) (any, error) { return stdlib.RetErr2(net.FileListener(netFileOf(unwrapFile, a[0]))) }),
-		"FilePacketConn": h.Fn("net.FilePacketConn", func(a []any) (any, error) { return stdlib.RetErr2(net.FilePacketConn(netFileOf(unwrapFile, a[0]))) }),
+		}, net.ListenMulticastUDP),
+		"FileConn":       h.Fn("net.FileConn", func(a []any) (any, error) { return stdlib.RetErr2(net.FileConn(netFileOf(unwrapFile, a[0]))) }, net.FileConn),
+		"FileListener":   h.Fn("net.FileListener", func(a []any) (any, error) { return stdlib.RetErr2(net.FileListener(netFileOf(unwrapFile, a[0]))) }, net.FileListener),
+		"FilePacketConn": h.Fn("net.FilePacketConn", func(a []any) (any, error) { return stdlib.RetErr2(net.FilePacketConn(netFileOf(unwrapFile, a[0]))) }, net.FilePacketConn),
 		"Pipe": h.Fn("net.Pipe", func(a []any) (any, error) {
 			c1, c2 := net.Pipe()
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(c1), stdlib.ScriptVal(c2)}}, nil
-		}),
+		}, net.Pipe),
 		"ResolveTCPAddr": h.Fn("net.ResolveTCPAddr", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.ResolveTCPAddr(stdlib.Str(a[0]), stdlib.Str(a[1])))
-		}),
+		}, net.ResolveTCPAddr),
 		"ResolveUDPAddr": h.Fn("net.ResolveUDPAddr", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.ResolveUDPAddr(stdlib.Str(a[0]), stdlib.Str(a[1])))
-		}),
+		}, net.ResolveUDPAddr),
 		"ResolveIPAddr": h.Fn("net.ResolveIPAddr", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.ResolveIPAddr(stdlib.Str(a[0]), stdlib.Str(a[1])))
-		}),
+		}, net.ResolveIPAddr),
 		"ResolveUnixAddr": h.Fn("net.ResolveUnixAddr", func(a []any) (any, error) {
 			return stdlib.RetErr2(net.ResolveUnixAddr(stdlib.Str(a[0]), stdlib.Str(a[1])))
-		}),
-		"TCPAddrFromAddrPort": h.Fn("net.TCPAddrFromAddrPort", func(a []any) (any, error) { return net.TCPAddrFromAddrPort(addrPortOf(a[0])), nil }),
-		"UDPAddrFromAddrPort": h.Fn("net.UDPAddrFromAddrPort", func(a []any) (any, error) { return net.UDPAddrFromAddrPort(addrPortOf(a[0])), nil }),
+		}, net.ResolveUnixAddr),
+		"TCPAddrFromAddrPort": h.Fn("net.TCPAddrFromAddrPort", func(a []any) (any, error) { return net.TCPAddrFromAddrPort(addrPortOf(a[0])), nil }, net.TCPAddrFromAddrPort),
+		"UDPAddrFromAddrPort": h.Fn("net.UDPAddrFromAddrPort", func(a []any) (any, error) { return net.UDPAddrFromAddrPort(addrPortOf(a[0])), nil }, net.UDPAddrFromAddrPort),
 		"SplitHostPort": h.Fn("net.SplitHostPort", func(a []any) (any, error) {
 			h, p, err := net.SplitHostPort(stdlib.Str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{h, p, stdlib.ErrVal(err)}}, nil
-		}),
-		"JoinHostPort": h.Fn("net.JoinHostPort", func(a []any) (any, error) { return net.JoinHostPort(stdlib.Str(a[0]), stdlib.Str(a[1])), nil }),
-		"ParseIP":      h.Fn("net.ParseIP", func(a []any) (any, error) { return net.ParseIP(stdlib.Str(a[0])), nil }),
+		}, net.SplitHostPort),
+		"JoinHostPort": h.Fn("net.JoinHostPort", func(a []any) (any, error) { return net.JoinHostPort(stdlib.Str(a[0]), stdlib.Str(a[1])), nil }, net.JoinHostPort),
+		"ParseIP":      h.Fn("net.ParseIP", func(a []any) (any, error) { return net.ParseIP(stdlib.Str(a[0])), nil }, net.ParseIP),
 		"ParseCIDR": h.Fn("net.ParseCIDR", func(a []any) (any, error) {
 			ip, ipn, err := net.ParseCIDR(stdlib.Str(a[0]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(ip), stdlib.ScriptVal(ipn), stdlib.ErrVal(err)}}, nil
-		}),
-		"ParseMAC": h.Fn("net.ParseMAC", func(a []any) (any, error) { return stdlib.RetErr2(net.ParseMAC(stdlib.Str(a[0]))) }),
+		}, net.ParseCIDR),
+		"ParseMAC": h.Fn("net.ParseMAC", func(a []any) (any, error) { return stdlib.RetErr2(net.ParseMAC(stdlib.Str(a[0]))) }, net.ParseMAC),
 		"IPv4": h.Fn("net.IPv4", func(a []any) (any, error) {
 			return net.IPv4(byte(stdlib.IntOf(a[0])), byte(stdlib.IntOf(a[1])), byte(stdlib.IntOf(a[2])), byte(stdlib.IntOf(a[3]))), nil
-		}),
+		}, net.IPv4),
 		"IPv4Mask": h.Fn("net.IPv4Mask", func(a []any) (any, error) {
 			return net.IPv4Mask(byte(stdlib.IntOf(a[0])), byte(stdlib.IntOf(a[1])), byte(stdlib.IntOf(a[2])), byte(stdlib.IntOf(a[3]))), nil
-		}),
-		"CIDRMask":    h.Fn("net.CIDRMask", func(a []any) (any, error) { return net.CIDRMask(stdlib.IntOf(a[0]), stdlib.IntOf(a[1])), nil }),
-		"LookupAddr":  h.Fn("net.LookupAddr", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupAddr(stdlib.Str(a[0]))) }),
-		"LookupCNAME": h.Fn("net.LookupCNAME", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupCNAME(stdlib.Str(a[0]))) }),
-		"LookupHost":  h.Fn("net.LookupHost", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupHost(stdlib.Str(a[0]))) }),
-		"LookupIP":    h.Fn("net.LookupIP", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupIP(stdlib.Str(a[0]))) }),
-		"LookupMX":    h.Fn("net.LookupMX", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupMX(stdlib.Str(a[0]))) }),
-		"LookupNS":    h.Fn("net.LookupNS", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupNS(stdlib.Str(a[0]))) }),
-		"LookupPort":  h.Fn("net.LookupPort", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupPort(stdlib.Str(a[0]), stdlib.Str(a[1]))) }),
+		}, net.IPv4Mask),
+		"CIDRMask":    h.Fn("net.CIDRMask", func(a []any) (any, error) { return net.CIDRMask(stdlib.IntOf(a[0]), stdlib.IntOf(a[1])), nil }, net.CIDRMask),
+		"LookupAddr":  h.Fn("net.LookupAddr", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupAddr(stdlib.Str(a[0]))) }, net.LookupAddr),
+		"LookupCNAME": h.Fn("net.LookupCNAME", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupCNAME(stdlib.Str(a[0]))) }, net.LookupCNAME),
+		"LookupHost":  h.Fn("net.LookupHost", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupHost(stdlib.Str(a[0]))) }, net.LookupHost),
+		"LookupIP":    h.Fn("net.LookupIP", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupIP(stdlib.Str(a[0]))) }, net.LookupIP),
+		"LookupMX":    h.Fn("net.LookupMX", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupMX(stdlib.Str(a[0]))) }, net.LookupMX),
+		"LookupNS":    h.Fn("net.LookupNS", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupNS(stdlib.Str(a[0]))) }, net.LookupNS),
+		"LookupPort":  h.Fn("net.LookupPort", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupPort(stdlib.Str(a[0]), stdlib.Str(a[1]))) }, net.LookupPort),
 		"LookupSRV": h.Fn("net.LookupSRV", func(a []any) (any, error) {
 			cname, srvs, err := net.LookupSRV(stdlib.Str(a[0]), stdlib.Str(a[1]), stdlib.Str(a[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{cname, stdlib.ScriptVal(srvs), stdlib.ErrVal(err)}}, nil
-		}),
-		"LookupTXT":                  h.Fn("net.LookupTXT", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupTXT(stdlib.Str(a[0]))) }),
-		"Interfaces":                 h.Fn("net.Interfaces", func(a []any) (any, error) { return stdlib.RetErr2(net.Interfaces()) }),
-		"InterfaceAddrs":             h.Fn("net.InterfaceAddrs", func(a []any) (any, error) { return stdlib.RetErr2(net.InterfaceAddrs()) }),
-		"InterfaceByIndex":           h.Fn("net.InterfaceByIndex", func(a []any) (any, error) { return stdlib.RetErr2(net.InterfaceByIndex(stdlib.IntOf(a[0]))) }),
-		"InterfaceByName":            h.Fn("net.InterfaceByName", func(a []any) (any, error) { return stdlib.RetErr2(net.InterfaceByName(stdlib.Str(a[0]))) }),
+		}, net.LookupSRV),
+		"LookupTXT":                  h.Fn("net.LookupTXT", func(a []any) (any, error) { return stdlib.RetErr2(net.LookupTXT(stdlib.Str(a[0]))) }, net.LookupTXT),
+		"Interfaces":                 h.Fn("net.Interfaces", func(a []any) (any, error) { return stdlib.RetErr2(net.Interfaces()) }, net.Interfaces),
+		"InterfaceAddrs":             h.Fn("net.InterfaceAddrs", func(a []any) (any, error) { return stdlib.RetErr2(net.InterfaceAddrs()) }, net.InterfaceAddrs),
+		"InterfaceByIndex":           h.Fn("net.InterfaceByIndex", func(a []any) (any, error) { return stdlib.RetErr2(net.InterfaceByIndex(stdlib.IntOf(a[0]))) }, net.InterfaceByIndex),
+		"InterfaceByName":            h.Fn("net.InterfaceByName", func(a []any) (any, error) { return stdlib.RetErr2(net.InterfaceByName(stdlib.Str(a[0]))) }, net.InterfaceByName),
 		"DefaultResolver":            &runtime.GoValue{V: net.DefaultResolver},
 		"ErrClosed":                  &runtime.GoValue{V: net.ErrClosed},
 		"ErrWriteToConnected":        &runtime.GoValue{V: net.ErrWriteToConnected},

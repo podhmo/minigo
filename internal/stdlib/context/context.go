@@ -43,7 +43,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			nc, cancel := stdcontext.WithCancel(c)
 			watchCtxDone(vc, c, nc)
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(nc), stdlib.ScriptVal(cancel)}}, nil
-		}),
+		}, stdcontext.WithCancel),
 		"WithCancelCause": h.Fnvc("context.WithCancelCause", func(vc runtime.VMCaller, a []any) (any, error) {
 			c, err := AsCtx(a[0])
 			if err != nil {
@@ -52,7 +52,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			nc, cancel := stdcontext.WithCancelCause(c)
 			watchCtxDone(vc, c, nc)
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(nc), stdlib.ScriptVal(cancel)}}, nil
-		}),
+		}, stdcontext.WithCancelCause),
 		"WithDeadline": h.Fn("context.WithDeadline", func(a []any) (any, error) {
 			c, err := AsCtx(a[0])
 			if err != nil {
@@ -64,7 +64,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			}
 			nc, cancel := stdcontext.WithDeadline(c, d)
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(nc), stdlib.ScriptVal(cancel)}}, nil
-		}),
+		}, stdcontext.WithDeadline),
 		"WithDeadlineCause": h.FnvcRaw("context.WithDeadlineCause", 3, func(vc runtime.VMCaller, a []any, raw []runtime.Value) (any, error) {
 			c, err := AsCtx(a[0])
 			if err != nil {
@@ -76,7 +76,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			}
 			nc, cancel := stdcontext.WithDeadlineCause(c, d, hostbridge.HostErrOf(vc, raw[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(nc), stdlib.ScriptVal(cancel)}}, nil
-		}),
+		}, stdcontext.WithDeadlineCause),
 		"WithTimeout": h.Fn("context.WithTimeout", func(a []any) (any, error) {
 			c, err := AsCtx(a[0])
 			if err != nil {
@@ -84,7 +84,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			}
 			nc, cancel := stdcontext.WithTimeout(c, durOf(a[1]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(nc), stdlib.ScriptVal(cancel)}}, nil
-		}),
+		}, stdcontext.WithTimeout),
 		"WithTimeoutCause": h.FnvcRaw("context.WithTimeoutCause", 3, func(vc runtime.VMCaller, a []any, raw []runtime.Value) (any, error) {
 			c, err := AsCtx(a[0])
 			if err != nil {
@@ -92,7 +92,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			}
 			nc, cancel := stdcontext.WithTimeoutCause(c, durOf(a[1]), hostbridge.HostErrOf(vc, raw[2]))
 			return &runtime.Tuple{Elems: []runtime.Value{stdlib.ScriptVal(nc), stdlib.ScriptVal(cancel)}}, nil
-		}),
+		}, stdcontext.WithTimeoutCause),
 		"WithoutCancel": h.Fn("context.WithoutCancel", func(a []any) (any, error) {
 			c, err := AsCtx(a[0])
 			if err != nil {
@@ -151,7 +151,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdcontext.Cause(c)), nil
-		}),
+		}, stdcontext.Cause),
 	} {
 		tbl[k] = v
 	}

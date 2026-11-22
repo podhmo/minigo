@@ -119,7 +119,7 @@ package ./inspectpkg    dir
 - **過剰なメソッド候補（値コンテキストのみ）**: 値基底では `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。型レベル基底（`T.`）は method expression なので値メソッド集合だけに絞ってある（`func (p *T) M` は `T.M` では trap する）。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
 - ~~**昇格メソッドの Detail**~~ → 対応済み: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶ自体は正しいが、dot import された型の裸識別子が「宣言元パッケージの型」として修飾されてしまう問題があった（`import . "strings"` 中の `Builder` が `embedpkg.Builder` と綴られる）。`TypGoSpelling` が裸 ident をファイルの dot import 経由で先に解決するようにし、実家の句名で修飾する（パッケージローカル宣言は dot import に勝つので従来通り）。
 - ~~**suffix fallback の誤爆**~~ → 対応済み: `m[k.`（開いた index 式の中の `.`）が `k` のメンバーを出していた。`completeContext` が括弧深度を追跡し、最内の未閉鎖グループが `[` の `.` 末尾を selector コンテキストから外す（index スロットはメンバー候補の文脈ではない）。`(u.` は `u` を正しく解決するので `(` は対象外。
-- **adapter 系 builtin は Detail が空**: `strings.Compare` など `fn*` ラッパーは `Target` を持たないので reflect シグネチャを描けない。嘘の `func(...) any` より空の方がまし、という判断。
+- ~~**adapter 系 builtin は Detail が空**~~ → 対応済み: 実体と同型の関数が存在する `fn*` ラッパーに `Target` を付与（約160件 — strings/os/net/time/context/filepath/bytealg 等）。`Target` は arity チェックと引数 marshal にも効くので、実体が無いスタブ・内部関数（`bytealg.Cutover`、`runtime.AddCleanup`（ジェネリック）、`godebug.New`、`host.*`、`internal/race.*`、`testenv.SetGODEBUG`）と、引数型が一致しない `bytealg.CountString` だけは空のまま — 嘘の `func(...) any` より空の方がまし、という判断は維持。
 
 補足 — レビューで見つかった「読み取り版と selectMember の意味論差分」は修正済み（いずれもミラーする側の見落としで、方式の限界ではない）:
 

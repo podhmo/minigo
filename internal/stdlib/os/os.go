@@ -32,10 +32,10 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			// interpreter — ExitRequest ends the run at the Call
 			// boundary: 0 cleanly, N as `exit status N`.
 			panic(&vm.ExitRequest{Code: int(stdlib.IntOf(a[0]))})
-		}),
-		"Stat":     h.Fn1("os.Stat", func(a []any) (any, error) { return fsOp2(env, "os.Stat", a, os.Stat) }),
-		"Lstat":    h.Fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(env, "os.Lstat", a, os.Lstat) }),
-		"ReadFile": h.Fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(env, "os.ReadFile", a, os.ReadFile) }),
+		}, os.Exit),
+		"Stat":     h.Fn1("os.Stat", func(a []any) (any, error) { return fsOp2(env, "os.Stat", a, os.Stat) }, os.Stat),
+		"Lstat":    h.Fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(env, "os.Lstat", a, os.Lstat) }, os.Lstat),
+		"ReadFile": h.Fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(env, "os.ReadFile", a, os.ReadFile) }, os.ReadFile),
 		"WriteFile": h.Fn3("os.WriteFile", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -43,7 +43,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.WriteFile(p, stdlib.ByteSlice(a[1]), fs.FileMode(stdlib.IntOf(a[2]))), sp, p)), nil
-		}),
+		}, os.WriteFile),
 		"Mkdir": h.Fn2("os.Mkdir", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -51,7 +51,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.Mkdir(p, fs.FileMode(stdlib.IntOf(a[1]))), sp, p)), nil
-		}),
+		}, os.Mkdir),
 		"MkdirAll": h.Fn2("os.MkdirAll", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -59,9 +59,9 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.MkdirAll(p, fs.FileMode(stdlib.IntOf(a[1]))), sp, p)), nil
-		}),
-		"Remove":    h.Fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(env, "os.Remove", a, os.Remove) }),
-		"RemoveAll": h.Fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(env, "os.RemoveAll", a, os.RemoveAll) }),
+		}, os.MkdirAll),
+		"Remove":    h.Fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(env, "os.Remove", a, os.Remove) }, os.Remove),
+		"RemoveAll": h.Fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(env, "os.RemoveAll", a, os.RemoveAll) }, os.RemoveAll),
 		"Chmod": h.Fn2("os.Chmod", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -69,7 +69,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.Chmod(p, fs.FileMode(stdlib.IntOf(a[1]))), sp, p)), nil
-		}),
+		}, os.Chmod),
 		"Truncate": h.Fn2("os.Truncate", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -77,7 +77,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.Truncate(p, stdlib.Int64Of(a[1])), sp, p)), nil
-		}),
+		}, os.Truncate),
 		"Rename": h.Fn2("os.Rename", func(a []any) (any, error) {
 			old, err := env.FsPath(stdlib.Str(a[0]))
 			if err != nil {
@@ -94,7 +94,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				le.New = stdlib.ScriptPathOf(stdlib.Str(a[1]), newp, le.New)
 			}
 			return stdlib.ErrVal(err), nil
-		}),
+		}, os.Rename),
 		"ReadDir": h.Fn1("os.ReadDir", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -110,11 +110,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			return &runtime.Tuple{Elems: []runtime.Value{
 				&runtime.Slice{Elems: el, Typ: hostbridge.HostSliceTypOf(reflect.TypeFor[fs.DirEntry]())},
 				stdlib.ErrVal(err)}}, nil
-		}),
+		}, os.ReadDir),
 		// Getwd/Chdir operate on the engine's virtual cwd (see WithWorkingDir):
 		// the host process cwd is never touched, so scripts can "cd" freely
 		// without side effects on the embedding tool.
-		"Getwd": h.Fn("os.Getwd", func(a []any) (any, error) { return stdlib.RetErr2(env.Cwd(), nil) }),
+		"Getwd": h.Fn("os.Getwd", func(a []any) (any, error) { return stdlib.RetErr2(env.Cwd(), nil) }, os.Getwd),
 		"Chdir": h.Fn1("os.Chdir", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -140,9 +140,9 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			}
 			env.SetCwd(p)
 			return runtime.NIL, nil
-		}),
-		"Open":   h.Fn1("os.Open", func(a []any) (any, error) { return fsFileOp(env, a, os.Open) }),
-		"Create": h.Fn1("os.Create", func(a []any) (any, error) { return fsFileOp(env, a, os.Create) }),
+		}, os.Chdir),
+		"Open":   h.Fn1("os.Open", func(a []any) (any, error) { return fsFileOp(env, a, os.Open) }, os.Open),
+		"Create": h.Fn1("os.Create", func(a []any) (any, error) { return fsFileOp(env, a, os.Create) }, os.Create),
 		"OpenFile": h.Fn3("os.OpenFile", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -154,7 +154,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return stdlib.RetErr2(f, stdlib.ScriptPathErr(err, sp, p))
 			}
 			return stdlib.RetErr2(&scriptFile{File: f, name: sp}, nil)
-		}),
+		}, os.OpenFile),
 		"MkdirTemp": h.Fn2("os.MkdirTemp", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			dir, err := fsTempDir(env, sp)
@@ -172,7 +172,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				d = stdlib.ScriptPathOf(sp, dir, d)
 			}
 			return stdlib.RetErr2(d, nil)
-		}),
+		}, os.MkdirTemp),
 		"CreateTemp": h.Fn2("os.CreateTemp", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			dir, err := fsTempDir(env, sp)
@@ -188,7 +188,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				name = stdlib.ScriptPathOf(sp, dir, name)
 			}
 			return stdlib.RetErr2(&scriptFile{File: f, name: name}, nil)
-		}),
+		}, os.CreateTemp),
 		// DirFS resolves the dir through the same cwd+roots check as the
 		// file ops; the returned host fs.DirFS keeps its Open rooted
 		// there (os.DirFS itself never escapes — reads go through the
@@ -199,7 +199,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return &runtime.GoValue{V: os.DirFS(p)}, nil
-		}),
+		}, os.DirFS),
 		"IsPathSeparator": h.Fn1("os.IsPathSeparator", func(a []any) (any, error) {
 			return os.IsPathSeparator(uint8(stdlib.IntOf(a[0]))), nil
 		}, os.IsPathSeparator),
@@ -294,11 +294,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 	bindLinkOps(ospkg, h, env)
 
 	if len(env.AllowedRoots()) == 0 {
-		ospkg["Getenv"] = h.Fn("os.Getenv", func(a []any) (any, error) { return os.Getenv(stdlib.Str(a[0])), nil })
-		ospkg["Setenv"] = h.Fn2("os.Setenv", func(a []any) (any, error) { return stdlib.ErrVal(os.Setenv(stdlib.Str(a[0]), stdlib.Str(a[1]))), nil })
-		ospkg["Unsetenv"] = h.Fn1("os.Unsetenv", func(a []any) (any, error) { return stdlib.ErrVal(os.Unsetenv(stdlib.Str(a[0]))), nil })
-		ospkg["Clearenv"] = h.Fn("os.Clearenv", func(a []any) (any, error) { os.Clearenv(); return nil, nil })
-		ospkg["Environ"] = h.Fn("os.Environ", func(a []any) (any, error) { return stdlib.StrsSlice(os.Environ()), nil })
+		ospkg["Getenv"] = h.Fn("os.Getenv", func(a []any) (any, error) { return os.Getenv(stdlib.Str(a[0])), nil }, os.Getenv)
+		ospkg["Setenv"] = h.Fn2("os.Setenv", func(a []any) (any, error) { return stdlib.ErrVal(os.Setenv(stdlib.Str(a[0]), stdlib.Str(a[1]))), nil }, os.Setenv)
+		ospkg["Unsetenv"] = h.Fn1("os.Unsetenv", func(a []any) (any, error) { return stdlib.ErrVal(os.Unsetenv(stdlib.Str(a[0]))), nil }, os.Unsetenv)
+		ospkg["Clearenv"] = h.Fn("os.Clearenv", func(a []any) (any, error) { os.Clearenv(); return nil, nil }, os.Clearenv)
+		ospkg["Environ"] = h.Fn("os.Environ", func(a []any) (any, error) { return stdlib.StrsSlice(os.Environ()), nil }, os.Environ)
 		// os.Args is the script-visible argv (WithArgs; else the host
 		// process argv), bound as a VARIABLE like Go's — flag's package
 		// init reads it via len(os.Args).
@@ -307,7 +307,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			argv = args
 		}
 		ospkg["Args"] = stdlib.StrsSlice(argv)
-		ospkg["Hostname"] = h.Fn("os.Hostname", func(a []any) (any, error) { return stdlib.RetErr2(os.Hostname()) })
+		ospkg["Hostname"] = h.Fn("os.Hostname", func(a []any) (any, error) { return stdlib.RetErr2(os.Hostname()) }, os.Hostname)
 		// process stdio, boxed for cmd.Stdout / cmd.Stderr wiring.
 		// os.Stdout is a *os.File facade whose writes forward to the
 		// engine's configured output so host consumers handed it —
@@ -321,11 +321,11 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 		ospkg["Pipe"] = h.Fn("os.Pipe", func(a []any) (any, error) {
 			r, w, err := os.Pipe()
 			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: r}, &runtime.GoValue{V: w}, stdlib.ErrVal(err)}}, nil
-		})
-		ospkg["TempDir"] = h.Fn("os.TempDir", func(a []any) (any, error) { return os.TempDir(), nil })
-		ospkg["UserHomeDir"] = h.Fn("os.UserHomeDir", func(a []any) (any, error) { return stdlib.RetErr2(os.UserHomeDir()) })
-		ospkg["UserCacheDir"] = h.Fn("os.UserCacheDir", func(a []any) (any, error) { return stdlib.RetErr2(os.UserCacheDir()) })
-		ospkg["UserConfigDir"] = h.Fn("os.UserConfigDir", func(a []any) (any, error) { return stdlib.RetErr2(os.UserConfigDir()) })
+		}, os.Pipe)
+		ospkg["TempDir"] = h.Fn("os.TempDir", func(a []any) (any, error) { return os.TempDir(), nil }, os.TempDir)
+		ospkg["UserHomeDir"] = h.Fn("os.UserHomeDir", func(a []any) (any, error) { return stdlib.RetErr2(os.UserHomeDir()) }, os.UserHomeDir)
+		ospkg["UserCacheDir"] = h.Fn("os.UserCacheDir", func(a []any) (any, error) { return stdlib.RetErr2(os.UserCacheDir()) }, os.UserCacheDir)
+		ospkg["UserConfigDir"] = h.Fn("os.UserConfigDir", func(a []any) (any, error) { return stdlib.RetErr2(os.UserConfigDir()) }, os.UserConfigDir)
 	}
 
 	bind("os", ospkg)

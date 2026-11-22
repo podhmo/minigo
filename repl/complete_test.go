@@ -108,6 +108,21 @@ func TestCompletePackage(t *testing.T) {
 	if !hasCand(cands, "NewReader") {
 		t.Fatalf("NewReader missing: %v", candNames(cands))
 	}
+	// `fn*` adapter builtins carry a Target: Detail renders the
+	// reflect signature.
+	cands = r.Complete("strings.")
+	var found bool
+	for _, c := range cands {
+		if c.Name == "Compare" {
+			found = true
+			if c.Detail != "func(string, string) int" {
+				t.Fatalf("Compare Detail = %q", c.Detail)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("Compare missing")
+	}
 }
 
 func TestCompleteStructAndMethods(t *testing.T) {
