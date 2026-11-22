@@ -692,6 +692,36 @@ func TestCompleteEvalBase(t *testing.T) {
 	}
 }
 
+func TestCompleteEvalBaseMemo(t *testing.T) {
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+	r.SetEvalPolicy(EvalBase)
+
+	evalLines(t, r,
+		`var calls = 0`,
+		`func getMap() map[string]int { calls++; return map[string]int{"k": 1} }`,
+	)
+
+	// Repeated completion of the same base evaluates it once — the
+	// memoized result answers later presses.
+	for i := 0; i < 3; i++ {
+		if cands := r.Complete(`getMap()["`); !hasCand(cands, "k") {
+			t.Fatalf(`getMap()[" missing key "k" on press %d -> %v`, i, candNames(cands))
+		}
+	}
+	if got := cellInt(r, "calls"); got != 1 {
+		t.Fatalf("calls = %d, want 1 — the base re-evaluated per press", got)
+	}
+
+	// Any state-changing input invalidates the memo: the next press
+	// evaluates afresh.
+	evalLines(t, r, `var unrelated = 1`)
+	r.Complete(`getMap()["`)
+	if got := cellInt(r, "calls"); got != 2 {
+		t.Fatalf("calls = %d, want 2 — stale memo survived an input", got)
+	}
+}
+
 func TestCompleteMapKeys(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)

@@ -158,10 +158,10 @@ var FileBudgets = map[string]int{
 	"pkg/locator/locator.go":                     777,
 	"pkg/modulewalk/modulewalk.go":               541,
 
-	"repl/complete.go":                               2147,
+	"repl/complete.go":                               2169,
 	"repl/pkginfo.go":                                214,
-	"repl/load.go":                                   662,
-	"repl/repl.go":                                   1262,
+	"repl/load.go":                                   664,
+	"repl/repl.go":                                   1272,
 	"replhooks.go":                                   55,
 	"resolve/filescope.go":                           117,
 	"resolve/goscan.go":                              203,
@@ -402,6 +402,6 @@ var FileBudgetExceptions = map[string]string{
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch + :eval arm and help for the completion EvalBase tier",
 	"repl/complete.go":                   "EvalBase tier: EvalPolicy + evalBase fallback through EvalExpr + selectorBase primary-expression gate + mapkey string-literal context + inferInitType untyped-var inference + promotion-depth field walk + bracket-depth index-tail rejection + scanOffsets shared scanner (REPL completion)",
-	"repl/repl.go":                       "evalPolicy field for the completion EvalBase tier",
+	"repl/repl.go":                       "evalPolicy field for the completion EvalBase tier + evalMemo per-line base-evaluation memo",
 	"pkg/locator/locator.go":             "ReplacedImportPath: spell a replace-covered dir by its OldPath",
 }
