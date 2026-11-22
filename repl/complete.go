@@ -1510,17 +1510,24 @@ func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptr
 
 // structFields enumerates declared and promoted (embedded) fields.
 func (c *completer) structFields(td *runtime.TypeDef, out *[]Candidate) {
-	c.structFieldsOf(td, out, map[*runtime.TypeDef]bool{}, 0)
+	c.structFieldsOf(td, out, map[*runtime.TypeDef]int{}, 0)
 }
 
-// structFieldsOf is structFields with a visited set — recursive embeds
+// structFieldsOf is structFields with a visited-depth set — recursive embeds
 // (`type Node struct{ *Node }`) are legal Go and must terminate. depth
 // counts promotion hops so same-depth providers flag Ambiguous.
-func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seen map[*runtime.TypeDef]bool, depth int) {
-	if td == nil || seen[td] {
+func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seenAt map[*runtime.TypeDef]int, depth int) {
+	if td == nil {
 		return
 	}
-	seen[td] = true
+	if prev, ok := seenAt[td]; ok && depth > prev {
+		// already offered through a shallower path — a deeper reach
+		// adds nothing; its members lose to the shallow offering.
+		return
+	}
+	// an equal- or shallower-depth reach still walks: addField marks
+	// each member ambiguous on a tie, or swaps Detail on a shadow.
+	seenAt[td] = depth
 	fts, _ := c.r.engine.FieldTypes(td)
 	for i, name := range td.Fields {
 		var detail string
@@ -1534,7 +1541,7 @@ func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seen m
 		if err != nil || emb == nil {
 			continue
 		}
-		c.structFieldsOf(emb, out, seen, depth+1)
+		c.structFieldsOf(emb, out, seenAt, depth+1)
 	}
 }
 

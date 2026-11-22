@@ -723,9 +723,14 @@ func TestCompleteAmbiguousPromoted(t *testing.T) {
 		`type Deep struct { L }`,             // LA at depth 2 via Deep
 		`type Mixed struct { Deep; R }`,      // LA@2 (Deep) vs LA@1 (R) — R wins
 		`type Outer struct { LA int; Both }`, // depth-0 LA shadows the ambiguous pair
+		`type A struct { F int }`,
+		`type LA struct { A }`,       // F at depth 2 via LA
+		`type RA struct { A }`,       // F at depth 2 via RA
+		`type Dia struct { LA; RA }`, // diamond: F promoted twice at depth 2
 		`var both Both`,
 		`var mixed Mixed`,
 		`var outer Outer`,
+		`var dia Dia`,
 	)
 
 	find := func(cands []Candidate, name string) Candidate {
@@ -750,6 +755,10 @@ func TestCompleteAmbiguousPromoted(t *testing.T) {
 	// a direct field shadows the ambiguous pair entirely.
 	if la := find(r.Complete("outer."), "LA"); la.Ambiguous || la.Detail != "int" {
 		t.Fatalf("outer.LA = %+v, want unambiguous int (declared shadows)", la)
+	}
+	// diamond embedding: F reaches depth 2 through both LA and RA.
+	if f := find(r.Complete("dia."), "F"); !f.Ambiguous {
+		t.Fatalf("dia.F not flagged ambiguous: %+v", f)
 	}
 }
 
