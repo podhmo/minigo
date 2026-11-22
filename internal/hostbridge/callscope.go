@@ -169,12 +169,9 @@ func (m *Marshal) ownStack() (*callScopeStack, bool) {
 	return v.(*callScopeStack), true
 }
 
-// insideMerge reports whether the calling goroutine is running a
-// sync/pull merge pass — projections a merge builds ride on it (issue
-// #1399): re-projecting eagerly calls the same members the outer
-// projection did, and each eager call's own host calls re-enter the
-// merge. Callable members bind lazily instead.
-func (m *Marshal) insideMerge() bool {
+// stackFlag evaluates f under the caller's stack lock — false when the
+// goroutine owns no call-scope stack.
+func (m *Marshal) stackFlag(f func(*callScopeStack) bool) bool {
 	st, ok := m.ownStack()
 	if !ok {
 		return false
@@ -182,7 +179,16 @@ func (m *Marshal) insideMerge() bool {
 	s := st
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.merging > 0
+	return f(s)
+}
+
+// insideMerge reports whether the calling goroutine is running a
+// sync/pull merge pass — projections a merge builds ride on it (issue
+// #1399): re-projecting eagerly calls the same members the outer
+// projection did, and each eager call's own host calls re-enter the
+// merge. Callable members bind lazily instead.
+func (m *Marshal) insideMerge() bool {
+	return m.stackFlag(func(s *callScopeStack) bool { return s.merging > 0 })
 }
 
 // registerProjected records v for the duration of the running host
