@@ -261,7 +261,10 @@ func recordHostEmbed(record func(string, int, promMember), d int, it promEmbed) 
 // (no caller, no marshal budget, a signature template cannot invoke,
 // or a pointer receiver on a path the method set excludes), else its
 // eagerly-run result — template's evalField reads fields, it does not
-// call them, so Go's field-access call replays here.
+// call them, so Go's field-access call replays here. Inside a sync/pull
+// merge the call defers to eval time instead: the merge's
+// re-projection running it eagerly would have that call's own host
+// calls re-enter the merge, compounding without bound (issue #1399).
 func (h *HostMarshal) projMethod(fv reflect.Value, m *runtime.Function, recv runtime.Value, verbatim bool, vc runtime.VMCaller) {
 	r := recv
 	if !m.PtrRecv {
@@ -273,6 +276,10 @@ func (h *HostMarshal) projMethod(fv reflect.Value, m *runtime.Function, recv run
 	nout := h.M.TemplateCallableNout(m)
 	if vc == nil || h.Budget <= 0 || nout == 0 || verbatim {
 		fv.Set(reflect.ValueOf(bm))
+		return
+	}
+	if h.M.insideMerge() {
+		fv.Set(h.lazyMethod(bm, vc, nout))
 		return
 	}
 	h.Budget--
@@ -292,6 +299,34 @@ func (h *HostMarshal) projMethod(fv reflect.Value, m *runtime.Function, recv run
 	}
 }
 
+// lazyMethod binds a projected method as a niladic host func — the
+// merge-time projection's stand-in for the eager call. Template's
+// evalField invokes func fields, so the member still reads its
+// computed value; the call just runs at read time, outside the merge,
+// where its own host calls no longer feed the re-projection loop
+// (issue #1399). A failed call reads nil, printing <no value> like the
+// eager path's dropped entry.
+func (h *HostMarshal) lazyMethod(bm *runtime.BoundMethod, vc runtime.VMCaller, nout int) reflect.Value {
+	return reflect.MakeFunc(reflect.TypeFor[func() any](), func([]reflect.Value) []reflect.Value {
+		out := reflect.Zero(anyType)
+		res, err := vc.Call(bm, nil)
+		if err != nil {
+			return []reflect.Value{out}
+		}
+		if nout == 2 {
+			t, ok := res.(*runtime.Tuple)
+			if !ok || len(t.Elems) != 2 || !nilishHost(t.Elems[1]) {
+				return []reflect.Value{out}
+			}
+			res = t.Elems[0]
+		}
+		if hv := h.M.DeepHost(res, vc, h.M.NewWalk()); hv != nil {
+			out = reflect.ValueOf(hv)
+		}
+		return []reflect.Value{out}
+	})
+}
+
 // projHostMethod fills a promoted host method's projection field the
 // way projMethod does for a script method: the template-callable shape
 // (niladic; one result, or two with error last) runs eagerly inside the
@@ -307,7 +342,9 @@ func (h *HostMarshal) projHostMethod(fv reflect.Value, mv reflect.Value) {
 	case mt.NumIn() == 0 && mt.NumOut() == 2 && mt.Out(1).Implements(reflect.TypeFor[error]()):
 		nout = 2
 	}
-	if h.Budget <= 0 || nout == 0 {
+	if h.Budget <= 0 || nout == 0 || h.M.insideMerge() {
+		// the verbatim bound method already reads lazily — inside a
+		// merge it is also the safe binding (issue #1399).
 		fv.Set(mv)
 		return
 	}

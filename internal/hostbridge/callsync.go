@@ -271,6 +271,14 @@ func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
 	}
 	s := st
 	s.mu.Lock()
+	if s.merging > 0 {
+		// a sync or pull is already iterating this stack — a nested
+		// pass would rework the same entries and feed the projection
+		// feedback loop (issue #1399).
+		s.mu.Unlock()
+		return
+	}
+	s.merging++
 	var es []*projEntry
 	for i := range s.scopes {
 		for _, e := range s.scopes[i] {
@@ -278,6 +286,11 @@ func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
 		}
 	}
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.merging--
+		s.mu.Unlock()
+	}()
 	for _, e := range es {
 		m.syncProjected(e, vc)
 	}
@@ -294,6 +307,13 @@ func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
 	}
 	s := st
 	s.mu.Lock()
+	if s.merging > 0 {
+		// nested inside a merge pass — same feedback-loop guard as
+		// syncRegistered (issue #1399).
+		s.mu.Unlock()
+		return
+	}
+	s.merging++
 	var es []*projEntry
 	for i := range s.scopes {
 		for p, e := range s.scopes[i] {
@@ -303,6 +323,11 @@ func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
 		}
 	}
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.merging--
+		s.mu.Unlock()
+	}()
 	seen := map[runtime.Value]bool{}
 	for _, e := range es {
 		m.pullProjected(e, vc, seen)
