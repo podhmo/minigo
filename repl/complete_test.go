@@ -22,6 +22,16 @@ func candNames(cands []Candidate) []string {
 	return out
 }
 
+func evalLines(t *testing.T, r *REPL, lines ...string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, line := range lines {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+}
+
 func hasCand(cands []Candidate, name string) bool {
 	for _, c := range cands {
 		if c.Name == name {
@@ -558,17 +568,13 @@ func TestCompleteEvalBase(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
 
-	for _, line := range []string{
+	evalLines(t, r,
 		`import "./inspectpkg"`,
 		`var calls int`,
 		`func tick() inspectpkg.User { calls = calls + 1; return inspectpkg.User{Name: "x"} }`,
 		`m := map[string]inspectpkg.User{"k": {Name: "y"}}`,
 		`q := inspectpkg.User{Name: "q"}`,
-	} {
-		if _, err := r.EvalLine(ctx, line); err != nil {
-			t.Fatalf("EvalLine(%q): %v", line, err)
-		}
-	}
+	)
 
 	// the default (EvalMinimal) never evaluates: no candidates, no
 	// side effects.
@@ -622,11 +628,10 @@ func TestCompleteEvalBase(t *testing.T) {
 }
 
 func TestCompleteMapKeys(t *testing.T) {
-	ctx := context.Background()
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
 
-	for _, line := range []string{
+	evalLines(t, r,
 		`m := map[string]int{"alpha": 1, "beta": 2}`,
 		`m2 := map[string]int{}`,
 		`mi := map[int]string{1: "x"}`,
@@ -634,22 +639,23 @@ func TestCompleteMapKeys(t *testing.T) {
 		`km := map[K]int{"ka": 1}`,
 		`type holder struct { M map[string]int }`,
 		`h := holder{M: m}`,
-	} {
-		if _, err := r.EvalLine(ctx, line); err != nil {
-			t.Fatalf("EvalLine(%q): %v", line, err)
-		}
-	}
+		`em := map[string]int{"say\"hi": 1, "__x": 2, "": 3}`,
+		`im := map[any]int{K("tid"): 1, "plain": 2}`,
+	)
 
 	for _, tc := range []struct {
 		line string
 		want []string
 	}{
-		{`m["`, []string{"alpha", "beta"}}, // all live keys
-		{`m["al`, []string{"alpha"}},       // prefix inside the literal
-		{`h.M["`, []string{"alpha"}},       // map behind a field ref
-		{`m2[m["`, []string{"alpha"}},      // nested index — base is m
-		{`km["`, []string{"ka"}},           // named string key type
-		{"m[`", []string{"alpha"}},         // raw literal opens the same context
+		{`m["`, []string{"alpha", "beta"}},       // all live keys
+		{`m["al`, []string{"alpha"}},             // prefix inside the literal
+		{`h.M["`, []string{"alpha"}},             // map behind a field ref
+		{`m2[m["`, []string{"alpha"}},            // nested index — base is m
+		{`km["`, []string{"ka"}},                 // named string key type
+		{"m[`", []string{"alpha"}},               // raw literal opens the same context
+		{`em["`, []string{`say\"hi`, "__x", ""}}, // keys needn't be identifiers
+		{`em["say\"`, []string{`say\"hi`}},       // escaped quote stays open
+		{`im["`, []string{"plain"}},              // typed iface keys can't splice
 	} {
 		cands := r.Complete(tc.line)
 		for _, w := range tc.want {
@@ -659,12 +665,15 @@ func TestCompleteMapKeys(t *testing.T) {
 		}
 	}
 
-	// an int-keyed map and a plain slice index offer no keys; a closed
-	// literal is past the context.
+	// an int-keyed map and a plain slice index offer no keys; the
+	// interface-keyed map's named key can't splice as a string either.
 	for _, line := range []string{`mi["`, `mi["x`, `s := []int{}; s["`} {
 		if cands := r.Complete(line); len(cands) != 0 {
 			t.Fatalf("%q yielded %v", line, candNames(cands))
 		}
+	}
+	if hasCand(r.Complete(`im["`), "tid") {
+		t.Fatal(`im[" offered the K("tid") entry — m["tid"] misses it`)
 	}
 }
 

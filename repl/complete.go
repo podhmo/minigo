@@ -177,6 +177,24 @@ type completionCtx struct {
 	quote    byte   // the delimiter of an unterminated literal ('"' or '`')
 }
 
+// unclosedLit reports whether a scanned STRING literal's text is
+// unterminated. A trailing opener is not a closer when an odd run of
+// backslashes escapes it: `"say\"` is still open, `"a\\"` is closed.
+// Raw literals cannot escape their closer.
+func unclosedLit(lit string) bool {
+	if len(lit) < 2 || lit[len(lit)-1] != lit[0] {
+		return true
+	}
+	if lit[0] == '`' {
+		return false
+	}
+	bs := 0
+	for i := len(lit) - 2; i >= 0 && lit[i] == '\\'; i-- {
+		bs++
+	}
+	return bs%2 == 1
+}
+
 // completeContext tokenizes the line and classifies its tail. Only the
 // last two tokens matter: `x.` → selector on x; `x.pa` → selector with
 // prefix "pa"; `pa` → bare prefix "pa"; everything else → bare with an
@@ -218,7 +236,7 @@ func completeContext(line string) completionCtx {
 		// a closed literal (`import "strings"`) is past the import
 		// context — offering paths here would splice over the
 		// closing quote.
-		if lit := last.lit; len(lit) >= 2 && lit[len(lit)-1] == lit[0] {
+		if !unclosedLit(last.lit) {
 			return completionCtx{done: true, start: len(line)}
 		}
 		prefix := last.lit
@@ -233,7 +251,7 @@ func completeContext(line string) completionCtx {
 	// A closed literal (`m["k"`) is past the context — a splice would
 	// eat the closing quote.
 	if last.tok == token.STRING && n >= 2 && toks[n-2].tok == token.LBRACK {
-		if lit := last.lit; !(len(lit) >= 2 && lit[len(lit)-1] == lit[0]) {
+		if lit := last.lit; unclosedLit(lit) {
 			return completionCtx{mapkey: true, base: line[:toks[n-2].off], prefix: lit[1:], start: last.off + 1, quote: lit[0]}
 		}
 	}
@@ -953,9 +971,18 @@ func (c *completer) mapKeys(v runtime.Value, quote byte, out *[]Candidate) {
 		case *runtime.Map:
 			disp, _ := b.SnapshotKeys()
 			for _, k := range disp {
-				s, ok := mapKeyString(k)
+				s, ok := k.(string)
 				if !ok {
-					continue
+					// an interface-keyed map hashes on (dynamic type,
+					// value): a `K("id")` entry is not found by the
+					// string literal `"id"` the splice would write.
+					if b.IfaceKey {
+						continue
+					}
+					s, ok = mapKeyString(k)
+					if !ok {
+						continue
+					}
 				}
 				name := s
 				if quote == '"' {
@@ -963,7 +990,13 @@ func (c *completer) mapKeys(v runtime.Value, quote byte, out *[]Candidate) {
 						name = q[1 : len(q)-1]
 					}
 				}
-				c.add(out, name, CandConst, "map key")
+				// keys are arbitrary strings, not identifiers — keep
+				// the dedup but skip add's identifier gate, which
+				// would drop `__x` and the empty key.
+				if !c.seen[name] {
+					c.seen[name] = true
+					*out = append(*out, Candidate{Name: name, Kind: CandConst, Detail: "map key"})
+				}
 			}
 			return
 		default:
