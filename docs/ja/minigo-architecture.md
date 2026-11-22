@@ -15,7 +15,7 @@ v1 (`minigo/`) が AST ツリーウォーカーだったのに対し、v2 は AS
 ```
 cmd/minigo          CLI: run / repl / vet / gen-intrinsics
 repl               REPL フロントエンド: セッション (`REPL`) + 補完 — Engine 内部は internal/replhooks 経由
-minigo (engine)    Engine, Bind/RegisterSpecial, installStdlib, Vet, WrapFunc
+minigo (engine)    ファサード: Engine/Session, Bind/RegisterSpecial, Vet, WrapFunc（内部実装は internal/* へ）
   ├─ host           ホスト向け stub パッケージ（panic("minigo intrinsic") 本体）
   ├─ vm             フレーム + 命令ディスパッチ + イテレータ駆動
   │   ├─ compile    AST → bytecode.Chunk（スコープを slot に解決）
@@ -23,9 +23,21 @@ minigo (engine)    Engine, Bind/RegisterSpecial, installStdlib, Vet, WrapFunc
   │   │   └─ index      index.Build: 宣言だけ記録、評価しない
   │   └─ runtime    Value(=any), Cell, TypeDef, Package, Iterator, SpecialContext
   ├─ resolve        Resolver インターフェイス + GoScanResolver（ディレクトリ走査）
-  ├─ syntax         ParseFile → *File{AST, Imports}（import 表はファイルスコープ）
-  ├─ internal/semantics  宣言レベルの型質問 API（TypeDeclOf/FieldPathOf）— index だけから答える
-  └─ internal/source     semantics.Source を runtime ローダに適合させるアダプタ（init には届かない）
+  └─ syntax         ParseFile → *File{AST, Imports}（import 表はファイルスコープ）
+
+internal/             ※ rearchitecture（docs/next/ja/TODO.md の M0〜M4/P0〜P3）で増えた層
+  ├─ source         パース/ index キャッシュ、embed builtin、semantics.Source アダプタ
+  ├─ execution      ライフサイクル状態機械: IndexGate（index 完了通知）、Init（一度きりの init）、
+  │                 Intern（TypeID → TypeDef の Session 内 intern 表）、Registry
+  ├─ typedef        TypeID の計算と host/source 間の dispatch 経路（respath など）
+  ├─ semantics      宣言レベルの型質問 API（TypeDeclOf/FieldPathOf）— index だけから答える
+  ├─ hostbridge     ホスト値 ↔ runtime 値の変換、host twin の fallback helper
+  ├─ bind           Pending（登録済み未 install の bound パッケージ管理）など bind 周辺の仕組み
+  ├─ stdlib         internal/stdlib/<path> ごとの遅延 Install + genbind 生成エントリ
+  ├─ vet            minigo vet の未登録 stub 呼出検出
+  ├─ archcheck      import グラフ・banned call・ファイルサイズ ratchet の検査（make archcheck）
+  ├─ assetaudit     共有資産のフィールド許可リスト検査（実行状態が共有物に混入したら落とす）
+  └─ replhooks      REPL が Engine 内部に触れるためのフック
 ```
 
 ## 実行の流れ
@@ -61,7 +73,7 @@ minigo run ./app --entry F
 | `*Iterator{Kind, ...}` | `range` 状態。Kind: `'s'` slice / `'m'` map / `'c'` chan / `'i'` int / `'r'` string / `'f'` func |
 | `*Package`/`*ImportRef`/`*SymbolID` | パッケージ値、遅延 import、シンボル識別子 |
 
-`Package` の状態遷移は `Empty → Indexed → Ready`。**`Index` は評価しない** — `index.Build` は宣言の位置と種別を記録するだけです。
+`Package` の状態遷移は `Empty → Indexed → Ready`。**`Index` は評価しない** — `index.Build` は宣言の位置と種別を記録するだけです。状態機械そのものは `internal/execution` にあり、`IndexGate`（index 完了の公開・待機）と `Init`（一度きりの init 実行、panic→error 記録）が `Package.MarkIndexed`/`WaitIndexed`/`EnsureReady` の裏側を担います。
 
 **init タイミング**（`InitMode`）:
 
@@ -118,7 +130,7 @@ minigo run ./app --entry F
 
 ## ホスト境界
 
-- **`Bind(path, symbols)`**: 実パッケージを `map[string]runtime.Value` で登録（`State: Ready`、ソース不要）。stdlib の intrinsic（`fmt`/`strings`/`sort`/`os` 等）は `installStdlib` がここに流し込む。シンボルには素の Go 値も置ける: Go 関数は `WrapFunc("<pkg>.<sym>", fn)` で、それ以外は `ValueOf` で変換される（runtime 値はそのまま）。Go は実行時にパッケージのメンバを列挙できないので、使うシンボルだけを列挙するか、全 exported メンバの表を `gen-intrinsics` で生成する。宣言名が import path 末尾と違うパッケージは `BindAs(name)` を渡す（`gen-intrinsics` は自動で付ける）。
+- **`Bind(path, symbols)`**: 実パッケージを `map[string]runtime.Value` で登録（`State: Ready`、ソース不要）。stdlib の intrinsic（`fmt`/`strings`/`sort`/`os` 等）は `internal/stdlib/<path>` の `Install(r, env)` が `bind.Pending` 経由で**初回利用時に遅延構築**される（Session 生成時の一括 install ではない。エントリの約半分は `genbind` が index から生成した `// Code generated` テーブル）。シンボルには素の Go 値も置ける: Go 関数は `WrapFunc("<pkg>.<sym>", fn)` で、それ以外は `ValueOf` で変換される（runtime 値はそのまま）。Go は実行時にパッケージのメンバを列挙できないので、使うシンボルだけを列挙するか、全 exported メンバの表を `gen-intrinsics` で生成する。宣言名が import path 末尾と違うパッケージは `BindAs(name)` を渡す（`gen-intrinsics` は自動で付ける）。
 - **`host` パッケージ（`minigo.dev/host`）**: stub 本体が `panic("minigo intrinsic")`。エディタからは普通の Go パッケージに見え、実行時は intrinsic テーブルが横取りする。`WithHostPolicy` でシンボル単位の公開を制御できる。
 - **`WrapFunc(name, fn)`**: 実 Go 関数を `*BuiltinFunc` にする reflect アダプタ（marshal-by-copy、末尾 `error` は呼出エラー、複数戻り値は `*Tuple`）。引数は assignable/convertible ならそのまま、`[]T`/`map[K]V` パラメータには `[]any`/`map[any]any` から要素ごと変換する。`gen-intrinsics` が生成する `install.go` が `e.Bind` にこれを並べる。
 - **`ValueOf(x)`**: ホスト値を runtime 値に変換する marshal ヘルパー。注意点: `runtime.Value` は `any` エイリアスなので `case runtime.Value:` は全マッチしてしまう — 具象型を列挙する必要がある。
@@ -130,7 +142,9 @@ minigo run ./app --entry F
 - `TypeDef.Kind`: `KindStruct`/`KindNamedBasic`/`KindSlice`/`KindMap`/`KindFunc`/`KindInterface`/`KindAlias`/`KindChan`/`KindPointer`。
 - `coerce(x, td)` は `var x T = v` 相当の assignability を検査 — `*Named`/`Struct.Def`/コンテナの `Typ` を「宣言タグ」として見て、named-to-named の誤代入を「cannot use X as Y」で trap。
 - 無名複合型の要素は `Anon`/`Pkg`/`File` で遅延解決（`compile.typeExpr` と同じ形を `ResolveType` が再現する）。
-- ジェネリクスは `T[Args]` の明示インスタンス化 + 簡易推論（`inferBinds`）。制約 `~T`/union/comparable は概形の実装。
+- `internal/typedef` が **TypeID**（型の構造的キー）を計算し、Session 内の intern 表（`execution.Intern[TypeID, *TypeDef]`）が同じキーに同じ `*TypeDef` を返す — host が mint した typedef、インスタンス化コピー、bind/source 間の twin がここで一意化される。
+- selector の埋め込み探索は `semantics.FieldPathOf` の結果（reflect の `Field.Index` 規約の index 列）を `(TypeID, name)` でメモ化して使う — 名前での再探索はしない。メソッド集合・充足判定も型ごとに一度だけ計算する（`MethodSetOf`/`MethodFuncsOf`）。
+- ジェネリクスは `T[Args]` の明示インスタンス化 + 簡易推論（`inferBinds`）。制約 `~T`/union/comparable は概形の実装。インスタンスキャッシュのキーは `(関数宣言, []TypeID)`。
 
 ## 宣言質問 API（internal/semantics）
 
