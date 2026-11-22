@@ -131,7 +131,10 @@ request, so a browser reload reflects edits to Go code, templates, and
 stories — every request re-reads the current file contents, no restart
 needed. It also serves `app/static/` under `/static/`, so stylesheet
 edits need no re-execution at all, and the index offers fixed iframe
-widths (320px, 360px, 768px) for checking narrow layouts. Use it when
+widths (320px, 360px, 768px) for checking narrow layouts. The sidebar
+filters stories by name, doc, or group (`?q=`, works without JS), and
+each group links a side-by-side variants grid that can preview inside
+the same pane (`?g=`). Use it when
 repeated exports become inconvenient; it is not needed for a one-time
 HTML inspection.
 
@@ -146,11 +149,19 @@ the next reload and does not stop watching.
 
 The index groups stories by the render function they drive — by
 convention the last unqualified call in the story body (`RenderUser`,
-`RenderUserList`), so handler stories stay ungrouped. Each group header
-opens a side-by-side grid (`/grid/<func>`) laying that template's
-data-state variants out at the chosen width, which is where a CSS edit
-can be checked against every state at once. `export` writes the same
-grids as `grid_<func>.html` pages framing the exported stories.
+`RenderUserList`), so handler stories stay ungrouped. A filter box at
+the top of the sidebar narrows the list by name or doc text (`/` focuses
+it, `↑`/`↓` move through the matches, `Enter` opens the first). Each
+group header carries a `grid` chip that opens a side-by-side grid
+(`/grid/<func>`) laying that template's data-state variants out at the
+chosen width, which is where a CSS edit can be checked against every
+state at once; a caption on each card links back to that story in the
+index. The toolbar above the preview shows the current group and story
+with `grid` and `open` (own tab) actions plus the width presets, and
+selecting a story swaps the frame without a page reload — the selection
+lives in `?s=`/`?w=`, so links and reloads keep it, in the live preview
+and in the export alike. `export` writes the same grids as
+`grid_<func>.html` pages framing the exported stories.
 
 Equivalent commands from this directory:
 

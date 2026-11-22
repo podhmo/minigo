@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -502,8 +503,36 @@ func TestHandler(t *testing.T) {
 	if !strings.Contains(body, `?w=360`) {
 		t.Error("index misses viewport widths")
 	}
-	if !strings.Contains(body, `href="/grid/RenderUser"`) {
-		t.Error("index misses the variants grid link")
+	if !strings.Contains(body, `href="?g=RenderUser"`) {
+		t.Error("index misses the variants grid pill")
+	}
+	if !strings.Contains(body, `data-src="/grid/RenderUser"`) {
+		t.Error("grid pill misses the grid document")
+	}
+	// ?g previews the variants grid inside the index frame; match the
+	// iframe itself, not just a sidebar pill carrying the same src.
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?g=RenderUser", nil))
+	if !strings.Contains(rec.Body.String(), `id="frame" name="story" src="/grid/RenderUser"`) {
+		t.Error("?g should preview the grid in the index frame")
+	}
+	// ?q filters the nav server-side so the book still works without JS.
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?q=StoryUser+nomatch", nil))
+	if !strings.Contains(rec.Body.String(), "no stories match") {
+		t.Error("?q with no matches should say so")
+	}
+	rec = httptest.NewRecorder()
+	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?q=StoryUserEscaped", nil))
+	body = rec.Body.String()
+	if !strings.Contains(body, `data-name="StoryUserEscaped"`) {
+		t.Error("?q drops a matching story")
+	}
+	// A non-matching row stays rendered but hidden, so the live filter
+	// can un-hide it when the query changes.
+	hiddenRow := regexp.MustCompile(`<a class="story[^>]*data-name="StoryUserLongName"[^>]*>`)
+	if tag := hiddenRow.FindString(body); !strings.Contains(tag, "hidden") {
+		t.Errorf("?q should render non-matching rows hidden, got %q", tag)
 	}
 	// The grid lays one render function's data-state variants side by side.
 	rec = httptest.NewRecorder()
