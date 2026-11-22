@@ -46,7 +46,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                            120,
 	"internal/archcheck/all.go":                  57,
 	"internal/archcheck/archcheck.go":            643,
-	"internal/archcheck/budgets.go":              404,
+	"internal/archcheck/budgets.go":                         408,
 	"internal/archcheck/rules.go":                152,
 	"internal/cmd/simcheck/main.go":              359,
 	"internal/assetaudit/assetaudit.go":          112,
@@ -333,6 +333,10 @@ var FileBudgetExceptions = map[string]string{
 	"minireflect/rvalue_mexpr.go":         "method-expression Func dispatch on the concrete receiver (facade overrides survive the unwrap; facade receivers satisfy In(0) via APIType)",
 	"internal/stdlib/slices/slices.go":    "slices.IsSorted keeps the typedef tag on raw elements + Index/Contains keep untyped consts for element-type representability + Grow sizes the new cap by the script element type (TODO #176)",
 	"intrinsics_encoding_json.go":         "stdlib qualifier on the moved elemAt helper (P2-12)",
+	// REPL completion experiment (Stack #1409): the completer and its
+	// REPL/CLI surface grow inside existing files while the experiment
+	// runs; split them once the feature settles.
+	"repl/load.go":                "REPL completion: noteMutation hooks in Load/Unload",
 	// Stack-layer growths predating the FileBudgetExceptions tracking,
 	// recorded once when the merge-base check first covered them.
 	"bytecode/bytecode.go":               "P4-6: ASTFragment.Cache field for the per-site chunk memo",
