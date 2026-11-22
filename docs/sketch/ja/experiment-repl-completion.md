@@ -113,7 +113,7 @@ package ./inspectpkg    dir
 ## 4. 限界（この方式の穴）
 
 - **呼び出し結果は見えない**: `f().`/`m[k].`/`a+b.` は基底を解決できないので候補なし。eval ベースの completer なら出る。→ 解決済み: `EvalPolicy`（デフォルト `EvalMinimal`）を引数化し、`EvalBase` では静的ウォークで解けなかった基底式を `Engine.EvalExpr` で評価する。`minigo repl` では `:eval on` で切り替え。eval はユーザーコードの副作用を走らせるのでデフォルトは minimal のまま。
-- **`var x = f()` の型推論なし**: 宣言型のない var は値を見るしかない。REPL 自身の名前は hoist された実値があるので解決できるが、未 init の外部パッケージの `var s = compute()` には静的にも実行時にも型がない。
+- ~~**`var x = f()` の型推論なし**~~ → 解決済み: 宣言型のない `var x = <expr>` は init を走らせず初期化式の形から型を読む（`inferInitType`）。対象は静的に読める形だけ: 複合リテラル、変換、`make`/`new`、index 済み関数呼び出し（同パッケージ・ファイル import・dot import）、`var a,b = f()` の戻り値分割、`m[k]`/`*x`/`x.f`/`&T{}` の unwrap、var 連鎖（fuel 付き）。host 関数の戻り値型は mint する typedef が unexported なので対象外。REPL 自身の名前は従来どおり hoist された実値が使われる。
 - **文字列コンテキストは import・map key・meta-command の引数のみ**: → map key は解決済み: `m["`+TAB で生きている map の文字列キーを列挙する（`SnapshotKeys`、named string key も Unwrap で拾う）。meta-command の引数は `CompleteCommandArg` が扱う — `:load` は `.go` ファイルとディレクトリ（末尾 `/` 付きで次の TAB が潜る）、`:unload` は現在のロード、`:cd`/`:ls`/`:doc` はセッションの import 名・import パス・`./` ディレクトリ、`:doc name.Sy` はパッケージのメンバー、`:comp` は引数をコード断片として補完する（ディレクトリはその場で読み、キャッシュしない）。`:` 行そのものの補完はフロントエンド側の仕事（コマンド表は cmd/minigo にしかない）。importable 集合の列挙も近似: GOROOT は「ディレクトリに非 main パッケージがある」判定でビルド制約までは見ない、`replace` の影響は require の綴りだけ反映（import パスは module path のままなので実害なし）、`internal` は一律 prune（本来は近接ルール）。セッション中に作ったディレクトリは `importCands` キャッシュの関係で出ない。
 - **same-depth の昇格曖昧性**: 本物は compile error だが、補完は最初のヒットを取る（候補を出す側は審判ではない、という割り切り）。
 - **過剰なメソッド候補（値コンテキストのみ）**: 値基底では `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。型レベル基底（`T.`）は method expression なので値メソッド集合だけに絞ってある（`func (p *T) M` は `T.M` では trap する）。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
@@ -147,3 +147,4 @@ TODO.md の "REPL completion" エントリに列挙。大きいのは:
 - 行編集 UI（liner/readline 系）との接続 — `Complete` は処理系 API、TAB で駆動するにはフロントエンドが要る
 - ~~eval ポリシー階層（`f().` など呼び出し結果の補完）~~ 済: `EvalBase` + `:eval on`
 - ~~残りの文字列コンテキスト（`:cd` 引数・map key）~~ 済: map key は `m["` で列挙（`:cd` 引数は `CompleteCommandArg` 済み）
+- ~~外部パッケージの `var x = f()`（宣言型なし）~~ 済: `inferInitType` で初期化式の形から typedef を読む

@@ -676,6 +676,32 @@ func TestCompleteMapKeys(t *testing.T) {
 	}
 }
 
+func TestCompleteInferredVarTypes(t *testing.T) {
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	evalLines(t, r, `import "./inferpkg"`)
+
+	for _, tc := range []struct {
+		line string
+		want string
+	}{
+		{"inferpkg.CallUser.", "Greet"},  // NewUser() → inspectpkg.User
+		{"inferpkg.CrossT.", "M"},        // infercallee.New() → T
+		{"inferpkg.DotT.", "M"},          // dot-imported NewDot() → T
+		{"inferpkg.LitUser.", "Greet"},   // composite literal
+		{"inferpkg.NewPtr.", "Greet"},    // new(User) → *User pointee
+		{"inferpkg.AliasVar.", "Greet"},  // var-to-var chain
+		{"inferpkg.ElemUser.", "Greet"},  // map element type
+		{"inferpkg.SelField.", "Greet"},  // declared struct field type
+		{"inferpkg.DerefUser.", "Greet"}, // *User pointee
+		{"inferpkg.A.", "Greet"},         // Pair() result 0 → User
+		{"inferpkg.B.", "ID"},            // Pair() result 1 → Base
+	} {
+		requireCands(t, r.Complete(tc.line), tc.line, tc.want)
+	}
+}
+
 func TestCompleteImportPaths(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)

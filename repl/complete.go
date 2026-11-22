@@ -833,15 +833,340 @@ func (r *REPL) pkgMemberValue(p *runtime.Package, name string) (runtime.Value, b
 		}
 	case index.VarDecl, index.ConstDecl:
 		// `var s T` carries its type statically — resolve it rather than
-		// initializing the package for a live value.
-		if vs, ok := d.Spec.(*ast.ValueSpec); ok && vs.Type != nil {
-			ctx := &runtime.TypeDef{Pkg: p, File: d.File}
-			if td, err := r.engine.ResolveTypeRef(ctx, vs.Type); err == nil && td != nil {
+		// initializing the package for a live value. An untyped
+		// `var x = f()` gets an inferred one from the initializer.
+		if vs, ok := d.Spec.(*ast.ValueSpec); ok {
+			t := vs.Type
+			if t == nil {
+				t = d.InheritedType
+			}
+			var td *runtime.TypeDef
+			if t != nil {
+				ctx := &runtime.TypeDef{Pkg: p, File: d.File}
+				td, _ = r.engine.ResolveTypeRef(ctx, t)
+			} else {
+				td = r.inferInitType(p, d, vs, 4)
+			}
+			if td != nil {
 				return &runtime.TypedNil{Typ: td}, true
 			}
 		}
 	}
 	return nil, false
+}
+
+// ---- init-free initializer inference ----
+//
+// A foreign package's `var x = <expr>` has no declared type to stand
+// in for a live value. inferInitType derives one from the initializer
+// without running init — the statically readable shapes: composite
+// literals, conversions, make/new, calls to an indexed function (same
+// package, file imports, dot imports), and index/selector/deref
+// unwraps onto a declared-typed base. fuel bounds var-to-var chains
+// so a redeclaration cycle can't spin the walk.
+
+// inferInitType picks the initializer for the decl's name slot and
+// derives its type; `var a, b = f()` splits the call's results, so a
+// single value carries the name's index as a result index.
+func (r *REPL) inferInitType(p *runtime.Package, d *index.Decl, vs *ast.ValueSpec, fuel int) *runtime.TypeDef {
+	if fuel <= 0 || len(vs.Values) == 0 {
+		return nil
+	}
+	x := vs.Values[0]
+	resIdx := 0
+	if len(vs.Values) > 1 {
+		if d.NameIdx >= len(vs.Values) {
+			return nil
+		}
+		x = vs.Values[d.NameIdx]
+	} else {
+		resIdx = d.NameIdx
+	}
+	return r.initExprType(p, d.File, x, resIdx, fuel)
+}
+
+// initExprType derives a typedef for one initializer expression.
+// resIdx selects which result of a call expression the var takes.
+func (r *REPL) initExprType(p *runtime.Package, file *syntax.File, x ast.Expr, resIdx, fuel int) *runtime.TypeDef {
+	ctx := &runtime.TypeDef{Pkg: p, File: file}
+	switch e := x.(type) {
+	case *ast.ParenExpr:
+		return r.initExprType(p, file, e.X, resIdx, fuel)
+	case *ast.CompositeLit:
+		return r.typeOf(ctx, e.Type)
+	case *ast.CallExpr:
+		return r.callResultType(p, file, e, resIdx, fuel)
+	case *ast.UnaryExpr:
+		if e.Op == token.AND {
+			// `&T{...}` → *T.
+			if cl, ok := e.X.(*ast.CompositeLit); ok {
+				return r.ptrTo(r.typeOf(ctx, cl.Type), cl.Type, p, file)
+			}
+			return nil
+		}
+		// `var n = -i` keeps the operand's type
+		return r.initExprType(p, file, e.X, 0, fuel-1)
+	case *ast.StarExpr:
+		if td := r.initExprType(p, file, e.X, 0, fuel-1); td != nil {
+			return r.elemTypeOf(td)
+		}
+	case *ast.IndexExpr:
+		// `var v = m[k]` — the container's declared element type
+		if td := r.initExprType(p, file, e.X, 0, fuel-1); td != nil {
+			return r.elemTypeOf(td)
+		}
+	case *ast.SelectorExpr:
+		return r.selInitType(p, file, e, fuel)
+	case *ast.Ident:
+		return r.declTypeOf(p, file, e.Name, fuel)
+	}
+	return nil
+}
+
+// typeOf resolves a type expression to its typedef.
+func (r *REPL) typeOf(ctx *runtime.TypeDef, x ast.Expr) *runtime.TypeDef {
+	td, err := r.engine.ResolveTypeRef(ctx, x)
+	if err != nil {
+		return nil
+	}
+	return td
+}
+
+// ptrTo mints a `*x` pointer typedef around td — resolveTypeRef
+// collapses stars, so `new(T)`/`&T{...}` can't get one by resolving.
+// Elem holds the named pointee: `*x` on the result hands it back with
+// its methods instead of an anonymous twin.
+func (r *REPL) ptrTo(td *runtime.TypeDef, x ast.Expr, p *runtime.Package, file *syntax.File) *runtime.TypeDef {
+	if td == nil {
+		return nil
+	}
+	return &runtime.TypeDef{
+		Kind: runtime.KindPointer,
+		Anon: &ast.StarExpr{X: x},
+		Elem: td, Pkg: p, File: file,
+	}
+}
+
+// elemTypeOf resolves a container typedef's element typedef.
+func (r *REPL) elemTypeOf(td *runtime.TypeDef) *runtime.TypeDef {
+	et, err := r.engine.ElemOf(td)
+	if err != nil {
+		return nil
+	}
+	return et
+}
+
+// callResultType derives the resIdx'th result type of a call
+// expression — `f()`, `pkg.F()`, `T(x)`, `make(T, ...)`, `new(T)`.
+func (r *REPL) callResultType(p *runtime.Package, file *syntax.File, e *ast.CallExpr, resIdx, fuel int) *runtime.TypeDef {
+	ctx := &runtime.TypeDef{Pkg: p, File: file}
+	switch f := e.Fun.(type) {
+	case *ast.Ident:
+		switch f.Name {
+		case "make":
+			if len(e.Args) > 0 {
+				return r.typeOf(ctx, e.Args[0])
+			}
+			return nil
+		case "new":
+			// `var p = new(T)` — the pointer typedef.
+			if len(e.Args) > 0 {
+				return r.ptrTo(r.typeOf(ctx, e.Args[0]), e.Args[0], p, file)
+			}
+			return nil
+		}
+		// `T(x)` conversion, then a same-package (or dot-imported) call.
+		if td := r.typeOf(ctx, f); td != nil {
+			return td
+		}
+		if fp, fd := r.indexFuncOf(p, file, f.Name); fd != nil {
+			return r.funcResultType(fp, fd, resIdx)
+		}
+	case *ast.SelectorExpr:
+		// `pkg.F()` / `pkg.T(x)` through the file's imports (Indexed,
+		// not initialized).
+		id, ok := f.X.(*ast.Ident)
+		if !ok {
+			return nil
+		}
+		ref := fileImportRef(p, file, id.Name)
+		if ref == nil {
+			return nil
+		}
+		ip, err := ref.Materialize()
+		if err != nil || ip == nil || ip.Index == nil {
+			return nil
+		}
+		d, ok := ip.Index.Lookup(f.Sel.Name)
+		if !ok {
+			return nil
+		}
+		switch d.Kind {
+		case index.FuncDecl:
+			return r.funcResultType(ip, d, resIdx)
+		case index.TypeDecl:
+			if mv, err := r.engine.Materialize(ip, d); err == nil {
+				if td, ok := mv.(*runtime.TypeDef); ok {
+					return td
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// selInitType derives the type of a selector initializer — `pkg.Name`
+// through the file's imports, or the declared field type of `s.F` on
+// a declared-typed base.
+func (r *REPL) selInitType(p *runtime.Package, file *syntax.File, e *ast.SelectorExpr, fuel int) *runtime.TypeDef {
+	id, ok := e.X.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	if ref := fileImportRef(p, file, id.Name); ref != nil {
+		ip, err := ref.Materialize()
+		if err != nil || ip == nil {
+			return nil
+		}
+		// ip's own dot imports aren't reachable here — nil file.
+		return r.declTypeOf(ip, nil, e.Sel.Name, fuel-1)
+	}
+	td := r.declTypeOf(p, file, id.Name, fuel-1)
+	if td == nil {
+		return nil
+	}
+	return r.fieldDeclType(td, e.Sel.Name, map[*runtime.TypeDef]bool{})
+}
+
+// declTypeOf resolves a package-level name's declared type — the
+// ValueSpec's type, the TypeDef a TypeDecl names, or (untyped) the
+// inferred initializer type — then dot-imported decls.
+func (r *REPL) declTypeOf(p *runtime.Package, file *syntax.File, name string, fuel int) *runtime.TypeDef {
+	if p == nil {
+		return nil
+	}
+	if p.Index != nil {
+		if d, ok := p.Index.Lookup(name); ok {
+			return r.declTypeOfDecl(p, d, fuel)
+		}
+	}
+	for _, ref := range p.Imports[file] {
+		if ref.Alias != "." {
+			continue
+		}
+		ip, err := ref.Materialize()
+		if err != nil || ip == nil || ip.Index == nil {
+			continue
+		}
+		if d, ok := ip.Index.Lookup(name); ok {
+			return r.declTypeOfDecl(ip, d, fuel)
+		}
+	}
+	return nil
+}
+
+// declTypeOfDecl is declTypeOf for a resolved decl.
+func (r *REPL) declTypeOfDecl(p *runtime.Package, d *index.Decl, fuel int) *runtime.TypeDef {
+	ctx := &runtime.TypeDef{Pkg: p, File: d.File}
+	switch d.Kind {
+	case index.TypeDecl:
+		return r.typeOf(ctx, ast.NewIdent(d.Name))
+	case index.VarDecl, index.ConstDecl:
+		vs, ok := d.Spec.(*ast.ValueSpec)
+		if !ok {
+			return nil
+		}
+		t := vs.Type
+		if t == nil {
+			t = d.InheritedType
+		}
+		if t != nil {
+			return r.typeOf(ctx, t)
+		}
+		return r.inferInitType(p, d, vs, fuel-1)
+	}
+	return nil
+}
+
+// indexFuncOf finds a FuncDecl in the package's index, falling back to
+// dot-imported packages (Indexed only — never initialized).
+func (r *REPL) indexFuncOf(p *runtime.Package, file *syntax.File, name string) (*runtime.Package, *index.Decl) {
+	if p.Index != nil {
+		if d, ok := p.Index.Lookup(name); ok && d.Kind == index.FuncDecl {
+			return p, d
+		}
+	}
+	for _, ref := range p.Imports[file] {
+		if ref.Alias != "." {
+			continue
+		}
+		ip, err := ref.Materialize()
+		if err != nil || ip == nil || ip.Index == nil {
+			continue
+		}
+		if d, ok := ip.Index.Lookup(name); ok && d.Kind == index.FuncDecl {
+			return ip, d
+		}
+	}
+	return nil, nil
+}
+
+// funcResultType resolves a FuncDecl's resIdx'th result typedef,
+// resolved in the declaring file's scope.
+func (r *REPL) funcResultType(p *runtime.Package, fd *index.Decl, resIdx int) *runtime.TypeDef {
+	fn := fd.Func
+	if fn == nil || fn.Type == nil || fn.Type.Results == nil {
+		return nil
+	}
+	i := 0
+	for _, fld := range fn.Type.Results.List {
+		n := len(fld.Names)
+		if n == 0 {
+			n = 1
+		}
+		if resIdx < i+n {
+			ctx := &runtime.TypeDef{Pkg: p, File: fd.File}
+			return r.typeOf(ctx, fld.Type)
+		}
+		i += n
+	}
+	return nil
+}
+
+// fieldDeclType resolves a field's declared typedef, walking embeds
+// like structFieldsOf does for enumeration.
+func (r *REPL) fieldDeclType(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) *runtime.TypeDef {
+	if td == nil || seen[td] {
+		return nil
+	}
+	seen[td] = true
+	fts, _ := r.engine.FieldTypes(td)
+	for i, fname := range td.Fields {
+		if fname == name && i < len(fts) {
+			return fts[i]
+		}
+	}
+	for _, spec := range td.EmbedSpecs {
+		emb, err := r.engine.ResolveTypeRef(td, spec)
+		if err != nil || emb == nil {
+			continue
+		}
+		if et := r.fieldDeclType(emb, name, seen); et != nil {
+			return et
+		}
+	}
+	return nil
+}
+
+// fileImportRef finds the file's import ref bound to a name — the
+// alias, or the imported package's own clause name.
+func fileImportRef(p *runtime.Package, file *syntax.File, name string) *runtime.ImportRef {
+	for _, ref := range p.Imports[file] {
+		if ref.Alias == name || (ref.Alias == "" && ref.PackageName() == name) {
+			return ref
+		}
+	}
+	return nil
 }
 
 // hostMemberValue reads a field or method off a host Go value by
@@ -1236,6 +1561,11 @@ func (c *completer) declDetail(p *runtime.Package, d *index.Decl) string {
 		if t != nil {
 			ctx := &runtime.TypeDef{Pkg: p, File: d.File}
 			return runtime.TypSpelling(t, ctx)
+		}
+		if vs, ok := d.Spec.(*ast.ValueSpec); ok {
+			if td := c.r.inferInitType(p, d, vs, 4); td != nil {
+				return runtime.DisplayName(td)
+			}
 		}
 	}
 	return ""
