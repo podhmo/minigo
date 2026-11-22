@@ -712,6 +712,47 @@ func TestCompleteInferredVarTypes(t *testing.T) {
 	}
 }
 
+func TestCompleteAmbiguousPromoted(t *testing.T) {
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	evalLines(t, r,
+		`type L struct { LA int }`,
+		`type R struct { LA string; RB int }`,
+		`type Both struct { L; R }`,          // LA promoted twice at depth 1
+		`type Deep struct { L }`,             // LA at depth 2 via Deep
+		`type Mixed struct { Deep; R }`,      // LA@2 (Deep) vs LA@1 (R) — R wins
+		`type Outer struct { LA int; Both }`, // depth-0 LA shadows the ambiguous pair
+		`var both Both`,
+		`var mixed Mixed`,
+		`var outer Outer`,
+	)
+
+	find := func(cands []Candidate, name string) Candidate {
+		for _, c := range cands {
+			if c.Name == name {
+				return c
+			}
+		}
+		return Candidate{Name: name}
+	}
+
+	la := find(r.Complete("both."), "LA")
+	if !la.Ambiguous {
+		t.Fatalf("both.LA not flagged ambiguous: %+v", la)
+	}
+	requireCands(t, r.Complete("both."), "both.", "LA", "L", "R", "RB")
+
+	// depth-1 R.LA shadows depth-2 Deep.LA — Go's winner, not ambiguous.
+	if la := find(r.Complete("mixed."), "LA"); la.Ambiguous || la.Detail != "string" {
+		t.Fatalf("mixed.LA = %+v, want unambiguous string (R shadows Deep)", la)
+	}
+	// a direct field shadows the ambiguous pair entirely.
+	if la := find(r.Complete("outer."), "LA"); la.Ambiguous || la.Detail != "int" {
+		t.Fatalf("outer.LA = %+v, want unambiguous int (declared shadows)", la)
+	}
+}
+
 func TestCompleteImportPaths(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
