@@ -1451,7 +1451,18 @@ func (v *VM) satisfiesTypeElem(ctx *runtime.TypeDef, e ast.Expr, td *runtime.Typ
 				// declared identity inside `[]E` (TypSpelling, not the
 				// underlying view, which would expand a named E).
 				el := &runtime.TypeDef{Pkg: ctx.Pkg, File: ctx.File, Binds: ctx.Binds}
-				return runtime.TypSpelling(t.X, el) == v.underlyingShape(td)
+				// The argument spells the same way: its element keeps
+				// declared identity, so `[]L` matches `[]E` with E bound
+				// to the local L. But a typedef carrying LocalTypes
+				// under-spells the local element to its storage (`[]int`)
+				// while a bound local typedef spells `pkg.L` — drop the
+				// local table so both sides compare declared names (#1350).
+				if u != nil && u.LocalTypes != nil {
+					uc := u.CloneUncached()
+					uc.LocalTypes = nil
+					u = uc
+				}
+				return runtime.TypSpelling(t.X, el) == v.underlyingShape(u)
 			}
 			return false
 		}
