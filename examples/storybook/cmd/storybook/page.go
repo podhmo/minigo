@@ -335,13 +335,21 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     var t=(q.value||'').trim();
     function patch(a,keys){
       var href=a.getAttribute('href')||'';
-      if(href.charAt(0)!=='?'){return}
+      var rel=false;
+      if(href.charAt(0)!=='?'){
+        // File links reach only the export's static pages; of those,
+        // just the grid pages read ?w=, so the other rows keep their
+        // plain href while grid links carry the chosen width too.
+        if(a.dataset.kind!=='grid'||!href||href.charAt(0)==='/'||/^[a-z][a-z0-9+.-]*:/i.test(href)){return}
+        rel=true;
+      }
       var u=new URL(href,location.href);
       keys.forEach(function(k){
         var v=k==='q'?t:cur[k];
         v?u.searchParams.set(k,v):u.searchParams.delete(k);
       });
-      a.setAttribute('href',u.search);
+      // A ?-link is replaced wholesale; a file link keeps its path.
+      a.setAttribute('href',(rel?href.split('?')[0].split('#')[0]:'')+u.search);
     }
     items.forEach(function(a){if(a.dataset.src){patch(a,['w','q'])}});
     pills.forEach(function(a){patch(a,['w','q'])});
