@@ -72,18 +72,6 @@ func (c *compiler) emitTypeCoerce(slot int, t ast.Expr, pos token.Pos) {
 	c.emit(bytecode.OpCoerce, slot, 0, pos)
 }
 
-func countResults(fl *ast.FieldList) int {
-	n := 0
-	for _, f := range fl.List {
-		if len(f.Names) == 0 {
-			n++
-		} else {
-			n += len(f.Names)
-		}
-	}
-	return n
-}
-
 // conversionCall reports whether the call's callee names a type, making
 // the CallExpr a conversion — a transparent non-call operation for
 // argument evaluation order (T(x)'s own computation defers like an

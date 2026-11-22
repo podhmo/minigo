@@ -27,21 +27,29 @@ func TestGlobalSiteCache(t *testing.T) {
 	call := func(v *VM, ch *bytecode.Chunk, env *runtime.Env) (runtime.Value, error) {
 		return v.Call(&runtime.Function{Chunk: ch, Pkg: &runtime.Package{PackageInstance: runtime.PackageInstance{Globals: env}}}, nil)
 	}
-
-	t.Run("rebind invalidates", func(t *testing.T) {
-		env := runtime.NewEnv()
-		env.Set("x", &runtime.Cell{Elem: 1})
+	// firstRead primes the site through env and checks the initial
+	// read — the shared preamble the mutation subtests run before
+	// perturbing the env.
+	firstRead := func(t *testing.T, env *runtime.Env, want runtime.Value) (*VM, *bytecode.Chunk) {
+		t.Helper()
 		v := &VM{}
 		ch := chunk()
 		got, err := call(v, ch, env)
 		if err != nil {
 			t.Fatalf("first read: %v", err)
 		}
-		if diff := cmp.Diff(1, got); diff != "" {
+		if diff := cmp.Diff(want, got); diff != "" {
 			t.Fatalf("first read (-want +got):\n%s", diff)
 		}
+		return v, ch
+	}
+
+	t.Run("rebind invalidates", func(t *testing.T) {
+		env := runtime.NewEnv()
+		env.Set("x", &runtime.Cell{Elem: 1})
+		v, ch := firstRead(t, env, 1)
 		env.Set("x", &runtime.Cell{Elem: 2})
-		got, err = call(v, ch, env)
+		got, err := call(v, ch, env)
 		if err != nil {
 			t.Fatalf("after rebind: %v", err)
 		}
@@ -54,17 +62,9 @@ func TestGlobalSiteCache(t *testing.T) {
 		env := runtime.NewEnv()
 		cell := &runtime.Cell{Elem: 1}
 		env.Set("x", cell)
-		v := &VM{}
-		ch := chunk()
-		got, err := call(v, ch, env)
-		if err != nil {
-			t.Fatalf("first read: %v", err)
-		}
-		if diff := cmp.Diff(1, got); diff != "" {
-			t.Fatalf("first read (-want +got):\n%s", diff)
-		}
+		v, ch := firstRead(t, env, 1)
 		cell.Elem = 42
-		got, err = call(v, ch, env)
+		got, err := call(v, ch, env)
 		if err != nil {
 			t.Fatalf("after cell write: %v", err)
 		}

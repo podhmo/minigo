@@ -782,17 +782,7 @@ func jsonUnmarshalShape(m runtime.Value) bool {
 		return false
 	}
 	ft := b.Fn.Decl.Type
-	n := 0
-	if ft.Params != nil {
-		for _, f := range ft.Params.List {
-			if len(f.Names) == 0 {
-				n++
-			} else {
-				n += len(f.Names)
-			}
-		}
-	}
-	return n == 1 && ft.Results != nil && len(ft.Results.List) == 1
+	return runtime.FieldListLen(ft.Params) == 1 && ft.Results != nil && len(ft.Results.List) == 1
 }
 
 // jsonAllocPointee builds the pointee gc's indirect() allocates for a

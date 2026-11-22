@@ -24,23 +24,12 @@ func TestSelectSiteCache(t *testing.T) {
 	}
 
 	site := &bytecode.GlobalSite{}
-	// each chunk selects N on its own receiver; both share one site,
-	// like one instruction under polymorphic dispatch.
-	chunk := func(recv runtime.Value) *bytecode.Chunk {
-		return &bytecode.Chunk{
-			Consts: []any{recv, "N"},
-			Sites:  []*bytecode.GlobalSite{site},
-			Code: []bytecode.Instruction{
-				{Op: bytecode.OpConst, A: 0},
-				{Op: bytecode.OpSelect, A: 1, C: 0},
-				{Op: bytecode.OpReturn, A: 1},
-			},
-		}
-	}
 	a := &runtime.Struct{Def: defA, Fields: []runtime.Value{"x", int64(7)}}
 	b := &runtime.Struct{Def: defB, Fields: []runtime.Value{int64(9), "y"}}
+	// each chunk selects N on its own receiver; both share one site,
+	// like one instruction under polymorphic dispatch.
 	call := func(v *VM, recv runtime.Value) (runtime.Value, error) {
-		return v.Call(&runtime.Function{Chunk: chunk(recv), Pkg: &runtime.Package{}}, nil)
+		return v.Call(&runtime.Function{Chunk: selectNChunk(site, recv), Pkg: &runtime.Package{}}, nil)
 	}
 
 	t.Run("alternating typedefs at one site", func(t *testing.T) {
@@ -79,24 +68,13 @@ func TestSelectSiteCache(t *testing.T) {
 		v := &VM{}
 		v.H.TypeIDOf = func(td *runtime.TypeDef) runtime.TypeID { return "?" }
 		site := &bytecode.GlobalSite{}
-		chunk := func(recv runtime.Value) *bytecode.Chunk {
-			return &bytecode.Chunk{
-				Consts: []any{recv, "N"},
-				Sites:  []*bytecode.GlobalSite{site},
-				Code: []bytecode.Instruction{
-					{Op: bytecode.OpConst, A: 0},
-					{Op: bytecode.OpSelect, A: 1, C: 0},
-					{Op: bytecode.OpReturn, A: 1},
-				},
-			}
-		}
 		c := &runtime.Struct{Def: defC, Fields: []runtime.Value{"x", int64(7)}}
 		d := &runtime.Struct{Def: defD, Fields: []runtime.Value{int64(9), "y"}}
 		for i, tc := range []struct {
 			recv *runtime.Struct
 			want runtime.Value
 		}{{c, int64(7)}, {d, int64(9)}, {c, int64(7)}} {
-			got, err := v.Call(&runtime.Function{Chunk: chunk(tc.recv), Pkg: &runtime.Package{}}, nil)
+			got, err := v.Call(&runtime.Function{Chunk: selectNChunk(site, tc.recv), Pkg: &runtime.Package{}}, nil)
 			if err != nil {
 				t.Fatalf("call %d: %v", i, err)
 			}
@@ -138,6 +116,20 @@ func TestSelectSiteCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+// selectNChunk builds the chunk the select-site subtests run: one
+// instruction selects member "N" on recv through site.
+func selectNChunk(site *bytecode.GlobalSite, recv runtime.Value) *bytecode.Chunk {
+	return &bytecode.Chunk{
+		Consts: []any{recv, "N"},
+		Sites:  []*bytecode.GlobalSite{site},
+		Code: []bytecode.Instruction{
+			{Op: bytecode.OpConst, A: 0},
+			{Op: bytecode.OpSelect, A: 1, C: 0},
+			{Op: bytecode.OpReturn, A: 1},
+		},
+	}
 }
 
 // TestInstantiateSite covers the OpInstantiate memo's guards: a chunk

@@ -95,6 +95,12 @@ func hostShapeSame(a, b *TypeExpr, res Resolver) bool {
 	if !specShapeExtra(a, b, res) {
 		return false
 	}
+	return specChildrenSame(a, b, res)
+}
+
+// specChildrenSame compares two spec trees child-wise — the shared
+// tail of specSame and hostShapeSame.
+func specChildrenSame(a, b *TypeExpr, res Resolver) bool {
 	ca, cb := a.Children(), b.Children()
 	if len(ca) != len(cb) {
 		return false
@@ -166,17 +172,7 @@ func specFuncIns(te *TypeExpr) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	n := 0
-	if ft.Params != nil {
-		for _, f := range ft.Params.List {
-			if len(f.Names) == 0 {
-				n++
-			} else {
-				n += len(f.Names)
-			}
-		}
-	}
-	return n, true
+	return runtime.FieldListLen(ft.Params), true
 }
 
 // specChanDir normalizes a channel direction across the boundary:

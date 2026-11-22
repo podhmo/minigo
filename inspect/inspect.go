@@ -1077,16 +1077,7 @@ func specSame(a, b *TypeExpr, res Resolver) bool {
 	if !a.sameShapeExtra(b, res) {
 		return false
 	}
-	ca, cb := a.Children(), b.Children()
-	if len(ca) != len(cb) {
-		return false
-	}
-	for i := range ca {
-		if !specSame(ca[i], cb[i], res) {
-			return false
-		}
-	}
-	return true
+	return specChildrenSame(a, b, res)
 }
 
 // collapseAlias unwraps alias layers — `type Str = string`,

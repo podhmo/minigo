@@ -246,7 +246,7 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 	// yields a typed nil, not untyped NIL.
 	nresults := 0
 	if fn.Decl.Type.Results != nil {
-		nresults = countResults(fn.Decl.Type.Results)
+		nresults = runtime.FieldListLen(fn.Decl.Type.Results)
 		for _, field := range fn.Decl.Type.Results.List {
 			for _, n := range field.Names {
 				slot := c.fs.declare(n.Name, n.Pos())

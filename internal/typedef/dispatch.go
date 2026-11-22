@@ -466,6 +466,29 @@ type walkKey struct {
 	args string
 }
 
+// declMethods folds td's declared methods into names/funcs: a
+// generic method contributes no interface method, pointer receivers
+// live only on *T's method set, and an unexported method also
+// answers under its declaring package's ReqKey so interface
+// requirements compare per package — promotion carries the key
+// unchanged.
+func declMethods(td *runtime.TypeDef, ptr bool, names map[string]bool, funcs map[string]*runtime.Function) {
+	for name, m := range td.Methods {
+		if m == nil || len(m.TParams) > 0 {
+			continue // a generic method contributes no interface method
+		}
+		if m.PtrRecv && !ptr {
+			continue // pointer receivers live only on *T's method set
+		}
+		names[name] = true
+		funcs[name] = m
+		if k := ReqKey(td.Pkg, name); k != name {
+			names[k] = true
+			funcs[k] = m
+		}
+	}
+}
+
 func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]bool) *runtime.MethodSet {
 	td = r.PeelAliasTd(td)
 	if td == nil {
@@ -553,41 +576,12 @@ func (r *Resolver) MethodWalkU(td *runtime.TypeDef, ptr bool, seen map[walkKey]b
 		for m, fd := range hostFieldDepths(rt) {
 			members[m] = &runtime.PromotedMember{Depth: fd, Via: "host"}
 		}
-		for name, m := range td.Methods {
-			if m == nil || len(m.TParams) > 0 {
-				continue // a generic method contributes no interface method
-			}
-			if m.PtrRecv && !ptr {
-				continue // pointer receivers live only on *T's method set
-			}
-			names[name] = true
-			funcs[name] = m
-			if k := ReqKey(td.Pkg, name); k != name {
-				names[k] = true
-				funcs[k] = m
-			}
-		}
+		declMethods(td, ptr, names, funcs)
 		return &runtime.MethodSet{Names: names, Funcs: funcs, Depths: depths, Members: members}
 	}
 	names := map[string]bool{}
 	funcs := map[string]*runtime.Function{}
-	for name, m := range td.Methods {
-		if m == nil || len(m.TParams) > 0 {
-			continue // a generic method contributes no interface method
-		}
-		if m.PtrRecv && !ptr {
-			continue // pointer receivers live only on *T's method set
-		}
-		names[name] = true
-		funcs[name] = m
-		if k := ReqKey(td.Pkg, name); k != name {
-			// an unexported method also answers under its declaring
-			// package's key so interface requirements compare per
-			// package; promotion carries the key unchanged.
-			names[k] = true
-			funcs[k] = m
-		}
-	}
+	declMethods(td, ptr, names, funcs)
 	members := map[string]*runtime.PromotedMember{}
 	ambig := map[string]int{}
 	// a declared field at this depth shadows every promoted member of

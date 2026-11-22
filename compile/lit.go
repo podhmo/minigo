@@ -495,7 +495,7 @@ func (c *compiler) funcLit(x *ast.FuncLit) {
 				ic.emitSigTypeCoerce(slot, field.Type, n.Pos())
 			}
 		}
-		ic.ch.NResults = countResults(x.Type.Results)
+		ic.ch.NResults = runtime.FieldListLen(x.Type.Results)
 	}
 	ic.results = syntax.FieldTypes(x.Type.Results)
 	if x.Body != nil {
