@@ -908,12 +908,16 @@ func (r *REPL) initExprType(p *runtime.Package, file *syntax.File, x ast.Expr, r
 		return r.initExprType(p, file, e.X, 0, fuel-1)
 	case *ast.StarExpr:
 		if td := r.initExprType(p, file, e.X, 0, fuel-1); td != nil {
-			return r.elemTypeOf(td)
+			return r.elemInitType(td)
 		}
 	case *ast.IndexExpr:
+		if resIdx > 0 {
+			// `var v, ok = m[k]` — the comma-ok slot is bool.
+			return nil
+		}
 		// `var v = m[k]` — the container's declared element type
 		if td := r.initExprType(p, file, e.X, 0, fuel-1); td != nil {
-			return r.elemTypeOf(td)
+			return r.elemInitType(td)
 		}
 	case *ast.SelectorExpr:
 		return r.selInitType(p, file, e, fuel)
@@ -956,6 +960,51 @@ func (r *REPL) elemTypeOf(td *runtime.TypeDef) *runtime.TypeDef {
 	return et
 }
 
+// elemInitType resolves a container typedef's element type for an
+// inferred initializer: a minted Elem, else the container's own type
+// expression with its stars kept, else ElemOf's walk.
+func (r *REPL) elemInitType(td *runtime.TypeDef) *runtime.TypeDef {
+	if td.Elem != nil {
+		return td.Elem
+	}
+	switch t := td.TypeExpr().(type) {
+	case *ast.StarExpr:
+		return r.typeOfWithPtrs(td, t.X)
+	case *ast.ArrayType:
+		return r.typeOfWithPtrs(td, t.Elt)
+	case *ast.MapType:
+		return r.typeOfWithPtrs(td, t.Value)
+	case *ast.ChanType:
+		return r.typeOfWithPtrs(td, t.Value)
+	}
+	return r.elemTypeOf(td)
+}
+
+// typeOfWithPtrs resolves a type expression keeping its leading stars —
+// resolveTypeRef collapses `*T` into T, so each peeled star re-wraps
+// the result in a minted pointer typedef (`*x` gets the pointee back
+// through Elem, methods intact).
+func (r *REPL) typeOfWithPtrs(ctx *runtime.TypeDef, x ast.Expr) *runtime.TypeDef {
+	ptrs := 0
+	for {
+		switch e := x.(type) {
+		case *ast.StarExpr:
+			ptrs++
+			x = e.X
+			continue
+		case *ast.ParenExpr:
+			x = e.X
+			continue
+		}
+		break
+	}
+	td := r.typeOf(ctx, x)
+	for ; ptrs > 0; ptrs-- {
+		td = r.ptrTo(td, x, ctx.Pkg, ctx.File)
+	}
+	return td
+}
+
 // callResultType derives the resIdx'th result type of a call
 // expression — `f()`, `pkg.F()`, `T(x)`, `make(T, ...)`, `new(T)`.
 func (r *REPL) callResultType(p *runtime.Package, file *syntax.File, e *ast.CallExpr, resIdx, fuel int) *runtime.TypeDef {
@@ -975,12 +1024,15 @@ func (r *REPL) callResultType(p *runtime.Package, file *syntax.File, e *ast.Call
 			}
 			return nil
 		}
-		// `T(x)` conversion, then a same-package (or dot-imported) call.
-		if td := r.typeOf(ctx, f); td != nil {
-			return td
-		}
+		// a same-package (or dot-imported) call first: a func name must
+		// never reach typeOf — resolving it through Package.Member would
+		// materialize (and initialize) the imported package.
 		if fp, fd := r.indexFuncOf(p, file, f.Name); fd != nil {
 			return r.funcResultType(fp, fd, resIdx)
+		}
+		// `T(x)` conversion
+		if td := r.typeOf(ctx, f); td != nil {
+			return td
 		}
 	case *ast.SelectorExpr:
 		// `pkg.F()` / `pkg.T(x)` through the file's imports (Indexed,
@@ -1050,6 +1102,15 @@ func (r *REPL) declTypeOf(p *runtime.Package, file *syntax.File, name string, fu
 			return r.declTypeOfDecl(p, d, fuel)
 		}
 	}
+	if ip, d, ok := dotImportDecl(p, file, name); ok {
+		return r.declTypeOfDecl(ip, d, fuel)
+	}
+	return nil
+}
+
+// dotImportDecl finds name in the indexes of the file's dot-imported
+// packages (Indexed only — never initialized).
+func dotImportDecl(p *runtime.Package, file *syntax.File, name string) (*runtime.Package, *index.Decl, bool) {
 	for _, ref := range p.Imports[file] {
 		if ref.Alias != "." {
 			continue
@@ -1059,10 +1120,10 @@ func (r *REPL) declTypeOf(p *runtime.Package, file *syntax.File, name string, fu
 			continue
 		}
 		if d, ok := ip.Index.Lookup(name); ok {
-			return r.declTypeOfDecl(ip, d, fuel)
+			return ip, d, true
 		}
 	}
-	return nil
+	return nil, nil, false
 }
 
 // declTypeOfDecl is declTypeOf for a resolved decl.
@@ -1096,17 +1157,8 @@ func (r *REPL) indexFuncOf(p *runtime.Package, file *syntax.File, name string) (
 			return p, d
 		}
 	}
-	for _, ref := range p.Imports[file] {
-		if ref.Alias != "." {
-			continue
-		}
-		ip, err := ref.Materialize()
-		if err != nil || ip == nil || ip.Index == nil {
-			continue
-		}
-		if d, ok := ip.Index.Lookup(name); ok && d.Kind == index.FuncDecl {
-			return ip, d
-		}
+	if ip, d, ok := dotImportDecl(p, file, name); ok && d.Kind == index.FuncDecl {
+		return ip, d
 	}
 	return nil, nil
 }
@@ -1126,7 +1178,7 @@ func (r *REPL) funcResultType(p *runtime.Package, fd *index.Decl, resIdx int) *r
 		}
 		if resIdx < i+n {
 			ctx := &runtime.TypeDef{Pkg: p, File: fd.File}
-			return r.typeOf(ctx, fld.Type)
+			return r.typeOfWithPtrs(ctx, fld.Type)
 		}
 		i += n
 	}

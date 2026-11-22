@@ -14,6 +14,8 @@ func Pair() (inspectpkg.User, inspectpkg.Base) {
 	return inspectpkg.User{}, inspectpkg.Base{}
 }
 
+func NewUserPtr() *inspectpkg.User { return &inspectpkg.User{} }
+
 // Untyped vars: the completer derives each type from the initializer.
 var (
 	CallUser  = NewUser()            // same-package call
@@ -26,6 +28,9 @@ var (
 	SelField  = holderVar.U          // field via a declared type
 	DerefUser = *ptrUser             // deref of a declared pointer
 	A, B      = Pair()               // result splitting: A User, B Base
+	V2, OK2   = userMap["k"]         // comma-ok split: V2 User, OK2 bool
+	PtrCall   = NewUserPtr()         // *T call result
+	DerefCall = *NewUserPtr()        // deref of a *T call result
 )
 
 var (

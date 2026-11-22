@@ -697,8 +697,16 @@ func TestCompleteInferredVarTypes(t *testing.T) {
 		{"inferpkg.DerefUser.", "Greet"}, // *User pointee
 		{"inferpkg.A.", "Greet"},         // Pair() result 0 → User
 		{"inferpkg.B.", "ID"},            // Pair() result 1 → Base
+		{"inferpkg.V2.", "Greet"},        // map index value slot → User
+		{"inferpkg.PtrCall.", "Greet"},   // *User call result
+		{"inferpkg.DerefCall.", "Greet"}, // *(*User) keeps the pointee's methods
 	} {
 		requireCands(t, r.Complete(tc.line), tc.line, tc.want)
+	}
+
+	// the comma-ok slot is bool — no User members may leak through.
+	if cands := r.Complete("inferpkg.OK2."); len(cands) != 0 {
+		t.Fatalf("OK2. yielded %v, want none (bool)", candNames(cands))
 	}
 }
 
