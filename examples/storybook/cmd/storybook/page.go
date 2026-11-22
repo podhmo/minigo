@@ -303,11 +303,14 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     t?u.searchParams.set('q',t):u.searchParams.delete('q');
     return u;
   }
-  function mark(a){
+  // scrollIntoView only for user-initiated activation: a boot/popstate/
+  // iframe-sync mark must not yank the restored sidebar scroll position
+  // back to the selected row.
+  function mark(a,scroll){
     items.forEach(function(x){
       var on=x===a;
       x.classList.toggle('active',on);
-      if(on){x.setAttribute('aria-current','true');x.scrollIntoView({block:'nearest'})}
+      if(on){x.setAttribute('aria-current','true');if(scroll){x.scrollIntoView({block:'nearest'})}}
       else{x.removeAttribute('aria-current')}
     });
   }
@@ -356,13 +359,20 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     widths.forEach(function(a){patch(a,['s','g','q'])});
     if(!actGrid.hidden){patch(actGrid,['w','q'])}
   }
+  // The iframe can navigate itself (in-page links), leaving the src
+  // attribute behind the live location — compare against the latter so
+  // re-activating the same story reloads the frame when it drifted.
+  function frameNeeds(src){
+    try{return new URL(src,location.href).href!==frame.contentWindow.location.href}
+    catch(e){return frame.getAttribute('src')!==src}
+  }
   function activate(el,push){
     var w=cur.w;
     if(el.dataset.kind==='grid'){
       cur.g=el.dataset.name;cur.s='';
       frame.classList.remove('sized');frame.style.width='';
       var src=el.dataset.src+(w?(el.dataset.src.indexOf('?')<0?'?':'&')+'w='+w:'');
-      if(frame.getAttribute('src')!==src){frame.src=src}
+      if(frameNeeds(src)){frame.src=src}
       showCrumb('grid',el.dataset.name+' variants','');
       actGrid.hidden=true;
       actOpen.href=el.dataset.src;actOpen.hidden=false;
@@ -371,11 +381,11 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     }else{
       cur.s=el.dataset.name;cur.g='';
       frame.classList.toggle('sized',!!w);frame.style.width=w?w+'px':'';
-      if(frame.getAttribute('src')!==el.dataset.src){frame.src=el.dataset.src}
+      if(frameNeeds(el.dataset.src)){frame.src=el.dataset.src}
       showCrumb(el.dataset.group,el.dataset.name,el.dataset.pos);
       setBarGrid(el.dataset.group,el.dataset.grid);
       actOpen.href=el.dataset.src;actOpen.hidden=false;
-      mark(el);
+      mark(el,push!==false);
       markPills('');
     }
     syncHrefs();
