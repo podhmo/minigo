@@ -532,7 +532,9 @@ const replHelp = `commands:
                 #v verb (type and field names, quoted strings, T(nil)) —
                 for debugging nested values (also :p)
   :comp <text>  print completion candidates for a code fragment — the
-                same candidates [TAB] offers while typing (on a terminal)
+                same candidates [TAB] offers while typing (on a terminal);
+                a name ending in ! is a promoted member two embeds
+                provide at the same depth — Go rejects selecting it
   :eval [on|off]  toggle the completion evaluation policy: on lets TAB
                 evaluate a selector's base, so f(). or m[k]. offer the
                 result's members — the call's side effects really run.
@@ -764,10 +766,11 @@ func runREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 					}
 				case ":comp":
 					for _, c := range r.Complete(strings.TrimSpace(arg)) {
+						name := displayCandidateName(c)
 						if c.Detail != "" {
-							fmt.Fprintf(out, "%s\t%s\t%s\n", c.Kind, c.Name, c.Detail)
+							fmt.Fprintf(out, "%s\t%s\t%s\n", c.Kind, name, c.Detail)
 						} else {
-							fmt.Fprintf(out, "%s\t%s\n", c.Kind, c.Name)
+							fmt.Fprintf(out, "%s\t%s\n", c.Kind, name)
 						}
 					}
 				case ":help":
@@ -1259,6 +1262,16 @@ func commandCandidates(names []string) []repl.Candidate {
 	return out
 }
 
+// displayCandidateName renders a candidate in the listings: a
+// same-depth promoted member — a selector Go would reject — is
+// suffixed with ! so the offer reads as a hint, not a promise.
+func displayCandidateName(c repl.Candidate) string {
+	if c.Ambiguous {
+		return c.Name + "!"
+	}
+	return c.Name
+}
+
 func candidateNames(cands []repl.Candidate) []string {
 	out := make([]string, len(cands))
 	for i, c := range cands {
@@ -1290,7 +1303,10 @@ func commonPrefix(names []string) string {
 // exists for the verbose view).
 func formatCandidates(cands []repl.Candidate) string {
 	const maxRows = 20
-	names := candidateNames(cands)
+	names := make([]string, len(cands))
+	for i, c := range cands {
+		names[i] = displayCandidateName(c)
+	}
 	shown := names
 	truncated := 0
 	if len(names) > maxRows {
