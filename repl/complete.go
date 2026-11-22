@@ -1286,26 +1286,7 @@ func (r *REPL) importables() []Candidate {
 	// stdlib: walk GOROOT/src the same way `go list std` would — dirs
 	// holding non-main Go packages, minus trees user code cannot import.
 	if goroot := build.Default.GOROOT; goroot != "" {
-		src := filepath.Join(goroot, "src")
-		_ = filepath.WalkDir(src, func(dir string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return filepath.SkipDir
-			}
-			if !d.IsDir() || dir == src {
-				return nil
-			}
-			base := d.Name()
-			if strings.HasPrefix(base, "_") || strings.HasPrefix(base, ".") ||
-				base == "internal" || base == "testdata" || base == "vendor" ||
-				base == "cmd" || base == "builtin" {
-				return filepath.SkipDir
-			}
-			if hasPackageFiles(dir) {
-				rel, _ := filepath.Rel(src, dir)
-				add(filepath.ToSlash(rel), "stdlib")
-			}
-			return nil
-		})
+		stdlibCandidates(filepath.Join(goroot, "src"), add)
 	}
 	// the module: its own packages (modulePath/rel) and its requires —
 	// the spellings go.mod actually lets you import.
@@ -1320,6 +1301,7 @@ func (r *REPL) importables() []Candidate {
 		}
 		root, mod := loc.RootDir(), loc.ModulePath()
 		if mod != "" {
+			root = resolveWalkRoot(root)
 			_ = filepath.WalkDir(root, func(dir string, d fs.DirEntry, err error) error {
 				if err != nil || !d.IsDir() {
 					return nil
@@ -1348,6 +1330,46 @@ func (r *REPL) importables() []Candidate {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	r.importCands = out
 	return out
+}
+
+// stdlibCandidates walks a GOROOT/src tree the same way `go list std`
+// would — every dir holding non-main Go files names an importable
+// package, minus the trees user code cannot reach — and hands each
+// path to add.
+func stdlibCandidates(src string, add func(path, detail string)) {
+	src = resolveWalkRoot(src)
+	_ = filepath.WalkDir(src, func(dir string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() || dir == src {
+			return nil
+		}
+		base := d.Name()
+		if strings.HasPrefix(base, "_") || strings.HasPrefix(base, ".") ||
+			base == "internal" || base == "testdata" || base == "vendor" ||
+			base == "cmd" || base == "builtin" {
+			return filepath.SkipDir
+		}
+		if hasPackageFiles(dir) {
+			rel, _ := filepath.Rel(src, dir)
+			add(filepath.ToSlash(rel), "stdlib")
+		}
+		return nil
+	})
+}
+
+// resolveWalkRoot resolves a WalkDir root through symlinks. WalkDir
+// Lstats its root, so a root that is itself a link is reported as a
+// lone file and never descends — distro splits like Debian's
+// /usr/lib/go-1.26/src -> ../../share/go-1.26/src would enumerate
+// nothing. An unresolvable root is returned unchanged and WalkDir
+// reports the error to the callback, like before.
+func resolveWalkRoot(root string) string {
+	if real, err := filepath.EvalSymlinks(root); err == nil {
+		return real
+	}
+	return root
 }
 
 // hasPackageFiles reports whether dir directly contains at least one

@@ -2,10 +2,13 @@ package repl
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -630,5 +633,38 @@ func TestCompleteCommandArgPackageRefs(t *testing.T) {
 				t.Errorf("%q: %q must not be offered", c.line, a)
 			}
 		}
+	}
+}
+
+func TestStdlibCandidatesSymlinkedRoot(t *testing.T) {
+	// Distro Go installs split GOROOT: Debian's /usr/lib/go-1.26/src is
+	// a symlink to ../../share/go-1.26/src. WalkDir Lstats its root, so
+	// the link must be resolved or the enumeration comes back empty.
+	tmp := t.TempDir()
+	realSrc := filepath.Join(tmp, "real", "src")
+	writePkg := func(rel, clause string) {
+		dir := filepath.Join(realSrc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte("package "+clause+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writePkg("strings", "strings")
+	writePkg("encoding/json", "json")
+	writePkg("cmd/go", "main")  // cmd/ is skipped outright
+	writePkg("mainpkg", "main") // a main package is not importable
+	linkSrc := filepath.Join(tmp, "link-src")
+	if err := os.Symlink(realSrc, linkSrc); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var got []string
+	stdlibCandidates(linkSrc, func(path, detail string) { got = append(got, path) })
+	sort.Strings(got)
+	want := []string{"encoding/json", "strings"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Fatalf("stdlibCandidates mismatch (-want +got):\n%s", diff)
 	}
 }
