@@ -179,6 +179,8 @@ search form { display: flex; gap: .375rem; }
 .js .qgo { display: none; }
 .meta { margin-top: .4rem; font-size: .72rem; color: var(--text-muted); }
 .meta:empty { display: none; }
+.warn { margin-top: .5rem; font-size: .72rem; color: var(--text-muted); }
+.warn code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--danger); }
 .list { flex: 1; overflow-y: auto; padding: .375rem .5rem .75rem; container-type: scroll-state; }
 .group { display: flex; align-items: center; gap: .375rem; margin-top: .875rem; padding: .25rem .5rem; position: sticky; top: -.375rem; background: var(--surface); z-index: 2; border-bottom: 1px solid var(--border-muted); }
 .group:first-child { margin-top: .375rem; }
@@ -237,6 +239,7 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
 <button class="qgo" type="submit">filter</button>
 </form></search>
 <div class="meta" id="count" role="status">{{if .Q}}{{.Matched}} of {{.Total}} shown{{end}}</div>
+{{if .Excluded}}<div class="warn" role="note" title="these Story-prefixed funcs are not in //go:build story files and never render">skipped:{{range .Excluded}} <code title="{{.Pos}}">{{.Name}}</code>{{end}}</div>{{end}}
 </header>
 <div class="list" id="list">
 {{range .Groups}}<section class="grp"{{if .Hidden}} hidden{{end}}>
@@ -706,7 +709,8 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 			}
 		}
 	}
-	data := map[string]any{"Dir": b.Dir, "Groups": groups, "Total": len(stories), "Widths": []string{"", "320", "360", "768"}}
+	excluded, _ := b.Excluded()
+	data := map[string]any{"Dir": b.Dir, "Groups": groups, "Total": len(stories), "Excluded": excluded, "Widths": []string{"", "320", "360", "768"}}
 	if sel != nil {
 		data["S"] = sel.Name
 		data["Src"] = sel.Src
@@ -828,10 +832,13 @@ func (b *Book) Handler() http.Handler {
 		if err != nil {
 			// No stories yet (or a malformed one): show the error in the
 			// nav rather than failing, so the book is usable while the
-			// stories are written.
+			// stories are written — and still name the tag-skipped
+			// stories, since that error can be exactly "no Story funcs".
+			excluded, _ := b.Excluded()
 			if err := indexTmpl.Execute(w, map[string]any{
 				"Dir":       b.Dir,
 				"Err":       err.Error(),
+				"Excluded":  excluded,
 				"ScriptTag": b.ScriptTag(),
 			}); err != nil {
 				slog.ErrorContext(r.Context(), "index", "err", err)
@@ -936,6 +943,10 @@ func (b *Book) Handler() http.Handler {
 				break
 			}
 		}
+		// Story funcs outside the tag guard are reported rather than
+		// dropped silently — best-effort: a scan failure must not take
+		// the index down.
+		excluded, _ := b.Excluded()
 		td := map[string]any{
 			"Dir":       b.Dir,
 			"Groups":    groups,
@@ -948,6 +959,7 @@ func (b *Book) Handler() http.Handler {
 			"Total":     len(stories),
 			"Matched":   matched,
 			"None":      q != "" && matched == 0,
+			"Excluded":  excluded,
 			"Widths":    []string{"", "320", "360", "768"},
 			"ScriptTag": b.ScriptTag(),
 		}
