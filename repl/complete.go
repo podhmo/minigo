@@ -917,7 +917,14 @@ func (r *REPL) initExprType(p *runtime.Package, file *syntax.File, x ast.Expr, r
 		}
 		// `var v = m[k]` — the container's declared element type
 		if td := r.initExprType(p, file, e.X, 0, fuel-1); td != nil {
-			return r.elemInitType(td)
+			// `a[0]` on a `*[N]T` both derefs and indexes — peel the
+			// pointer layers, then take the container's element.
+			for i := 0; i < 8 && td != nil && td.Kind == runtime.KindPointer; i++ {
+				td = td.Elem
+			}
+			if td != nil {
+				return r.elemInitType(td)
+			}
 		}
 	case *ast.SelectorExpr:
 		return r.selInitType(p, file, e, fuel)

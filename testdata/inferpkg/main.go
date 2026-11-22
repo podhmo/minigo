@@ -36,6 +36,7 @@ var (
 	PtrCall   = NewUserPtr()         // *T call result
 	DerefCall = *NewUserPtr()        // deref of a *T call result
 	PtrSel    = holderPtr.U          // field through an inferred *T var
+	PtrIdx    = arrPtr[0]            // index through an inferred *[N]T var
 )
 
 var (
@@ -43,6 +44,7 @@ var (
 	holderVar = Holder{U: inspectpkg.User{Name: "h"}}
 	ptrUser   = &inspectpkg.User{}
 	holderPtr = NewHolderPtr()
+	arrPtr    = NewUserArrPtr()
 )
 
 type Holder struct {
