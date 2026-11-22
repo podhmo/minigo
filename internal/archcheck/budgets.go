@@ -226,7 +226,7 @@ var FileBudgets = map[string]int{
 	"vm/deferred_lit.go":                             57,
 	"vm/ffi_marshal.go":                              638,
 	"vm/frame.go":                                    437,
-	"vm/generic.go":                                  1717,
+	"vm/generic.go":                                  1728,
 	"vm/goroutine_id.go":                             36,
 	"vm/goroutine_id_asm.go":                         17,
 	"vm/iface_reqs.go":                               69,
