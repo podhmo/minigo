@@ -143,6 +143,10 @@ func (r *REPL) complete(line string) (start int, cands []Candidate) {
 		if v, ok := r.resolveBase(ctx.base); ok {
 			c.members(v, &out, 0)
 		}
+	} else if ctx.mapkey {
+		if v, ok := r.resolveBase(ctx.base); ok {
+			c.mapKeys(v, ctx.quote, &out)
+		}
 	} else {
 		c.scopeNames(&out)
 	}
@@ -160,15 +164,17 @@ func (r *REPL) complete(line string) (start int, cands []Candidate) {
 }
 
 // completionCtx is the lexical tail of the line: "selector after a dot"
-// (with the base expression's source), "inside an import string", or
-// "bare identifier prefix".
+// (with the base expression's source), "inside an import string",
+// "a map's string key inside `m["..."`", or "bare identifier prefix".
 type completionCtx struct {
 	selector bool   // completing after `.`
 	imp      bool   // completing inside an `import "..."` string
+	mapkey   bool   // completing a string key inside `m["..."`
 	done     bool   // no completion at this tail (e.g. a closed import literal)
-	base     string // source text of the selector's base expression
+	base     string // source text of the selector's (or map's) base expression
 	prefix   string // the partial identifier (or import path) being typed
 	start    int    // byte offset where the replaceable token begins
+	quote    byte   // the delimiter of an unterminated literal ('"' or '`')
 }
 
 // completeContext tokenizes the line and classifies its tail. Only the
@@ -221,6 +227,15 @@ func completeContext(line string) completionCtx {
 		prefix = strings.TrimSuffix(prefix, `"`)
 		prefix = strings.TrimSuffix(prefix, "`")
 		return completionCtx{imp: true, prefix: prefix, start: last.off + 1}
+	}
+	// `m["k` (also `u.M["`, `f()["`) ends inside a string literal that
+	// opens an index expression: complete the live map's string keys.
+	// A closed literal (`m["k"`) is past the context — a splice would
+	// eat the closing quote.
+	if last.tok == token.STRING && n >= 2 && toks[n-2].tok == token.LBRACK {
+		if lit := last.lit; !(len(lit) >= 2 && lit[len(lit)-1] == lit[0]) {
+			return completionCtx{mapkey: true, base: line[:toks[n-2].off], prefix: lit[1:], start: last.off + 1, quote: lit[0]}
+		}
 	}
 	// A line ending in whitespace sits on a fresh empty token: the
 	// last scanned token is not the replacement target (`var |x`
@@ -914,6 +929,54 @@ func (c *completer) members(v runtime.Value, out *[]Candidate, depth int) {
 	case time.Duration:
 		c.hostMembers(b, out)
 	}
+}
+
+// mapKeys enumerates the live map's string keys — the completion inside
+// `m["..."`. Only string-valued keys surface: an int- or
+// interface-keyed map simply has fewer to offer, and a nil or non-map
+// base offers nothing. Names are spliced inside the literal, so a
+// double-quoted key is escaped with strconv.Quote's inner text while a
+// raw literal takes the key verbatim.
+func (c *completer) mapKeys(v runtime.Value, quote byte, out *[]Candidate) {
+	for i := 0; i < 8; i++ {
+		switch b := v.(type) {
+		case *runtime.Named:
+			v = runtime.Unwrap(v)
+			continue
+		case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
+			dv, ok := runtime.Deref(v)
+			if !ok {
+				return
+			}
+			v = dv
+			continue
+		case *runtime.Map:
+			disp, _ := b.SnapshotKeys()
+			for _, k := range disp {
+				s, ok := mapKeyString(k)
+				if !ok {
+					continue
+				}
+				name := s
+				if quote == '"' {
+					if q := strconv.Quote(s); len(q) >= 2 {
+						name = q[1 : len(q)-1]
+					}
+				}
+				c.add(out, name, CandConst, "map key")
+			}
+			return
+		default:
+			return
+		}
+	}
+}
+
+// mapKeyString unwraps a map key to its string when it has one —
+// `type K string` keys arrive Named-wrapped.
+func mapKeyString(k runtime.Value) (string, bool) {
+	s, ok := runtime.Unwrap(k).(string)
+	return s, ok
 }
 
 // typeMembers enumerates a type-level selector's members: the method set

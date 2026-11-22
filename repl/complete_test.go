@@ -621,6 +621,53 @@ func TestCompleteEvalBase(t *testing.T) {
 	}
 }
 
+func TestCompleteMapKeys(t *testing.T) {
+	ctx := context.Background()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	for _, line := range []string{
+		`m := map[string]int{"alpha": 1, "beta": 2}`,
+		`m2 := map[string]int{}`,
+		`mi := map[int]string{1: "x"}`,
+		`type K string`,
+		`km := map[K]int{"ka": 1}`,
+		`type holder struct { M map[string]int }`,
+		`h := holder{M: m}`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		line string
+		want []string
+	}{
+		{`m["`, []string{"alpha", "beta"}}, // all live keys
+		{`m["al`, []string{"alpha"}},       // prefix inside the literal
+		{`h.M["`, []string{"alpha"}},       // map behind a field ref
+		{`m2[m["`, []string{"alpha"}},      // nested index — base is m
+		{`km["`, []string{"ka"}},           // named string key type
+		{"m[`", []string{"alpha"}},         // raw literal opens the same context
+	} {
+		cands := r.Complete(tc.line)
+		for _, w := range tc.want {
+			if !hasCand(cands, w) {
+				t.Fatalf("%s missing in %q -> %v", w, tc.line, candNames(cands))
+			}
+		}
+	}
+
+	// an int-keyed map and a plain slice index offer no keys; a closed
+	// literal is past the context.
+	for _, line := range []string{`mi["`, `mi["x`, `s := []int{}; s["`} {
+		if cands := r.Complete(line); len(cands) != 0 {
+			t.Fatalf("%q yielded %v", line, candNames(cands))
+		}
+	}
+}
+
 func TestCompleteImportPaths(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
