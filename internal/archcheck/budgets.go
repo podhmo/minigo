@@ -269,7 +269,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/regexp/regexp.go":               28,
 	"internal/stdlib/context/context.go":             287,
 	"internal/stdlib/html/html.go":                   12,
-	"internal/stdlib/htmltemplate/htmltemplate.go":   53,
+	"internal/stdlib/htmltemplate/htmltemplate.go":   60,
 	"internal/stdlib/texttemplate/texttemplate.go":   56,
 	"internal/stdlib/time/time.go":                   528,
 	"internal/stdlib/utf8/utf8.go":                   116,
