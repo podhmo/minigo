@@ -115,8 +115,8 @@ func TestCompletePackage(t *testing.T) {
 	for _, c := range cands {
 		if c.Name == "Compare" {
 			found = true
-			if c.Detail != "func(string, string) int" {
-				t.Fatalf("Compare Detail = %q", c.Detail)
+			if diff := cmp.Diff("func(string, string) int", c.Detail); diff != "" {
+				t.Fatalf("Compare Detail diff (-want +got):\n%s", diff)
 			}
 		}
 	}

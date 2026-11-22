@@ -26,7 +26,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				cmd := exec.Command(stdlib.Str(a[0]), stdlib.StrSlice(a[1:])...)
 				cmd.Dir = env.Cwd()
 				return &runtime.GoValue{V: cmd}, nil
-			}, exec.Command),
+			}),
 			"CommandContext": h.Fn("exec.CommandContext", func(a []any) (any, error) {
 				if len(a) < 2 {
 					return nil, errors.New("exec.CommandContext needs a context and a name")
@@ -38,7 +38,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				cmd := exec.CommandContext(ctx, stdlib.Str(a[1]), stdlib.StrSlice(a[2:])...)
 				cmd.Dir = env.Cwd()
 				return &runtime.GoValue{V: cmd}, nil
-			}, exec.CommandContext),
+			}),
 			"LookPath": h.Fn1("exec.LookPath", func(a []any) (any, error) {
 				name := stdlib.Str(a[0])
 				// A separator-bearing relative name is checked against the
@@ -52,7 +52,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 					return stdlib.RetErr2(name, nil)
 				}
 				return stdlib.RetErr2(exec.LookPath(name))
-			}, exec.LookPath),
+			}),
 			"ErrNotFound":  &runtime.GoValue{V: exec.ErrNotFound},
 			"ErrDot":       &runtime.GoValue{V: exec.ErrDot},
 			"ErrWaitDelay": &runtime.GoValue{V: exec.ErrWaitDelay},

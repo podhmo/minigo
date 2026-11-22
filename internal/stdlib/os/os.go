@@ -32,10 +32,10 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			// interpreter — ExitRequest ends the run at the Call
 			// boundary: 0 cleanly, N as `exit status N`.
 			panic(&vm.ExitRequest{Code: int(stdlib.IntOf(a[0]))})
-		}, os.Exit),
-		"Stat":     h.Fn1("os.Stat", func(a []any) (any, error) { return fsOp2(env, "os.Stat", a, os.Stat) }, os.Stat),
-		"Lstat":    h.Fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(env, "os.Lstat", a, os.Lstat) }, os.Lstat),
-		"ReadFile": h.Fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(env, "os.ReadFile", a, os.ReadFile) }, os.ReadFile),
+		}),
+		"Stat":     h.Fn1("os.Stat", func(a []any) (any, error) { return fsOp2(env, "os.Stat", a, os.Stat) }),
+		"Lstat":    h.Fn1("os.Lstat", func(a []any) (any, error) { return fsOp2(env, "os.Lstat", a, os.Lstat) }),
+		"ReadFile": h.Fn1("os.ReadFile", func(a []any) (any, error) { return fsOp2(env, "os.ReadFile", a, os.ReadFile) }),
 		"WriteFile": h.Fn3("os.WriteFile", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -60,8 +60,8 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.MkdirAll(p, fs.FileMode(stdlib.IntOf(a[1]))), sp, p)), nil
 		}, os.MkdirAll),
-		"Remove":    h.Fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(env, "os.Remove", a, os.Remove) }, os.Remove),
-		"RemoveAll": h.Fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(env, "os.RemoveAll", a, os.RemoveAll) }, os.RemoveAll),
+		"Remove":    h.Fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(env, "os.Remove", a, os.Remove) }),
+		"RemoveAll": h.Fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(env, "os.RemoveAll", a, os.RemoveAll) }),
 		"Chmod": h.Fn2("os.Chmod", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -114,7 +114,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 		// Getwd/Chdir operate on the engine's virtual cwd (see WithWorkingDir):
 		// the host process cwd is never touched, so scripts can "cd" freely
 		// without side effects on the embedding tool.
-		"Getwd": h.Fn("os.Getwd", func(a []any) (any, error) { return stdlib.RetErr2(env.Cwd(), nil) }, os.Getwd),
+		"Getwd": h.Fn("os.Getwd", func(a []any) (any, error) { return stdlib.RetErr2(env.Cwd(), nil) }),
 		"Chdir": h.Fn1("os.Chdir", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -140,9 +140,9 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			}
 			env.SetCwd(p)
 			return runtime.NIL, nil
-		}, os.Chdir),
-		"Open":   h.Fn1("os.Open", func(a []any) (any, error) { return fsFileOp(env, a, os.Open) }, os.Open),
-		"Create": h.Fn1("os.Create", func(a []any) (any, error) { return fsFileOp(env, a, os.Create) }, os.Create),
+		}),
+		"Open":   h.Fn1("os.Open", func(a []any) (any, error) { return fsFileOp(env, a, os.Open) }),
+		"Create": h.Fn1("os.Create", func(a []any) (any, error) { return fsFileOp(env, a, os.Create) }),
 		"OpenFile": h.Fn3("os.OpenFile", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)

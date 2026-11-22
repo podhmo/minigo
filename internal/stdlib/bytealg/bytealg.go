@@ -24,7 +24,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		}, bytes.Compare),
 		"Count": h.Fn2("bytealg.Count", func(a []any) (any, error) {
 			return int(bytes.Count(stdlib.ByteSlice(a[0]), []byte{byte(stdlib.Int64Of(a[1]))})), nil
-		}, bytes.Count),
+		}),
 		"CountString": h.Fn2("bytealg.CountString", func(a []any) (any, error) {
 			return int(strings.Count(stdlib.Str(a[0]), string([]byte{byte(stdlib.Int64Of(a[1]))}))), nil
 		}),

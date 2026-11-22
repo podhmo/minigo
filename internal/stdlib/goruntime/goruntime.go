@@ -131,7 +131,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		}),
 		// a debugger trap is a no-op for the interpreter — the program
 		// just continues, which is what these tests rely on.
-		"Breakpoint": h.Fn("runtime.Breakpoint", func(a []any) (any, error) { return nil, nil }, goruntime.Breakpoint),
+		"Breakpoint": h.Fn("runtime.Breakpoint", func(a []any) (any, error) { return nil, nil }),
 		// no GC: registering a finalizer is accepted but never fires —
 		// same observable behavior as a run with no GC pressure.
 		"SetFinalizer": h.Fn("runtime.SetFinalizer", func(a []any) (any, error) {
@@ -139,7 +139,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 				return nil, errors.New("runtime.SetFinalizer needs 2 args")
 			}
 			return nil, nil
-		}, goruntime.SetFinalizer),
+		}),
 		// AddCleanup is inert like SetFinalizer: the cleanup never fires
 		// without a GC, so the call only has to hand back a Cleanup
 		// handle whose Stop is a no-op (weak.Make-based registrars like
@@ -182,7 +182,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 			memStatsOnce.Do(func() { goruntime.ReadMemStats(&memStatsSnapshot) })
 			*m = memStatsSnapshot
 			return nil, nil
-		}, goruntime.ReadMemStats),
+		}),
 		"Caller": &runtime.BuiltinFunc{Name: "runtime.Caller", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) < 1 {
 				return nil, errors.New("runtime.Caller needs 1 arg")

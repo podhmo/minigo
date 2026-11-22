@@ -22,7 +22,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 	tbl["ListSeparator"] = &runtime.UConst{V: constant.MakeInt64(os.PathListSeparator), Rune: true}
 	// Abs/Rel anchor relative paths at the engine's virtual cwd, not the
 	// host process's (divergence from real filepath.Abs is deliberate).
-	tbl["Abs"] = h.Fn1("filepath.Abs", func(a []any) (any, error) { return stdlib.RetErr2(env.CwdAbs(stdlib.Str(a[0])), nil) }, filepath.Abs)
+	tbl["Abs"] = h.Fn1("filepath.Abs", func(a []any) (any, error) { return stdlib.RetErr2(env.CwdAbs(stdlib.Str(a[0])), nil) })
 	tbl["Rel"] = h.Fn2("filepath.Rel", func(a []any) (any, error) {
 		return stdlib.RetErr2(filepath.Rel(env.CwdAbs(stdlib.Str(a[0])), env.CwdAbs(stdlib.Str(a[1]))))
 	}, filepath.Rel)
