@@ -131,7 +131,10 @@ request, so a browser reload reflects edits to Go code, templates, and
 stories — every request re-reads the current file contents, no restart
 needed. It also serves `app/static/` under `/static/`, so stylesheet
 edits need no re-execution at all, and the index offers fixed iframe
-widths (320px, 360px, 768px) for checking narrow layouts. Use it when
+widths (320px, 360px, 768px) for checking narrow layouts. The sidebar
+filters stories by name, doc, or group (`?q=`, works without JS), and
+each group links a side-by-side variants grid that can preview inside
+the same pane (`?g=`). Use it when
 repeated exports become inconvenient; it is not needed for a one-time
 HTML inspection.
 

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,12 +17,33 @@ import (
 // entry is one row of the index page.
 type entry struct {
 	Story
-	Href      string // index link: ?s=<Name> in live mode, <Name>.html in export
-	FrameHref string // URL the preview iframe loads for this story; "" when it cannot be framed
-	Grid      string // side-by-side grid URL of the entry's group
-	Target    string // "story" in the static export, "_blank" for served http stories
-	Blurb     string // Doc with the redundant story-name prefix dropped
-	Err       string
+	Href   string // where the row's anchor points (serve: ?s=, export: Name.html)
+	Src    string // what the preview iframe loads (serve: /story/, export: Name.html); "" when it cannot be framed
+	Grid   string // this story's variants grid, for the toolbar's grid action
+	Hay    string // lowercased haystack the filter matches: name + doc + group
+	Target string // "story" in the static export, "_blank" for served http stories
+	Blurb  string // Doc with the redundant story-name prefix dropped
+	Hidden bool   // a non-match under ?q=: rendered but hidden so JS can restore it
+	Err    string
+}
+
+// matchStory answers whether a story survives the ?q= filter: every
+// whitespace-separated token must appear in the lowercased haystack of
+// name + doc + group.
+func matchStory(s Story, q string) bool {
+	hay := strings.ToLower(s.Name + " " + s.Doc + " " + s.Group)
+	for _, t := range strings.Fields(strings.ToLower(q)) {
+		if !strings.Contains(hay, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// haystack is the searchable text carried on each row's data-haystack
+// attribute; the live filter matches it the same way matchStory does.
+func haystack(s Story) string {
+	return strings.ToLower(s.Name + " " + s.Doc + " " + s.Group)
 }
 
 // blurb is the doc line without its redundant "StoryXxx renders ..."
@@ -40,8 +62,10 @@ func blurb(s Story) string {
 // Name and no grid view: they are not variants of one template.
 type group struct {
 	Name    string
-	Href    string // the side-by-side grid view
+	Href    string // where the grid pill points (serve: ?g=, export: grid_X.html)
+	Src     string // the grid document itself (serve: /grid/, export: grid_X.html)
 	Target  string
+	Hidden  bool // every entry filtered out under ?q=
 	Entries []entry
 }
 
@@ -74,16 +98,6 @@ func groupEntries(entries []entry) []group {
 		groups = append(groups, group{Entries: rest})
 	}
 	return groups
-}
-
-// gridHref is a group's grid URL, "" when the story has no group.
-func gridHref(groups []group, name string) string {
-	for _, g := range groups {
-		if g.Name == name {
-			return g.Href
-		}
-	}
-	return ""
 }
 
 // gridRows filters a group's entries down to what the grid can frame:
@@ -145,26 +159,35 @@ const chromeTokens = `
 `
 
 var indexTmpl = template.Must(template.New("index").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><link rel="icon" href="data:,"><title>stories: {{.Dir}}</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>` + chromeTokens + `
 [hidden] { display: none !important; }
 body { margin: 0; display: flex; height: 100vh; height: 100dvh; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
 nav { width: 17rem; flex: none; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--border); }
 nav > header { padding: .75rem .875rem; border-bottom: 1px solid var(--border-muted); }
 .brand { font-size: .85rem; font-weight: 600; }
+.brand .total { font-size: .72rem; font-weight: 400; color: var(--text-muted); }
 .dir { margin-top: .15rem; font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); word-break: break-all; }
 .err { color: var(--danger); }
-.search { display: flex; align-items: center; gap: .5rem; margin-top: .625rem; }
-.search input { flex: 1; min-width: 0; padding: .3rem .55rem; font: inherit; font-size: .8rem; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
-.search input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.search input::placeholder { color: var(--text-muted); }
-.search .count { font-size: .72rem; color: var(--text-muted); white-space: nowrap; }
+search { display: block; margin-top: .625rem; }
+search form { display: flex; gap: .375rem; }
+#q { flex: 1; min-width: 0; padding: .3rem .55rem; font: inherit; font-size: .8rem; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+#q:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+#q::placeholder { color: var(--text-muted); }
+.qgo { font: inherit; font-size: .78rem; padding: .3rem .6rem; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.qgo:hover { color: var(--accent); border-color: var(--accent); }
+.js .qgo { display: none; }
+.meta { margin-top: .4rem; font-size: .72rem; color: var(--text-muted); }
+.meta:empty { display: none; }
 .list { flex: 1; overflow-y: auto; padding: .375rem .5rem .75rem; container-type: scroll-state; }
-.group { display: flex; align-items: center; gap: .375rem; margin-top: .875rem; padding: .25rem .5rem; }
+.group { display: flex; align-items: center; gap: .375rem; margin-top: .875rem; padding: .25rem .5rem; position: sticky; top: -.375rem; background: var(--surface); z-index: 2; border-bottom: 1px solid var(--border-muted); }
 .group:first-child { margin-top: .375rem; }
-.group .gname { font-size: .72rem; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); }
+.group .gname { font-size: .72rem; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp-n { margin-inline-start: auto; font-size: .68rem; color: var(--text-muted); background: var(--bg); border: 1px solid var(--border-muted); border-radius: 99px; padding: 0 .4rem; }
 .gridlink { margin-inline-start: auto; padding: .1rem .5rem; font-size: .68rem; color: var(--text-muted); text-decoration: none; border: 1px solid var(--border); border-radius: 99px; }
+.grp-n + .gridlink { margin-inline-start: 0; }
 .gridlink:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.gridlink.active { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
 .story { display: block; padding: .4rem .55rem; border-radius: 6px; color: inherit; text-decoration: none; line-height: 1.35; overflow-wrap: anywhere; }
 .story:hover { background: var(--surface-hover); }
 .story:focus-visible, .gridlink:focus-visible, .act:focus-visible, .viewport a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -173,7 +196,6 @@ nav > header { padding: .75rem .875rem; border-bottom: 1px solid var(--border-mu
 .story.active .sname { font-weight: 600; }
 .story .kind { margin-inline-start: auto; padding: 0 .35rem; font-size: .62rem; font-weight: 400; letter-spacing: .03em; color: var(--text-muted); border: 1px solid var(--border); border-radius: 99px; }
 .story small { display: block; margin-top: .1rem; font-size: .74rem; font-weight: 400; color: var(--text-muted); }
-.hidden { display: none !important; }
 .empty { padding: .75rem .5rem; font-size: .78rem; color: var(--text-muted); }
 .list::before, .list::after { content: ""; display: block; position: sticky; block-size: .5rem; z-index: 1; pointer-events: none; opacity: 0; transition: opacity .2s; }
 .list::before { inset-block-start: 0; margin-block-end: -.5rem; background: radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / .18), transparent); }
@@ -192,6 +214,7 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .crumb .sep { color: var(--text-muted); }
 #crumb-group { font-size: .72rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); }
 #crumb-name { font-size: .85rem; }
+.bar .pos { font-size: .7rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .act { padding: .18rem .55rem; font-size: .74rem; color: var(--text-muted); text-decoration: none; border: 1px solid var(--border); border-radius: 6px; }
 .act:hover { color: var(--accent); border-color: var(--accent); }
 .bar .spacer { flex: 1; }
@@ -205,46 +228,58 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
 <body>
 <nav>
 <header>
-<div class="brand">stories</div>
+<div class="brand">stories <span class="total">{{.Total}}</span></div>
 <div class="dir">{{.Dir}}</div>
 {{if .Err}}<small class="err">{{.Err}}</small>{{end}}
-<div class="search"><input id="filter" type="search" placeholder="filter stories  ( / )" autocomplete="off" aria-label="filter stories"><span class="count" id="count"></span></div>
+<search><form action="" method="get">
+<input id="q" name="q" type="search" value="{{.Q}}" placeholder="filter stories — press /" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" enterkeyhint="go" aria-label="filter stories">
+{{if .S}}<input type="hidden" name="s" value="{{.S}}">{{end}}{{if .G}}<input type="hidden" name="g" value="{{.G}}">{{end}}{{if .W}}<input type="hidden" name="w" value="{{.W}}">{{end}}
+<button class="qgo" type="submit">filter</button>
+</form></search>
+<div class="meta" id="count" role="status">{{if .Q}}{{.Matched}} of {{.Total}} shown{{end}}</div>
 </header>
 <div class="list" id="list">
-{{range .Groups}}<section>
-{{if .Name}}<div class="group"><span class="gname">{{.Name}}</span><a class="gridlink" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} title="all {{.Name}} variants side by side">grid &#10514;</a></div>{{end}}
-{{range .Entries}}<a class="story{{if eq .Name $.S}} active{{end}}" data-name="{{.Name}}" data-group="{{.Group}}"{{if .FrameHref}} data-frame="{{.FrameHref}}"{{end}}{{if .Grid}} data-grid="{{.Grid}}"{{end}} data-search="{{.Name}} {{.Doc}}" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} aria-current="true"{{end}}><span class="sname">{{.Name}}{{if .IsHTTP}}<span class="kind" title="handler story — replays real status and headers">http &#8599;</span>{{end}}</span>
+{{range .Groups}}<section class="grp"{{if .Hidden}} hidden{{end}}>
+{{if .Name}}<div class="group"><span class="gname">{{.Name}}</span><span class="grp-n">{{len .Entries}}</span><a class="gridlink{{if eq .Name $.G}} active{{end}}" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}} data-kind="grid" data-src="{{.Src}}" data-name="{{.Name}}" title="all variants side by side">grid &#10514;</a></div>{{end}}
+{{range .Entries}}<a class="story{{if eq .Name $.S}} active{{end}}" data-name="{{.Name}}" data-group="{{.Group}}"{{if .Src}} data-kind="story" data-src="{{.Src}}"{{end}}{{if .Grid}} data-grid="{{.Grid}}"{{end}} data-pos="{{.Pos}}" data-haystack="{{.Hay}}" href="{{.Href}}"{{if .Target}} target="{{.Target}}"{{end}}{{if eq .Name $.S}} aria-current="true"{{end}}{{if .Hidden}} hidden{{end}} title="{{.Pos}}"><span class="sname">{{.Name}}{{if .IsHTTP}}<span class="kind" title="handler story — replays real status and headers">http &#8599;</span>{{end}}</span>
 {{if .Blurb}}<small>{{.Blurb}}</small>{{end}}{{if .Err}}<small class="err">{{.Err}}</small>{{end}}</a>
 {{end}}</section>{{end}}
-<div class="empty" id="empty" hidden>no matching stories</div>
+<p class="empty" id="empty"{{if not .None}} hidden{{end}}>no stories match &#8220;{{.Q}}&#8221;</p>
 </div>
 </nav>
 <main>
 <div class="bar">
-<span class="crumb"><span id="crumb-group"{{if not .SelGroup}} hidden{{end}}>{{.SelGroup}}</span><span id="crumb-sep" class="sep"{{if not .SelGroup}} hidden{{end}}>/</span><strong id="crumb-name">{{.S}}</strong></span>
+<span class="crumb"><span id="crumb-group"{{if not .SelGroup}} hidden{{end}}>{{.SelGroup}}</span><span id="crumb-sep" class="sep"{{if not .SelGroup}} hidden{{end}}>/</span><strong id="crumb-name">{{if .G}}{{.G}} variants{{else}}{{.S}}{{end}}</strong><span class="pos" id="crumb-pos">{{.SelPos}}</span></span>
 <span class="spacer"></span>
-<a id="act-grid" class="act" href="{{.GridHref}}"{{if not .GridHref}} hidden{{end}} title="all variants of this template side by side">grid &#10514;</a>
+<a id="act-grid" class="act" href="{{.GridHref}}"{{if not .GridHref}} hidden{{end}}{{if .GridSrc}} data-kind="grid" data-src="{{.GridSrc}}" data-name="{{.SelGroup}}"{{end}} title="all variants of this template side by side">grid &#10514;</a>
 <a id="act-open" class="act"{{if .OpenHref}} href="{{.OpenHref}}"{{else}} hidden{{end}} target="_blank" title="open this story in its own tab">open &#8599;</a>
 <div class="viewport" aria-label="preview width">{{range .Widths}}<a href="?w={{.}}&s={{$.S}}" data-w="{{.}}"{{if eq . $.W}} class="active"{{end}}>{{if .}}{{.}}px{{else}}full{{end}}</a>{{end}}</div>
 </div>
-<iframe id="frame" name="story"{{if .S}} src="{{.OpenHref}}"{{else}}{{if .Default}} src="{{.Default}}"{{end}}{{end}}{{if .W}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
+<iframe id="frame" name="story"{{if .Src}} src="{{.Src}}"{{end}}{{if .Sized}} class="sized" style="width: {{.W}}px"{{end}}></iframe>
 </main>
 <script>(function(){
+  document.body.classList.add('js');
   var frame=document.getElementById('frame');
   var list=document.getElementById('list');
   var items=[].slice.call(list.querySelectorAll('a.story'));
   var sections=[].slice.call(list.querySelectorAll('section'));
+  var pills=[].slice.call(list.querySelectorAll('a.gridlink'));
   var crumbGroup=document.getElementById('crumb-group');
   var crumbSep=document.getElementById('crumb-sep');
   var crumbName=document.getElementById('crumb-name');
+  var crumbPos=document.getElementById('crumb-pos');
   var actGrid=document.getElementById('act-grid');
   var actOpen=document.getElementById('act-open');
   var widths=[].slice.call(document.querySelectorAll('.viewport a'));
-  var q=document.getElementById('filter');
+  var q=document.getElementById('q');
   var count=document.getElementById('count');
   var empty=document.getElementById('empty');
   function itemByName(name){
     for(var i=0;i<items.length;i++){if(items[i].dataset.name===name)return items[i]}
+    return null;
+  }
+  function pillByName(name){
+    for(var i=0;i<pills.length;i++){if(pills[i].dataset.name===name)return pills[i]}
     return null;
   }
   function nameFromURL(u){
@@ -257,10 +292,15 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     m=u.pathname.match(/grid_([^/]+)\.html$/);if(m)return decodeURIComponent(m[1]);
     return '';
   }
-  function params(o){
+  // cur tracks the live selection — story, grid, width — so the
+  // ?s=/?g=/?w= links rendered at load time stay honest: a modified
+  // click (new tab) reproduces the current view, not the first-opened one.
+  var cur={s:'',g:'',w:''};
+  function buildURL(){
     var u=new URL(location.href);
-    if(o.s!==undefined){o.s?u.searchParams.set('s',o.s):u.searchParams.delete('s')}
-    if(o.w!==undefined){o.w?u.searchParams.set('w',o.w):u.searchParams.delete('w')}
+    ['s','g','w'].forEach(function(k){cur[k]?u.searchParams.set(k,cur[k]):u.searchParams.delete(k)});
+    var t=(q.value||'').trim();
+    t?u.searchParams.set('q',t):u.searchParams.delete('q');
     return u;
   }
   function mark(a){
@@ -271,97 +311,130 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
       else{x.removeAttribute('aria-current')}
     });
   }
-  function showCrumb(group,name){
+  function markPills(name){
+    pills.forEach(function(p){p.classList.toggle('active',p.dataset.name===name)});
+  }
+  function showCrumb(group,name,pos){
     crumbGroup.textContent=group||'';
     crumbGroup.hidden=!group;
     crumbSep.hidden=!group;
     crumbName.textContent=name||'';
+    crumbPos.textContent=pos||'';
   }
-  // cur tracks the live selection for the ?s=/?w= links rendered at
-  // load time — a modified click (new tab) should reproduce the current
-  // view, not the story and width the page first opened with.
-  var cur={s:'',w:''};
+  function setBarGrid(group,src){
+    if(!group||!src){actGrid.hidden=true;return}
+    actGrid.hidden=false;
+    actGrid.dataset.src=src;
+    actGrid.dataset.name=group;
+    actGrid.href='?g='+encodeURIComponent(group);
+  }
+  // syncHrefs keeps every rendered link in step with the live selection
+  // so a modified click reproduces the on-screen view: ?s= rows carry
+  // w+q, ?g= pills carry w+q, width presets carry s+g+q.
   function syncHrefs(){
-    items.forEach(function(a){
+    var t=(q.value||'').trim();
+    function patch(a,keys){
       var href=a.getAttribute('href')||'';
-      if(!a.dataset.frame||href.charAt(0)!=='?'){return}
+      if(href.charAt(0)!=='?'){return}
       var u=new URL(href,location.href);
-      if(cur.w){u.searchParams.set('w',cur.w)}else{u.searchParams.delete('w')}
+      keys.forEach(function(k){
+        var v=k==='q'?t:cur[k];
+        v?u.searchParams.set(k,v):u.searchParams.delete(k);
+      });
       a.setAttribute('href',u.search);
-    });
-    widths.forEach(function(a){
-      var u=new URL(a.getAttribute('href'),location.href);
-      if(cur.s){u.searchParams.set('s',cur.s)}else{u.searchParams.delete('s')}
-      a.setAttribute('href',u.search);
-    });
+    }
+    items.forEach(function(a){if(a.dataset.src){patch(a,['w','q'])}});
+    pills.forEach(function(a){patch(a,['w','q'])});
+    widths.forEach(function(a){patch(a,['s','g','q'])});
+    if(!actGrid.hidden){patch(actGrid,['w','q'])}
   }
-  function showStory(a){
-    cur.s=a.dataset.name;
-    showCrumb(a.dataset.group,a.dataset.name);
-    if(a.dataset.grid){actGrid.href=a.dataset.grid;actGrid.hidden=false}else{actGrid.hidden=true}
-    if(a.dataset.frame){actOpen.href=a.dataset.frame;actOpen.hidden=false}else{actOpen.hidden=true}
-    mark(a);
+  function activate(el,push){
+    var w=cur.w;
+    if(el.dataset.kind==='grid'){
+      cur.g=el.dataset.name;cur.s='';
+      frame.classList.remove('sized');frame.style.width='';
+      var src=el.dataset.src+(w?(el.dataset.src.indexOf('?')<0?'?':'&')+'w='+w:'');
+      if(frame.getAttribute('src')!==src){frame.src=src}
+      showCrumb('grid',el.dataset.name+' variants','');
+      actGrid.hidden=true;
+      actOpen.href=el.dataset.src;actOpen.hidden=false;
+      mark(null);
+      markPills(cur.g);
+    }else{
+      cur.s=el.dataset.name;cur.g='';
+      frame.classList.toggle('sized',!!w);frame.style.width=w?w+'px':'';
+      if(frame.getAttribute('src')!==el.dataset.src){frame.src=el.dataset.src}
+      showCrumb(el.dataset.group,el.dataset.name,el.dataset.pos);
+      setBarGrid(el.dataset.group,el.dataset.grid);
+      actOpen.href=el.dataset.src;actOpen.hidden=false;
+      mark(el);
+      markPills('');
+    }
     syncHrefs();
-  }
-  function withW(href,w){
-    var u=new URL(href,location.href);
-    if(w){u.searchParams.set('w',w)}else{u.searchParams.delete('w')}
-    return u.href;
+    if(push!==false){history.pushState(null,'',buildURL())}
   }
   function applyWidth(w,save){
-    cur.w=w;
-    frame.classList.toggle('sized',!!w);
-    frame.style.width=w?w+'px':'';
-    widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===w)});
-    // The grid views carry their own ?w=; keep every link to them in
-    // step with the chosen width so a grid opens at the same size.
-    [].forEach.call(document.querySelectorAll('.gridlink'),function(a){a.href=withW(a.href,w)});
-    items.forEach(function(a){if(a.dataset.grid){a.dataset.grid=withW(a.dataset.grid,w)}});
-    if(!actGrid.hidden&&actGrid.getAttribute('href')){actGrid.href=withW(actGrid.href,w)}
+    cur.w=w||'';
+    widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===cur.w)});
+    if(cur.g){
+      // The grid views carry their own ?w=; reload the framed grid at
+      // the chosen width.
+      var el=pillByName(cur.g);
+      if(el){activate(el,false)}
+    }else{
+      frame.classList.toggle('sized',!!cur.w);
+      frame.style.width=cur.w?cur.w+'px':'';
+    }
     syncHrefs();
-    if(save){history.replaceState(null,'',params({w:w}))}
+    if(save!==false){history.replaceState(null,'',buildURL())}
   }
+  // The iframe can navigate itself (in-page links, exported grids loaded
+  // inside it); keep the toolbar and the ?s=/?g= URL honest on load.
   function sync(){
     var loc;
     try{loc=frame.contentWindow.location}catch(e){return}
     if(!loc||loc.href==='about:blank'){return}
     var g=gridFromURL(loc);
     if(g){
-      showCrumb('grid',g+' variants');
+      cur.g=g;cur.s='';
+      showCrumb('grid',g+' variants','');
       actGrid.hidden=true;
       actOpen.href=loc.href;actOpen.hidden=false;
       mark(null);
+      markPills(g);
+      if(new URL(location.href).searchParams.get('g')!==g){
+        history.replaceState(null,'',buildURL());
+      }
       return;
     }
     var a=itemByName(nameFromURL(loc));
-    if(a){
-      showStory(a);
+    if(a&&a.dataset.src){
+      activate(a,false);
       // A Back press can restore only the iframe's history entry, leaving
       // the top-level ?s= pointing at the previously selected story.
       // Re-align it so the URL always names what is on screen.
       if(new URL(location.href).searchParams.get('s')!==a.dataset.name){
-        history.replaceState(null,'',params({s:a.dataset.name}));
+        history.replaceState(null,'',buildURL());
       }
       return;
     }
-    showCrumb('',loc.pathname);
+    showCrumb('',loc.pathname,'');
+    cur.s='';cur.g='';
     actGrid.hidden=true;actOpen.hidden=true;
     mark(null);
+    markPills('');
   }
   frame.addEventListener('load',sync);
   function plainClick(ev){
     return ev.button===0&&!ev.ctrlKey&&!ev.metaKey&&!ev.shiftKey&&!ev.altKey;
   }
-  items.forEach(function(a){
-    if(!a.dataset.frame){return}
-    a.addEventListener('click',function(ev){
-      // Modified clicks (new tab, etc.) keep the browser default.
-      if(!plainClick(ev)){return}
-      ev.preventDefault();
-      frame.src=a.dataset.frame;
-      history.pushState(null,'',params({s:a.dataset.name}));
-      showStory(a);
-    });
+  document.addEventListener('click',function(ev){
+    var a=ev.target.closest?ev.target.closest('a[data-src]'):null;
+    if(!a||!plainClick(ev)){return}
+    // Modified clicks (new tab, etc.) keep the browser default; the
+    // anchor's href still round-trips through the server without JS.
+    ev.preventDefault();
+    activate(a);
   });
   widths.forEach(function(a){
     a.addEventListener('click',function(ev){
@@ -370,25 +443,35 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     });
   });
   window.addEventListener('popstate',function(){
-    var u=new URL(location.href),a=itemByName(u.searchParams.get('s')||'');
-    if(a&&a.dataset.frame){frame.src=a.dataset.frame;showStory(a)}
-    applyWidth(u.searchParams.get('w')||'',false);
+    var u=new URL(location.href);
+    var pq=u.searchParams.get('q')||'';
+    if((q.value||'')!==pq){q.value=pq;applyFilter()}
+    cur.w=u.searchParams.get('w')||'';
+    widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===cur.w)});
+    var g=u.searchParams.get('g');
+    if(g){var el=pillByName(g);if(el){activate(el,false);return}}
+    var a=itemByName(u.searchParams.get('s')||'');
+    if(a&&a.dataset.src){activate(a,false)}
   });
-  function visible(){return items.filter(function(a){return !a.classList.contains('hidden')})}
+  function visible(){return items.filter(function(a){return !a.hidden})}
   function applyFilter(){
-    var needle=(q.value||'').trim().toLowerCase();
+    var tokens=(q.value||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
     var shown=0;
-    items.forEach(function(a){
-      var hit=!needle||(a.dataset.search||'').toLowerCase().indexOf(needle)>=0;
-      a.classList.toggle('hidden',!hit);
-      if(hit){shown++}
-    });
     sections.forEach(function(sec){
-      var any=[].some.call(sec.querySelectorAll('a.story'),function(a){return !a.classList.contains('hidden')});
-      sec.classList.toggle('hidden',!any);
+      var vis=0;
+      [].forEach.call(sec.querySelectorAll('a.story'),function(a){
+        var ok=tokens.every(function(t){return (a.dataset.haystack||'').indexOf(t)>=0});
+        a.hidden=!ok;
+        if(ok){vis++}
+      });
+      sec.hidden=vis===0;
+      shown+=vis;
     });
-    count.textContent=needle?shown+'/'+items.length:'';
-    empty.hidden=shown!==0;
+    count.textContent=tokens.length?shown+' of '+items.length+' shown':'';
+    empty.hidden=shown>0;
+    if(!empty.hidden){empty.textContent='no stories match \u201c'+(q.value||'').trim()+'\u201d'}
+    syncHrefs();
+    history.replaceState(null,'',buildURL());
   }
   function step(dir){
     var vis=visible();
@@ -399,6 +482,10 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     vis[n].focus();
   }
   q.addEventListener('input',applyFilter);
+  q.form.addEventListener('submit',function(ev){ev.preventDefault()});
+  list.addEventListener('scroll',function(){
+    try{sessionStorage.setItem('sb_scroll',list.scrollTop)}catch(e){}
+  });
   document.addEventListener('keydown',function(ev){
     var t=document.activeElement;
     var typing=t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA');
@@ -408,18 +495,28 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
       if(t===q||list.contains(t)){ev.preventDefault();step(ev.key==='ArrowDown'?1:-1)}
       return;
     }
-    if(ev.key==='Enter'&&t===q){var vis=visible();if(vis[0]){vis[0].click()}}
+    if(ev.key==='Enter'&&t===q){
+      // An IME-confirming Enter must not jump to the first match; Safari
+      // reports it as keyCode 229 with isComposing already false.
+      if(ev.isComposing||ev.keyCode===229){return}
+      var vis=visible();if(vis[0]){vis[0].click()}
+    }
   });
-  // Honor ?s= / ?w= in both modes: the live server pre-renders them and
-  // the static export relies on this script alone.
+  // Honor ?s=/?g=/?w=/?q= in both modes: the live server pre-renders
+  // them and the static export relies on this script alone.
   var u=new URL(location.href);
-  applyWidth(u.searchParams.get('w')||'',false);
-  var a=itemByName(u.searchParams.get('s')||'');
-  if(a&&a.dataset.frame){
-    var want=new URL(a.dataset.frame,location.href);
-    if(frame.src!==want.href){frame.src=want.href}
-    showStory(a);
-  }else{sync()}
+  if(u.searchParams.get('q')&&(q.value||'')!==u.searchParams.get('q')){q.value=u.searchParams.get('q')}
+  if((q.value||'').trim()){applyFilter()}
+  cur.w=u.searchParams.get('w')||'';
+  applyWidth(cur.w,false);
+  var g=u.searchParams.get('g');
+  if(g){var el=pillByName(g);if(el){activate(el,false)}}
+  else{
+    var a=itemByName(u.searchParams.get('s')||'');
+    if(a&&a.dataset.src){activate(a,false)}
+  }
+  sync();
+  try{var y=sessionStorage.getItem('sb_scroll');if(y){list.scrollTop=+y}}catch(e){}
 })();</script>
 </body></html>
 `))
@@ -428,7 +525,7 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
 // template edit can be checked against every data state at once. Each
 // variant is an iframe at the chosen width (?w=, flexible when unset).
 var gridTmpl = template.Must(template.New("grid").Parse(`<!doctype html>
-<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{.Name}} variants</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
+<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><link rel="icon" href="data:,"><title>{{.Name}} variants</title>{{if .ScriptTag}}{{.ScriptTag}}{{end}}
 <style>` + chromeTokens + `
 body { margin: 0; display: flex; flex-direction: column; height: 100vh; height: 100dvh; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
 header { display: flex; gap: .875rem; align-items: baseline; padding: .5rem .875rem; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -511,7 +608,10 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	var errs []error
 	entries := make([]entry, len(stories))
 	for i, s := range stories {
-		entries[i] = entry{Story: s, Href: s.Name + ".html", FrameHref: s.Name + ".html", Target: "story", Blurb: blurb(s)}
+		entries[i] = entry{Story: s, Href: s.Name + ".html", Src: s.Name + ".html", Target: "story", Hay: haystack(s), Blurb: blurb(s)}
+		if s.Group != "" {
+			entries[i].Grid = "grid_" + s.Group + ".html"
+		}
 		res, err := b.Render(ctx, s.Name)
 		if err != nil {
 			entries[i].Err = firstLine(err.Error())
@@ -530,10 +630,8 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 			continue
 		}
 		groups[i].Href = "grid_" + groups[i].Name + ".html"
+		groups[i].Src = groups[i].Href
 		groups[i].Target = "story"
-		for j := range groups[i].Entries {
-			groups[i].Entries[j].Grid = groups[i].Href
-		}
 		f, err := os.Create(filepath.Join(dir, groups[i].Href))
 		if err != nil {
 			return err
@@ -568,19 +666,23 @@ func (b *Book) Export(ctx context.Context, dir string, stories []Story) error {
 	}
 	if sel == nil {
 		for i := range entries {
-			if entries[i].FrameHref != "" {
+			if entries[i].Src != "" {
 				sel = &entries[i]
 				break
 			}
 		}
 	}
-	data := map[string]any{"Dir": b.Dir, "Groups": groups, "Widths": []string{"", "320", "360", "768"}}
+	data := map[string]any{"Dir": b.Dir, "Groups": groups, "Total": len(stories), "Widths": []string{"", "320", "360", "768"}}
 	if sel != nil {
 		data["S"] = sel.Name
-		data["Default"] = sel.Href
+		data["Src"] = sel.Src
 		data["SelGroup"] = sel.Group
-		data["GridHref"] = gridHref(groups, sel.Group)
-		data["OpenHref"] = sel.FrameHref
+		data["SelPos"] = sel.Pos
+		data["OpenHref"] = sel.Src
+		if sel.Grid != "" {
+			data["GridHref"] = "?g=" + sel.Group
+			data["GridSrc"] = sel.Grid
+		}
 	}
 	if err := indexTmpl.Execute(f, data); err != nil {
 		return err
@@ -703,21 +805,36 @@ func (b *Book) Handler() http.Handler {
 			return
 		}
 		wpx := r.URL.Query().Get("w")
+		q := r.URL.Query().Get("q")
+		state := ""
+		if wpx != "" {
+			state += "&w=" + wpx
+		}
+		if q != "" {
+			state += "&q=" + url.QueryEscape(q)
+		}
+		// Non-matching stories are rendered with a hidden marker rather
+		// than omitted: no-JS readers still get the filtered view, and
+		// the live filter can un-hide rows when the query changes.
 		entries := make([]entry, len(stories))
+		matched := 0
 		for i, s := range stories {
+			e := entry{Story: s, Hay: haystack(s), Blurb: blurb(s), Hidden: q != "" && !matchStory(s, q)}
 			if s.IsHTTP() {
 				// Handler stories replay the app's real response headers,
 				// which can include frame-ancestors 'none' / X-Frame-Options:
 				// DENY — they may not render inside the iframe, so they
 				// open in a new tab with the headers intact.
-				entries[i] = entry{Story: s, Href: "/story/" + s.Name, Target: "_blank", Blurb: blurb(s)}
-				continue
+				e.Href = "/story/" + s.Name
+				e.Target = "_blank"
+			} else {
+				e.Href = "?s=" + s.Name + state
+				e.Src = "/story/" + s.Name
 			}
-			href := "?s=" + s.Name
-			if wpx != "" {
-				href += "&w=" + wpx
+			if !e.Hidden {
+				matched++
 			}
-			entries[i] = entry{Story: s, Href: href, FrameHref: "/story/" + s.Name, Blurb: blurb(s)}
+			entries[i] = e
 		}
 		// ?s=<Name> selects the previewed story so width switching (a full
 		// index reload) keeps it; an unknown or missing name falls back to
@@ -741,39 +858,78 @@ func (b *Book) Handler() http.Handler {
 		}
 		groups := groupEntries(entries)
 		for i := range groups {
+			visible := false
+			for _, e := range groups[i].Entries {
+				if !e.Hidden {
+					visible = true
+					break
+				}
+			}
+			groups[i].Hidden = !visible
 			if groups[i].Name == "" {
 				continue
 			}
-			groups[i].Href = "/grid/" + groups[i].Name
-			if wpx != "" {
-				groups[i].Href += "?w=" + wpx
-			}
+			groups[i].Href = "?g=" + groups[i].Name + state
+			groups[i].Src = "/grid/" + groups[i].Name
 			for j := range groups[i].Entries {
-				groups[i].Entries[j].Grid = groups[i].Href
+				groups[i].Entries[j].Grid = groups[i].Src
+			}
+		}
+		// ?g=<renderFunc> previews the variants grid inside the index
+		// frame, the same pane stories render in; the grid page itself
+		// stays reachable for a full-width compare.
+		g := r.URL.Query().Get("g")
+		src := ""
+		if g != "" {
+			for _, gr := range groups {
+				if gr.Name == g {
+					src = "/grid/" + g
+					if wpx != "" {
+						src += "?w=" + wpx
+					}
+				}
+			}
+			if src == "" {
+				g = ""
 			}
 		}
 		// The toolbar mirrors the selected story: its group, the group's
 		// grid, and the story's own URL for opening it in a tab.
-		selGroup, grid, open := "", "", ""
+		selGroup, selPos, selGrid, open := "", "", "", ""
 		for _, e := range entries {
 			if e.Name == sel {
-				selGroup = e.Group
-				grid = gridHref(groups, e.Group)
-				open = e.FrameHref
+				selGroup, selPos, selGrid, open = e.Group, e.Pos, e.Grid, e.Src
 				break
 			}
 		}
-		if err := indexTmpl.Execute(w, map[string]any{
+		td := map[string]any{
 			"Dir":       b.Dir,
 			"Groups":    groups,
 			"S":         sel,
+			"G":         g,
 			"SelGroup":  selGroup,
-			"GridHref":  grid,
-			"OpenHref":  open,
+			"SelPos":    selPos,
 			"W":         wpx,
+			"Q":         q,
+			"Total":     len(stories),
+			"Matched":   matched,
+			"None":      q != "" && matched == 0,
 			"Widths":    []string{"", "320", "360", "768"},
 			"ScriptTag": b.ScriptTag(),
-		}); err != nil {
+		}
+		if g != "" {
+			td["Src"] = src
+			td["OpenHref"] = "/grid/" + g
+		} else {
+			td["Src"] = open
+			td["OpenHref"] = open
+			td["Sized"] = wpx != "" && sel != ""
+			if selGrid != "" {
+				td["GridHref"] = "?g=" + selGroup + state
+				td["GridSrc"] = selGrid
+			}
+		}
+		if err := indexTmpl.Execute(w, td); err != nil {
 			slog.ErrorContext(r.Context(), "index", "err", err)
 		}
 	})
