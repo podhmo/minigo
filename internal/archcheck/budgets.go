@@ -158,7 +158,7 @@ var FileBudgets = map[string]int{
 	"pkg/locator/locator.go":                     777,
 	"pkg/modulewalk/modulewalk.go":               541,
 
-	"repl/complete.go":                               2151,
+	"repl/complete.go":                               2147,
 	"repl/pkginfo.go":                                214,
 	"repl/load.go":                                   662,
 	"repl/repl.go":                                   1262,
@@ -401,7 +401,7 @@ var FileBudgetExceptions = map[string]string{
 	"vm/selectsite.go":                   "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name; the site cache also covers namedMember (selNamedMethod, payload field/path replays) + genCallSlot/instSiteSlot site memos + instSiteEnv/instSiteCacheable + selHostMember/selHostMiss rides selectSlot's rt guard",
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
 	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch + :eval arm and help for the completion EvalBase tier",
-	"repl/complete.go":                   "EvalBase tier: EvalPolicy + evalBase fallback through EvalExpr + selectorBase primary-expression gate + mapkey string-literal context + inferInitType untyped-var inference + promotion-depth field walk + bracket-depth index-tail rejection (REPL completion)",
+	"repl/complete.go":                   "EvalBase tier: EvalPolicy + evalBase fallback through EvalExpr + selectorBase primary-expression gate + mapkey string-literal context + inferInitType untyped-var inference + promotion-depth field walk + bracket-depth index-tail rejection + scanOffsets shared scanner (REPL completion)",
 	"repl/repl.go":                       "evalPolicy field for the completion EvalBase tier",
 	"pkg/locator/locator.go":             "ReplacedImportPath: spell a replace-covered dir by its OldPath",
 }
