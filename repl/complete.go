@@ -1188,6 +1188,10 @@ func (r *REPL) funcResultType(p *runtime.Package, fd *index.Decl, resIdx int) *r
 // fieldDeclType resolves a field's declared typedef, walking embeds
 // like structFieldsOf does for enumeration.
 func (r *REPL) fieldDeclType(td *runtime.TypeDef, name string, seen map[*runtime.TypeDef]bool) *runtime.TypeDef {
+	// `h.U` on a `*Holder` — auto-deref like Go's selector does.
+	for i := 0; i < 8 && td != nil && td.Kind == runtime.KindPointer; i++ {
+		td = td.Elem
+	}
 	if td == nil || seen[td] {
 		return nil
 	}

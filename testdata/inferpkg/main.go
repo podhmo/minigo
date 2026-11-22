@@ -16,6 +16,10 @@ func Pair() (inspectpkg.User, inspectpkg.Base) {
 
 func NewUserPtr() *inspectpkg.User { return &inspectpkg.User{} }
 
+func NewHolderPtr() *Holder { return &Holder{} }
+
+func NewUserArrPtr() *[2]inspectpkg.User { return &[2]inspectpkg.User{} }
+
 // Untyped vars: the completer derives each type from the initializer.
 var (
 	CallUser  = NewUser()            // same-package call
@@ -31,12 +35,14 @@ var (
 	V2, OK2   = userMap["k"]         // comma-ok split: V2 User, OK2 bool
 	PtrCall   = NewUserPtr()         // *T call result
 	DerefCall = *NewUserPtr()        // deref of a *T call result
+	PtrSel    = holderPtr.U          // field through an inferred *T var
 )
 
 var (
 	userMap   = map[string]inspectpkg.User{"k": {Name: "k"}}
 	holderVar = Holder{U: inspectpkg.User{Name: "h"}}
 	ptrUser   = &inspectpkg.User{}
+	holderPtr = NewHolderPtr()
 )
 
 type Holder struct {

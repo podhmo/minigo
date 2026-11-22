@@ -700,6 +700,7 @@ func TestCompleteInferredVarTypes(t *testing.T) {
 		{"inferpkg.V2.", "Greet"},        // map index value slot → User
 		{"inferpkg.PtrCall.", "Greet"},   // *User call result
 		{"inferpkg.DerefCall.", "Greet"}, // *(*User) keeps the pointee's methods
+		{"inferpkg.PtrSel.", "Greet"},    // field through an inferred *Holder
 	} {
 		requireCands(t, r.Complete(tc.line), tc.line, tc.want)
 	}
