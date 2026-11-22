@@ -4,7 +4,12 @@ all:
 	go build ./...
 
 format:
-	go tool goimports -w . # walks .go files recursively; `find` is not portable (Windows System32\find.exe shadows GNU find)
+	# tracked .go files only: testdata holds intentionally-invalid Go (e.g.
+	# generic methods) and *_go1NN.go sources are gated behind a newer go
+	# release, so `goimports -w .` exits non-zero on them. `find` is not
+	# portable (Windows System32\find.exe shadows GNU find); untracked new
+	# files are still formatted by the next run once tracked.
+	git ls-files '*.go' ':(exclude)testdata' ':(exclude)**/testdata' ':(exclude)*_go1[0-9][0-9].go' | xargs go tool goimports -w
 
 lint:
 	go vet ./...
