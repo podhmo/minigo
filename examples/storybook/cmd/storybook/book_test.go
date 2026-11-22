@@ -509,10 +509,11 @@ func TestHandler(t *testing.T) {
 	if !strings.Contains(body, `data-src="/grid/RenderUser"`) {
 		t.Error("grid pill misses the grid document")
 	}
-	// ?g previews the variants grid inside the index frame.
+	// ?g previews the variants grid inside the index frame; match the
+	// iframe itself, not just a sidebar pill carrying the same src.
 	rec = httptest.NewRecorder()
 	b.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/?g=RenderUser", nil))
-	if !strings.Contains(rec.Body.String(), `src="/grid/RenderUser"`) {
+	if !strings.Contains(rec.Body.String(), `id="frame" name="story" src="/grid/RenderUser"`) {
 		t.Error("?g should preview the grid in the index frame")
 	}
 	// ?q filters the nav server-side so the book still works without JS.
