@@ -445,7 +445,7 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
   window.addEventListener('popstate',function(){
     var u=new URL(location.href);
     var pq=u.searchParams.get('q')||'';
-    if((q.value||'')!==pq){q.value=pq;applyFilter()}
+    if((q.value||'')!==pq){q.value=pq;applyFilter(false)}
     cur.w=u.searchParams.get('w')||'';
     widths.forEach(function(a){a.classList.toggle('active',a.dataset.w===cur.w)});
     var g=u.searchParams.get('g');
@@ -454,7 +454,7 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     if(a&&a.dataset.src){activate(a,false)}
   });
   function visible(){return items.filter(function(a){return !a.hidden})}
-  function applyFilter(){
+  function applyFilter(save){
     var tokens=(q.value||'').trim().toLowerCase().split(/\s+/).filter(Boolean);
     var shown=0;
     sections.forEach(function(sec){
@@ -471,7 +471,9 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
     empty.hidden=shown>0;
     if(!empty.hidden){empty.textContent='no stories match \u201c'+(q.value||'').trim()+'\u201d'}
     syncHrefs();
-    history.replaceState(null,'',buildURL());
+    // Boot and popstate render the filter from the URL; only a user
+    // edit writes it back, so an untouched ?s=/?g=/?w= survives.
+    if(save!==false){history.replaceState(null,'',buildURL())}
   }
   function step(dir){
     var vis=visible();
@@ -506,13 +508,14 @@ iframe.sized { margin-inline: auto; border-inline: 1px dashed var(--border); }
   // them and the static export relies on this script alone.
   var u=new URL(location.href);
   if(u.searchParams.get('q')&&(q.value||'')!==u.searchParams.get('q')){q.value=u.searchParams.get('q')}
-  if((q.value||'').trim()){applyFilter()}
+  cur.s=u.searchParams.get('s')||'';
+  cur.g=u.searchParams.get('g')||'';
   cur.w=u.searchParams.get('w')||'';
+  if((q.value||'').trim()){applyFilter(false)}
   applyWidth(cur.w,false);
-  var g=u.searchParams.get('g');
-  if(g){var el=pillByName(g);if(el){activate(el,false)}}
+  if(cur.g){var el=pillByName(cur.g);if(el){activate(el,false)}}
   else{
-    var a=itemByName(u.searchParams.get('s')||'');
+    var a=itemByName(cur.s);
     if(a&&a.dataset.src){activate(a,false)}
   }
   sync();
@@ -555,6 +558,19 @@ figure iframe { flex: 1; border: 0; width: 100%; }
 <div class="row">
 {{range .Stories}}<figure{{if $.W}} class="sized"{{end}}><figcaption><a class="name" href="{{$.Index}}?s={{.Name}}"{{if $.IndexTarget}} target="{{$.IndexTarget}}"{{end}} title="open {{.Name}} in the index">{{.Name}}</a><a class="open" href="{{.Href}}" target="_blank" title="open this story in its own tab">&#8599;</a></figcaption><iframe src="{{.Href}}"{{if $.W}} style="width: {{$.W}}px"{{end}}></iframe></figure>
 {{end}}</div>
+<script>(function(){
+  // The export writes one static page per grid; ?w= still reaches it
+  // through the iframe src the index builds, so apply it client-side.
+  var w=new URL(location.href).searchParams.get('w')||'';
+  if(!w){return}
+  [].forEach.call(document.querySelectorAll('figure'),function(f){
+    f.classList.add('sized');
+    f.querySelector('iframe').style.width=w+'px';
+  });
+  [].forEach.call(document.querySelectorAll('.viewport a'),function(a){
+    a.classList.toggle('active',(a.getAttribute('href')||'')==='?w='+w);
+  });
+})();</script>
 </body></html>
 `))
 
@@ -830,6 +846,9 @@ func (b *Book) Handler() http.Handler {
 			} else {
 				e.Href = "?s=" + s.Name + state
 				e.Src = "/story/" + s.Name
+				if s.Group != "" {
+					e.Grid = "/grid/" + s.Group
+				}
 			}
 			if !e.Hidden {
 				matched++
@@ -871,9 +890,6 @@ func (b *Book) Handler() http.Handler {
 			}
 			groups[i].Href = "?g=" + groups[i].Name + state
 			groups[i].Src = "/grid/" + groups[i].Name
-			for j := range groups[i].Entries {
-				groups[i].Entries[j].Grid = groups[i].Src
-			}
 		}
 		// ?g=<renderFunc> previews the variants grid inside the index
 		// frame, the same pane stories render in; the grid page itself
@@ -951,12 +967,16 @@ func (b *Book) Handler() http.Handler {
 			return
 		}
 		if err := gridTmpl.Execute(w, map[string]any{
-			"Index":     "/",
-			"Name":      name,
-			"Stories":   entries,
-			"W":         r.URL.Query().Get("w"),
-			"Widths":    []string{"", "320", "360", "768"},
-			"ScriptTag": b.ScriptTag(),
+			"Index": "/",
+			// The grid may render inside the index's preview frame; its
+			// back/story links must replace the whole page, not nest a
+			// second index inside the first.
+			"IndexTarget": "_top",
+			"Name":        name,
+			"Stories":     entries,
+			"W":           r.URL.Query().Get("w"),
+			"Widths":      []string{"", "320", "360", "768"},
+			"ScriptTag":   b.ScriptTag(),
 		}); err != nil {
 			slog.ErrorContext(r.Context(), "grid", "err", err)
 		}
