@@ -682,13 +682,11 @@ func (v *VM) convertSlice(td *runtime.TypeDef, x runtime.Value) (runtime.Value, 
 // shared underlying map — Go's conversion aliases the map.
 func (v *VM) convertMap(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
 	m, ok := x.(*runtime.Map)
-	if !ok {
-		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
+	var cur *runtime.TypeDef
+	if m != nil {
+		cur = m.Typ
 	}
-	if m.Typ != nil && !v.convShapeEq(m.Typ, td) {
-		return nil, fmt.Errorf("cannot convert %s to %s", tdName(m.Typ), tdName(td))
-	}
-	return runtime.Tag(td, m), nil
+	return v.convertShared(td, x, cur, ok)
 }
 
 // convertChan implements `C(x)` on channel typedefs: identical underlying
@@ -697,13 +695,23 @@ func (v *VM) convertMap(td *runtime.TypeDef, x runtime.Value) (runtime.Value, er
 // channel.
 func (v *VM) convertChan(td *runtime.TypeDef, x runtime.Value) (runtime.Value, error) {
 	ch, ok := x.(*runtime.Chan)
+	var cur *runtime.TypeDef
+	if ch != nil {
+		cur = ch.Typ
+	}
+	return v.convertShared(td, x, cur, ok)
+}
+
+// convertShared shares the container a map/chan typedef conversion
+// aliases: cur is the value's declared shape when one is known.
+func (v *VM) convertShared(td *runtime.TypeDef, x runtime.Value, cur *runtime.TypeDef, ok bool) (runtime.Value, error) {
 	if !ok {
 		return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 	}
-	if ch.Typ != nil && !v.convShapeEq(ch.Typ, td) {
-		return nil, fmt.Errorf("cannot convert %s to %s", tdName(ch.Typ), tdName(td))
+	if cur != nil && !v.convShapeEq(cur, td) {
+		return nil, fmt.Errorf("cannot convert %s to %s", tdName(cur), tdName(td))
 	}
-	return runtime.Tag(td, ch), nil
+	return runtime.Tag(td, x), nil
 }
 
 // convertPointer implements `*T(x)` and `P(x)` on pointer typedefs. A

@@ -200,32 +200,27 @@ func (p *Profiler) stackKey(frames []*frame) ([]profFrame, string) {
 }
 
 func (p *Profiler) record(frames []*frame, n int64) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	stack, key := p.stackKey(frames)
-	if stack == nil {
-		return
-	}
-	if s := p.samples[key]; s != nil {
-		s.n += n
-	} else {
-		p.samples[key] = &profSample{stack: stack, n: n}
-	}
+	p.charge(p.samples, frames, n)
 }
 
 // recordAlloc charges n counted allocations to the script stack — the
 // VM's profAllocs since its last safepoint.
 func (p *Profiler) recordAlloc(frames []*frame, n int64) {
+	p.charge(p.allocs, frames, n)
+}
+
+// charge folds n into m keyed by the script stack, under the lock.
+func (p *Profiler) charge(m map[string]*profSample, frames []*frame, n int64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	stack, key := p.stackKey(frames)
 	if stack == nil {
 		return
 	}
-	if s := p.allocs[key]; s != nil {
+	if s := m[key]; s != nil {
 		s.n += n
 	} else {
-		p.allocs[key] = &profSample{stack: stack, n: n}
+		m[key] = &profSample{stack: stack, n: n}
 	}
 }
 

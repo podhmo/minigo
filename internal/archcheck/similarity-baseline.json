@@ -6,7 +6,6 @@
     "compile/typehint.go:compiler.chanElemTypExpr|compile/typehint.go:compiler.starBaseTypExpr",
     "compile/typehint.go:hostScalarTypeDefOf|internal/typedef/dispatch_deferred_typ.go:hostScalarTypedef",
     "inspect/inspect.go:recvTypeParamNames|inspect/inspect.go:typeParamNames",
-    "internal/hostbridge/callhost.go:mapArg|internal/hostbridge/callhost.go:sliceArg",
     "internal/hostbridge/errors.go:ScriptError.As|internal/hostbridge/errors.go:ScriptError.Is",
     "internal/hostbridge/iface.go:scriptIface.Error|internal/hostbridge/iface.go:scriptIface.String",
     "internal/hostbridge/iface.go:scriptIface.ReadByte|internal/hostbridge/iface.go:scriptIface.WriteString",
@@ -31,8 +30,7 @@
     "runtime/typedef.go:BasicNameOf|vm/composite.go:sizedNameOf",
     "runtime/typedef.go:goFieldSpellings|runtime/typedef.go:typFieldSpellings",
     "runtime/value.go:BoxedNilTyp|runtime/value.go:IfaceTaggedNil",
-    "vm/convert.go:VM.convertChan|vm/convert.go:VM.convertMap",
-    "vm/profile.go:Profiler.record|vm/profile.go:Profiler.recordAlloc"
+    "vm/convert.go:VM.convertChan|vm/convert.go:VM.convertMap"
   ],
   "windows": [
     "013e01cd1765b4c876c59d0149f0d6d749ae9bfd@vm/composite.go|vm/composite.go#2",
