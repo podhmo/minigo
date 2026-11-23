@@ -197,7 +197,7 @@ func asMatchVal(e error) runtime.Value {
 	if se, ok := e.(*ScriptError); ok {
 		return se.V
 	}
-	return errValOf(e)
+	return ErrValOf(e)
 }
 
 // findAsTarget walks an error's tree the way errors.As/AsType do —
@@ -509,7 +509,7 @@ func (e *ScriptError) Is(target error) bool {
 	if !ok {
 		return false
 	}
-	r, err := e.C.Call(m, []runtime.Value{errValOf(target)})
+	r, err := e.C.Call(m, []runtime.Value{ErrValOf(target)})
 	if err != nil {
 		return false
 	}
@@ -552,11 +552,11 @@ func (e *ScriptError) Timeout() bool {
 	return b
 }
 
-// errValOf boxes a host error the way script intrinsics read it back:
+// ErrValOf boxes a host error the way script intrinsics read it back:
 // a script error that went through host code (a %w cause, a callback's
 // result) reads as itself, anything else as a *runtime.GoValue whose
 // method calls dispatch via reflection.
-func errValOf(err error) runtime.Value {
+func ErrValOf(err error) runtime.Value {
 	if err == nil {
 		return runtime.NIL
 	}
