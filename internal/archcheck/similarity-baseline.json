@@ -1,6 +1,5 @@
 {
   "pairs": [
-    "compile/call.go:compiler.isNewCall|compile/call.go:compiler.isTypePositionCall",
     "compile/scope.go:fscope.markIface|compile/scope.go:fscope.noteConstDecl",
     "compile/scope.go:fscope.noteConstVal|compile/typehint.go:fscope.noteDeferTyp",
     "compile/typehint.go:compiler.chanElemTypExpr|compile/typehint.go:compiler.starBaseTypExpr",
@@ -25,7 +24,6 @@
     "minireflect/rvalue.go:RValue.Seq|minireflect/rvalue.go:RValue.Seq2",
     "minireflect/rvalue.go:RValue.SetBool|minireflect/rvalue.go:RValue.SetString",
     "minireflect/rvalue.go:RValue.SetIterKey|minireflect/rvalue.go:RValue.SetIterValue",
-    "pkg/locator/locator.go:getGoModCache|pkg/locator/locator.go:getGoRoot",
     "runtime/hostptrref.go:hostNamedBasicTyp|runtime/hostptrref.go:hostStructTyp",
     "runtime/typedef.go:BasicNameOf|vm/composite.go:sizedNameOf",
     "runtime/typedef.go:goFieldSpellings|runtime/typedef.go:typFieldSpellings",
