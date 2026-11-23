@@ -676,6 +676,42 @@ func TestCompleteMapKeys(t *testing.T) {
 	}
 }
 
+func TestCompleteInferredVarTypes(t *testing.T) {
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	evalLines(t, r, `import "./inferpkg"`)
+
+	for _, tc := range []struct {
+		line string
+		want string
+	}{
+		{"inferpkg.CallUser.", "Greet"},  // NewUser() → inspectpkg.User
+		{"inferpkg.CrossT.", "M"},        // infercallee.New() → T
+		{"inferpkg.DotT.", "M"},          // dot-imported NewDot() → T
+		{"inferpkg.LitUser.", "Greet"},   // composite literal
+		{"inferpkg.NewPtr.", "Greet"},    // new(User) → *User pointee
+		{"inferpkg.AliasVar.", "Greet"},  // var-to-var chain
+		{"inferpkg.ElemUser.", "Greet"},  // map element type
+		{"inferpkg.SelField.", "Greet"},  // declared struct field type
+		{"inferpkg.DerefUser.", "Greet"}, // *User pointee
+		{"inferpkg.A.", "Greet"},         // Pair() result 0 → User
+		{"inferpkg.B.", "ID"},            // Pair() result 1 → Base
+		{"inferpkg.V2.", "Greet"},        // map index value slot → User
+		{"inferpkg.PtrCall.", "Greet"},   // *User call result
+		{"inferpkg.DerefCall.", "Greet"}, // *(*User) keeps the pointee's methods
+		{"inferpkg.PtrSel.", "Greet"},    // field through an inferred *Holder
+		{"inferpkg.PtrIdx.", "Greet"},    // index through an inferred *[2]User
+	} {
+		requireCands(t, r.Complete(tc.line), tc.line, tc.want)
+	}
+
+	// the comma-ok slot is bool — no User members may leak through.
+	if cands := r.Complete("inferpkg.OK2."); len(cands) != 0 {
+		t.Fatalf("OK2. yielded %v, want none (bool)", candNames(cands))
+	}
+}
+
 func TestCompleteImportPaths(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
