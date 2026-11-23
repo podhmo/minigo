@@ -1672,14 +1672,7 @@ func instArgSuffix(x ast.Expr, ctx *TypeDef) string {
 // goFieldSpellings renders a signature field list like typFieldSpellings
 // but with `, ` separators, for display rather than identity.
 func goFieldSpellings(fl *ast.FieldList, ctx *TypeDef) string {
-	if fl == nil {
-		return ""
-	}
-	var parts []string
-	for _, t := range syntax.FieldTypes(fl) {
-		parts = append(parts, TypGoSpelling(t, ctx))
-	}
-	return strings.Join(parts, ", ")
+	return fieldSpellings(fl, ", ", func(t ast.Expr) string { return TypGoSpelling(t, ctx) })
 }
 
 // TypUnderlyingSpelling spells td's underlying type expression (Anon,
@@ -1745,14 +1738,19 @@ func boundTypedef(binds map[string]Value, name string) *TypeDef {
 // type spellings — `a, b int` contributes `int,int` since parameter
 // names are not part of a func type's identity.
 func typFieldSpellings(fl *ast.FieldList, ctx *TypeDef, under bool) string {
+	return fieldSpellings(fl, ",", func(t ast.Expr) string { return typSpelling(t, ctx, under) })
+}
+
+// fieldSpellings spells each field type of fl joined by sep.
+func fieldSpellings(fl *ast.FieldList, sep string, spell func(ast.Expr) string) string {
 	if fl == nil {
 		return ""
 	}
 	var parts []string
 	for _, t := range syntax.FieldTypes(fl) {
-		parts = append(parts, typSpelling(t, ctx, under))
+		parts = append(parts, spell(t))
 	}
-	return strings.Join(parts, ",")
+	return strings.Join(parts, sep)
 }
 
 // TypLenName renders an array-length expression inside a type-identity
