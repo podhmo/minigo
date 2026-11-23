@@ -29,7 +29,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/podhmo/minigo/storybook"
+	"github.com/podhmo/minigo/x/storybook"
 )
 
 func main() {
@@ -57,7 +57,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if *watch && *addr == "" {
 		return errors.New("-watch requires -http")
 	}
-	b := &Book{Book: &storybook.Book{Dir: fs.Arg(0), Tag: *tag}, StaticDir: *staticDir}
+	b := &storybook.Book{Dir: fs.Arg(0), Tag: *tag, Static: *staticDir}
 	if *src != "" {
 		b.Src = strings.Split(*src, ",")
 	}
@@ -92,7 +92,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			slog.WarnContext(ctx, "story discovery failed; serving anyway", "err", err)
 		}
 		if *watch {
-			if err := b.Watch(ctx, 300*time.Millisecond, b.staticRoot()); err != nil {
+			if err := b.Watch(ctx, 300*time.Millisecond, b.StaticDir()); err != nil {
 				return err
 			}
 		}

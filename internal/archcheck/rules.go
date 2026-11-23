@@ -98,7 +98,7 @@ var Rules = map[string][]string{
 	"resolve":                       {"pkg/locator"},
 	"runtime":                       {"bytecode", "index", "internal/execution", "internal/spike", "special", "syntax"},
 	"special":                       {"syntax"},
-	"storybook":                     {".", "resolve"},
+	"x/storybook":                   {".", "resolve"},
 	"syntax":                        {},
 	"tools/difffuzz":                {},
 	"tools/tmpltests":               {},

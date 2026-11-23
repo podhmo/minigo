@@ -22,6 +22,12 @@
 // [Book.Watch] is the opt-in browser side of that loop: while it runs,
 // file changes under the book's directory publish a reload to every
 // open page embedding [Book.ScriptTag].
+//
+// The package also carries the browsing chrome a preview server needs:
+// [Book.Handler] serves the index (sidebar, filter, width presets),
+// /story/<Name>, /grid/<group> and the book's /static/ assets, with
+// [Book.Fallback] as the catch-all for an application's own routes;
+// [Book.Export] writes the same pages as a static snapshot.
 package storybook
 
 import (
@@ -51,6 +57,17 @@ type Book struct {
 	// BoundOf when the declared package name differs from the last
 	// import-path element).
 	Setup func(*minigo.Engine) error
+
+	// Static is the directory served under /static/ in serve and
+	// export modes; empty means <Dir>/static.
+	Static string
+
+	// Fallback, when non-nil, answers the requests Handler's chrome
+	// does not claim (everything outside /{$}, /story/, /grid/,
+	// /static/ and the live-reload endpoints). An application that
+	// mounts its real mux — a handler story playing a fake-data
+	// instance of the app — sets it here.
+	Fallback http.Handler
 
 	once    sync.Once
 	base    *minigo.Engine // configured once; each Render forks a session
