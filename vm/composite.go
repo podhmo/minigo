@@ -3315,17 +3315,7 @@ func (v *VM) copyArray(f *frame, s *runtime.Slice, td *runtime.TypeDef) *runtime
 // declared `type MyU8 uint8` the mask applies through the underlying
 // ident, not the declared name.
 func sizedNameOf(td *runtime.TypeDef) string {
-	if td == nil {
-		return ""
-	}
-	if sizedIntName(td.Name) {
-		return td.Name
-	}
-	x := td.TypeExpr()
-	if id, ok := x.(*ast.Ident); ok && sizedIntName(id.Name) {
-		return id.Name
-	}
-	return ""
+	return runtime.TypedefIdentOf(td, sizedIntName)
 }
 
 // sizedIntName reports whether name is a builtin integer whose domain

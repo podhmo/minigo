@@ -1409,14 +1409,7 @@ func (te *TypeExpr) withTypeParams(tps map[string]bool) *TypeExpr {
 // parameters binds — `T any`, `K comparable, V any` — as a set; the
 // shared ordered walk lives in syntax.TypeParamNames.
 func typeParamNames(fl *ast.FieldList) map[string]bool {
-	var names map[string]bool
-	for _, n := range syntax.TypeParamNames(fl) {
-		if names == nil {
-			names = map[string]bool{}
-		}
-		names[n] = true
-	}
-	return names
+	return namesSet(syntax.TypeParamNames(fl))
 }
 
 // declTypeParams collects the type parameter names bound by s's decl:
@@ -1451,8 +1444,13 @@ func declTypeParams(s *Decl) map[string]bool {
 // for the whole method body — as a set; the ordered walk (pointer/
 // paren peel included) lives in syntax.RecvTypeParamNames.
 func recvTypeParamNames(recv *ast.FieldList) map[string]bool {
+	return namesSet(syntax.RecvTypeParamNames(recv))
+}
+
+// namesSet folds a name list into a lazily-built set.
+func namesSet(list []string) map[string]bool {
 	var names map[string]bool
-	for _, n := range syntax.RecvTypeParamNames(recv) {
+	for _, n := range list {
 		if names == nil {
 			names = map[string]bool{}
 		}

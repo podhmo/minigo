@@ -3755,27 +3755,7 @@ func isStringTypeExpr(e ast.Expr, fn *Function, seen map[string]bool) bool {
 // packageTypeSpec finds the TypeSpec declaring name in the function's
 // package files, or nil when the name is not declared at package scope.
 func packageTypeSpec(fn *Function, name string) *ast.TypeSpec {
-	if fn == nil || fn.Pkg == nil {
-		return nil
-	}
-	for _, file := range fn.Pkg.Files {
-		if file == nil || file.AST == nil {
-			continue
-		}
-		for _, decl := range file.AST.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if ok && ts.Name.Name == name {
-					return ts
-				}
-			}
-		}
-	}
-	return nil
+	return PackageTypeSpec(fn, name)
 }
 
 // ifaceUnderlyingSpell reports whether s spells an interface type —

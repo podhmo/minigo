@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/token"
 	"reflect"
 
 	"github.com/podhmo/minigo/internal/stdlib"
@@ -391,27 +390,7 @@ func jsonResolveAlias(e ast.Expr, fn *runtime.Function, seen map[string]bool) as
 // jsonPkgTypeSpec finds the TypeSpec declaring name in fn's package
 // files, or nil when the name is not declared at package scope.
 func jsonPkgTypeSpec(fn *runtime.Function, name string) *ast.TypeSpec {
-	if fn == nil || fn.Pkg == nil {
-		return nil
-	}
-	for _, file := range fn.Pkg.Files {
-		if file == nil || file.AST == nil {
-			continue
-		}
-		for _, decl := range file.AST.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok || gd.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if ok && ts.Name.Name == name {
-					return ts
-				}
-			}
-		}
-	}
-	return nil
+	return runtime.PackageTypeSpec(fn, name)
 }
 
 // jsonByteExpr reports whether e resolves to the predeclared byte or
