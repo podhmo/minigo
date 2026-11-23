@@ -505,16 +505,7 @@ func (e *ScriptError) Unwrap() error {
 // rule. The host error target maps back to its script value the way
 // hostErrOf boxed it, so the script side compares what it sees.
 func (e *ScriptError) Is(target error) bool {
-	m, ok := runtime.IfaceMember(e.C, e.V, "Is")
-	if !ok {
-		return false
-	}
-	r, err := e.C.Call(m, []runtime.Value{ErrValOf(target)})
-	if err != nil {
-		return false
-	}
-	b, _ := r.(bool)
-	return b
+	return e.callBool("Is", []runtime.Value{ErrValOf(target)})
 }
 
 // As lets a script-declared `As(any) bool` method join host
@@ -522,32 +513,28 @@ func (e *ScriptError) Is(target error) bool {
 // custom-As rule. A non-pointer target has nothing to write to and
 // simply fails the script side's assert.
 func (e *ScriptError) As(target any) bool {
-	m, ok := runtime.IfaceMember(e.C, e.V, "As")
-	if !ok {
-		return false
-	}
-	r, err := e.C.Call(m, []runtime.Value{target})
-	if err != nil {
-		return false
-	}
-	b, _ := r.(bool)
-	return b
+	return e.callBool("As", []runtime.Value{target})
 }
 
 // Timeout lets a script-declared `Timeout() bool` method answer host
 // checks like os.IsTimeout; without one the error is not a timeout.
 func (e *ScriptError) Timeout() bool {
-	m, ok := runtime.IfaceMember(e.C, e.V, "Timeout")
+	return e.callBool("Timeout", nil)
+}
+
+// callBool invokes the script-declared `name(args)` override and reads
+// its bool result. r.(bool), not Unwrap: a script `Timeout() SomeBool`
+// declares a named result type and does not satisfy the host's
+// `Timeout() bool` interface — gc ignores it too.
+func (e *ScriptError) callBool(name string, args []runtime.Value) bool {
+	m, ok := runtime.IfaceMember(e.C, e.V, name)
 	if !ok {
 		return false
 	}
-	r, err := e.C.Call(m, nil)
+	r, err := e.C.Call(m, args)
 	if err != nil {
 		return false
 	}
-	// r.(bool), not Unwrap: a script `Timeout() SomeBool` declares a
-	// named result type and does not satisfy the host's
-	// `Timeout() bool` interface — gc ignores it too.
 	b, _ := r.(bool)
 	return b
 }
