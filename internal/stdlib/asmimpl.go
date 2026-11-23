@@ -210,22 +210,21 @@ func wordOf(v runtime.Value) uint64 {
 }
 
 func bigAddVV(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-	z, x, y := wordElems(args[0]), wordElems(args[1]), wordElems(args[2])
-	var c uint64
-	for i := range x {
-		var zi uint64
-		zi, c = bits.Add64(wordOf(x[i]), wordOf(y[i]), c)
-		z[i] = int64(zi)
-	}
-	return int64(c), nil
+	return bigVV(args, bits.Add64)
 }
 
 func bigSubVV(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return bigVV(args, bits.Sub64)
+}
+
+// bigVV applies the limb-wise op across the z/x/y word slices and
+// returns the carry.
+func bigVV(args []runtime.Value, op func(x, y, c uint64) (uint64, uint64)) (runtime.Value, error) {
 	z, x, y := wordElems(args[0]), wordElems(args[1]), wordElems(args[2])
 	var c uint64
 	for i := range x {
 		var zi uint64
-		zi, c = bits.Sub64(wordOf(x[i]), wordOf(y[i]), c)
+		zi, c = op(wordOf(x[i]), wordOf(y[i]), c)
 		z[i] = int64(zi)
 	}
 	return int64(c), nil

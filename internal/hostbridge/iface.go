@@ -61,19 +61,19 @@ func (s *scriptIface) call(name string, args ...runtime.Value) ([]runtime.Value,
 }
 
 func (s *scriptIface) Write(p []byte) (int, error) {
-	pv := byteSliceArg(p)
-	rs, err := s.call("Write", pv)
-	n := int(intOut(rs, 0))
-	backBytes(p, pv, n)
-	if err != nil {
-		return 0, err
-	}
-	return n, s.m.errOut(s.vc, rs, 1)
+	return s.readOrWrite("Write", p)
 }
 
 func (s *scriptIface) Read(p []byte) (int, error) {
+	return s.readOrWrite("Read", p)
+}
+
+// readOrWrite calls the script's Read/Write member on the bytes arg
+// and copies the written/read tail back — the two verbs share the
+// (n, err) result contract.
+func (s *scriptIface) readOrWrite(name string, p []byte) (int, error) {
 	pv := byteSliceArg(p)
-	rs, err := s.call("Read", pv)
+	rs, err := s.call(name, pv)
 	n := int(intOut(rs, 0))
 	backBytes(p, pv, n)
 	if err != nil {
@@ -139,25 +139,24 @@ func (s *scriptIface) Flush() error {
 }
 
 func (s *scriptIface) Error() string {
-	rs, err := s.call("Error")
-	if err != nil || len(rs) == 0 {
-		return "script error"
-	}
-	if str, ok := runtime.Unwrap(rs[0]).(string); ok {
-		return str
-	}
-	return "script error"
+	return s.stringOr("Error", "script error")
 }
 
 func (s *scriptIface) String() string {
-	rs, err := s.call("String")
+	return s.stringOr("String", "")
+}
+
+// stringOr calls the script's no-arg string member, falling back on
+// error/missing/non-string results.
+func (s *scriptIface) stringOr(name, fallback string) string {
+	rs, err := s.call(name)
 	if err != nil || len(rs) == 0 {
-		return ""
+		return fallback
 	}
 	if str, ok := runtime.Unwrap(rs[0]).(string); ok {
 		return str
 	}
-	return ""
+	return fallback
 }
 
 func (s *scriptIface) Len() int {
@@ -186,15 +185,17 @@ func (s *scriptIface) Swap(i, j int) {
 // io.WriterTo/io.ReaderFrom the script value does not declare (only the
 // scriptIfaceW* wrapper types surface them).
 func (s *scriptIface) writeTo(w io.Writer) (int64, error) {
-	rs, err := s.call("WriteTo", &runtime.GoValue{V: w})
-	if err != nil {
-		return 0, err
-	}
-	return intOut(rs, 0), s.m.errOut(s.vc, rs, 1)
+	return s.copyN("WriteTo", w)
 }
 
 func (s *scriptIface) readFrom(r io.Reader) (int64, error) {
-	rs, err := s.call("ReadFrom", &runtime.GoValue{V: r})
+	return s.copyN("ReadFrom", r)
+}
+
+// copyN calls the script's WriteTo/ReadFrom member with the host
+// stream boxed and reads its (n, err) result.
+func (s *scriptIface) copyN(name string, stream any) (int64, error) {
+	rs, err := s.call(name, &runtime.GoValue{V: stream})
 	if err != nil {
 		return 0, err
 	}
