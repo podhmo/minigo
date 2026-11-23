@@ -74,6 +74,9 @@ type REPL struct {
 	// `import "..."` completion — enumerated once per session (newly
 	// fetched modules or changed go.mod requires do not refresh it).
 	importCands []Candidate
+	// evalPolicy is the completion evaluation policy (EvalMinimal by
+	// default — see SetEvalPolicy).
+	evalPolicy EvalPolicy
 	// loads are the :load units, in load order (load.go);
 	// pendingShadow the loaded decls the current input redefined.
 	loads         []*loadUnit

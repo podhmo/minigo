@@ -17,7 +17,7 @@ var FileBudgets = map[string]int{
 	"bytecode/disasm.go":                         294,
 	"bytecode/verify.go":                         345,
 	"bytecode/verify_kinds.go":                   382,
-	"cmd/minigo/main.go":                         1302,
+	"cmd/minigo/main.go":                         1323,
 	"compile/assign.go":                          953,
 	"compile/call.go":                            1140,
 	"compile/compile.go":                         471,
@@ -46,7 +46,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                            120,
 	"internal/archcheck/all.go":                  57,
 	"internal/archcheck/archcheck.go":            643,
-	"internal/archcheck/budgets.go":              402,
+	"internal/archcheck/budgets.go":                         408,
 	"internal/archcheck/rules.go":                152,
 	"internal/cmd/simcheck/main.go":              359,
 	"internal/assetaudit/assetaudit.go":          112,
@@ -158,10 +158,10 @@ var FileBudgets = map[string]int{
 	"pkg/locator/locator.go":                     777,
 	"pkg/modulewalk/modulewalk.go":               541,
 
-	"repl/complete.go":                               1411,
+	"repl/complete.go":                               1490,
 	"repl/pkginfo.go":                                214,
 	"repl/load.go":                                   662,
-	"repl/repl.go":                                   1259,
+	"repl/repl.go":                                   1262,
 	"replhooks.go":                                   55,
 	"resolve/filescope.go":                           117,
 	"resolve/goscan.go":                              203,
@@ -333,6 +333,10 @@ var FileBudgetExceptions = map[string]string{
 	"minireflect/rvalue_mexpr.go":         "method-expression Func dispatch on the concrete receiver (facade overrides survive the unwrap; facade receivers satisfy In(0) via APIType)",
 	"internal/stdlib/slices/slices.go":    "slices.IsSorted keeps the typedef tag on raw elements + Index/Contains keep untyped consts for element-type representability + Grow sizes the new cap by the script element type (TODO #176)",
 	"intrinsics_encoding_json.go":         "stdlib qualifier on the moved elemAt helper (P2-12)",
+	// REPL completion experiment (Stack #1409): the completer and its
+	// REPL/CLI surface grow inside existing files while the experiment
+	// runs; split them once the feature settles.
+	"repl/load.go":                "REPL completion: noteMutation hooks in Load/Unload",
 	// Stack-layer growths predating the FileBudgetExceptions tracking,
 	// recorded once when the merge-base check first covered them.
 	"bytecode/bytecode.go":               "P4-6: ASTFragment.Cache field for the per-site chunk memo",
@@ -396,6 +400,8 @@ var FileBudgetExceptions = map[string]string{
 	"vm/processcaller.go":                "P2-2b: narrowed host callback helper callers",
 	"vm/selectsite.go":                   "M4-2b: select unexported members by (call package, name); deref-site slot also keys the member name; the site cache also covers namedMember (selNamedMethod, payload field/path replays) + genCallSlot/instSiteSlot site memos + instSiteEnv/instSiteCacheable + selHostMember/selHostMiss rides selectSlot's rt guard",
 	"replhooks.go":                       "stdinspect.LookupDeclIn import for the moved inspect installer (P2-12)",
-	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch",
+	"cmd/minigo/main.go":                 ":imports/:importers meta-command arms on the top-level switch + :eval arm and help for the completion EvalBase tier",
+	"repl/complete.go":                   "EvalBase tier: EvalPolicy + evalBase fallback through EvalExpr + selectorBase primary-expression gate (REPL completion)",
+	"repl/repl.go":                       "evalPolicy field for the completion EvalBase tier",
 	"pkg/locator/locator.go":             "ReplacedImportPath: spell a replace-covered dir by its OldPath",
 }

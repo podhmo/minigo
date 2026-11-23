@@ -553,6 +553,74 @@ func TestCompleteSelectors(t *testing.T) {
 	}
 }
 
+func TestCompleteEvalBase(t *testing.T) {
+	ctx := context.Background()
+	e := minigo.NewEngine("../testdata")
+	r := New(e)
+
+	for _, line := range []string{
+		`import "./inspectpkg"`,
+		`var calls int`,
+		`func tick() inspectpkg.User { calls = calls + 1; return inspectpkg.User{Name: "x"} }`,
+		`m := map[string]inspectpkg.User{"k": {Name: "y"}}`,
+		`q := inspectpkg.User{Name: "q"}`,
+	} {
+		if _, err := r.EvalLine(ctx, line); err != nil {
+			t.Fatalf("EvalLine(%q): %v", line, err)
+		}
+	}
+
+	// the default (EvalMinimal) never evaluates: no candidates, no
+	// side effects.
+	if cands := r.Complete("tick()."); len(cands) != 0 {
+		t.Fatalf("minimal policy completed tick(). -> %v", candNames(cands))
+	}
+	if v, _ := r.EvalLine(ctx, "calls"); r.Display(v) != "0" {
+		t.Fatalf("calls = %v, want 0 — completion ran user code under EvalMinimal", r.Display(v))
+	}
+
+	r.SetEvalPolicy(EvalBase)
+
+	// a selector binds tighter than any operator: `tick() == q.` is
+	// `tick() == (q.)` — it completes on q's members and must not
+	// evaluate the comparison (nor run tick's side effect).
+	if cands := r.Complete("tick() == q."); !hasCand(cands, "Greet") {
+		t.Fatalf(`tick() == q. missing q's members -> %v`, candNames(cands))
+	}
+	if v, _ := r.EvalLine(ctx, "calls"); r.Display(v) != "0" {
+		t.Fatalf("calls = %v, want 0 — completion evaluated outside the selector's base", r.Display(v))
+	}
+	for _, tc := range []struct {
+		line string
+		want []string
+	}{
+		{"tick().", []string{"Greet", "Name"}},    // call result
+		{`m["k"].`, []string{"Bye", "Age"}},       // computed index
+		{"tick().B", []string{"Base", "Builder"}}, // prefix after the call
+		{"println(tick().", []string{"Greet"}},    // fragment suffix
+	} {
+		cands := r.Complete(tc.line)
+		for _, w := range tc.want {
+			if !hasCand(cands, w) {
+				t.Fatalf("%s missing in %q -> %v", w, tc.line, candNames(cands))
+			}
+		}
+	}
+	// the eval really ran — tick's side effect counted.
+	if v, _ := r.EvalLine(ctx, "calls"); r.Display(v) == "0" {
+		t.Fatal("EvalBase completion did not evaluate the base")
+	}
+
+	// a base that still cannot resolve (unknown name, literal) stays
+	// empty rather than erroring.
+	if cands := r.Complete("nosuch()."); len(cands) != 0 {
+		t.Fatalf("unresolvable base yielded %v", candNames(cands))
+	}
+	if cands := r.Complete(`"lit".`); len(cands) != 0 {
+		t.Fatalf("literal base yielded %v", candNames(cands))
+	}
+}
+
 func TestCompleteImportPaths(t *testing.T) {
 	e := minigo.NewEngine("../testdata")
 	r := New(e)
