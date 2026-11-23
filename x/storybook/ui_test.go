@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/x/storybook"
 )
 
@@ -23,33 +24,41 @@ func TestHandlerFallbackDispatch(t *testing.T) {
 	b := &storybook.Book{Dir: dir, Tag: "story", Fallback: fallback}
 	h := b.Handler()
 
+	type result struct {
+		Code int
+		From string
+	}
 	for _, tc := range []struct {
-		method, target, want string // want: "index" or "fallback"
+		method, target string
+		want           result
 	}{
-		{http.MethodGet, "/", "index"},
-		{http.MethodPost, "/", "fallback"}, // POST / is the app's, not the index's
-		{http.MethodGet, "/app/issues", "fallback"},
-		{http.MethodPost, "/story/StoryA", "fallback"}, // chrome stories are GET-only
+		{http.MethodGet, "/", result{http.StatusOK, ""}},
+		{http.MethodPost, "/", result{http.StatusTeapot, "fallback"}}, // POST / is the app's, not the index's
+		{http.MethodGet, "/app/issues", result{http.StatusTeapot, "fallback"}},
+		{http.MethodPost, "/story/StoryA", result{http.StatusTeapot, "fallback"}}, // chrome stories are GET-only
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.target, nil))
-		switch tc.want {
-		case "index":
-			if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "stories:") {
-				t.Errorf("%s %s: want the index, got %d %q", tc.method, tc.target, rec.Code, rec.Body.String()[:80])
-			}
-		case "fallback":
-			if rec.Code != http.StatusTeapot || rec.Header().Get("X-From") != "fallback" {
-				t.Errorf("%s %s: want the fallback, got %d", tc.method, tc.target, rec.Code)
-			}
+		got := result{Code: rec.Code, From: rec.Header().Get("X-From")}
+		if diff := cmp.Diff(tc.want, got); diff != "" {
+			t.Errorf("%s %s (-want +got):\n%s", tc.method, tc.target, diff)
 		}
+	}
+
+	// The index names the discovered story: an empty body check would
+	// also pass when discovery fails, since the chrome skeleton renders
+	// regardless.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !strings.Contains(rec.Body.String(), "StoryA") {
+		t.Errorf("GET / does not list StoryA; body:\n%s", rec.Body.String())
 	}
 
 	// Without a fallback the unmatched paths answer 404.
 	h = (&storybook.Book{Dir: dir, Tag: "story"}).Handler()
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/app/issues", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET /app/issues without Fallback: got %d, want 404", rec.Code)
+	if diff := cmp.Diff(http.StatusNotFound, rec.Code); diff != "" {
+		t.Errorf("GET /app/issues without Fallback (-want +got):\n%s", diff)
 	}
 }
