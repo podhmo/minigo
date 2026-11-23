@@ -7,6 +7,7 @@ import (
 	"go/format"
 	"go/token"
 	"reflect"
+	bytealg "internal/bytealg"
 	"slices"
 	"sort"
 	"strings"
@@ -1667,9 +1668,10 @@ func BoundMethodTrap() string {
 	return "swallowed"
 }
 
-// HostSigTrap: Signature on an intrinsic without a Target errors.
+// HostSigTrap: Signature on an intrinsic without a Target errors —
+// bytealg.Cutover is a stub with no real counterpart to mirror.
 func HostSigTrap() string {
-	inspect.Signature(inspect.SymbolOf(strings.Compare))
+	inspect.Signature(inspect.SymbolOf(bytealg.Cutover))
 	return "swallowed"
 }
 

@@ -21,31 +21,31 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"MaxBruteForce": int64(MaxBruteForce()),
 		"Compare": h.Fn2("bytealg.Compare", func(a []any) (any, error) {
 			return int(bytes.Compare(stdlib.ByteSlice(a[0]), stdlib.ByteSlice(a[1]))), nil
-		}),
+		}, bytes.Compare),
 		"Count": h.Fn2("bytealg.Count", func(a []any) (any, error) {
 			return int(bytes.Count(stdlib.ByteSlice(a[0]), []byte{byte(stdlib.Int64Of(a[1]))})), nil
 		}),
 		"CountString": h.Fn2("bytealg.CountString", func(a []any) (any, error) {
 			return int(strings.Count(stdlib.Str(a[0]), string([]byte{byte(stdlib.Int64Of(a[1]))}))), nil
 		}),
-		"Equal": h.Fn2("bytealg.Equal", func(a []any) (any, error) { return bytes.Equal(stdlib.ByteSlice(a[0]), stdlib.ByteSlice(a[1])), nil }),
+		"Equal": h.Fn2("bytealg.Equal", func(a []any) (any, error) { return bytes.Equal(stdlib.ByteSlice(a[0]), stdlib.ByteSlice(a[1])), nil }, bytes.Equal),
 		"Index": h.Fn2("bytealg.Index", func(a []any) (any, error) {
 			return int(bytes.Index(stdlib.ByteSlice(a[0]), stdlib.ByteSlice(a[1]))), nil
-		}),
-		"IndexString": h.Fn2("bytealg.IndexString", func(a []any) (any, error) { return int(strings.Index(stdlib.Str(a[0]), stdlib.Str(a[1]))), nil }),
+		}, bytes.Index),
+		"IndexString": h.Fn2("bytealg.IndexString", func(a []any) (any, error) { return int(strings.Index(stdlib.Str(a[0]), stdlib.Str(a[1]))), nil }, strings.Index),
 		"IndexByte": h.Fn2("bytealg.IndexByte", func(a []any) (any, error) {
 			return int(bytes.IndexByte(stdlib.ByteSlice(a[0]), byte(stdlib.Int64Of(a[1])))), nil
-		}),
+		}, bytes.IndexByte),
 		"IndexByteString": h.Fn2("bytealg.IndexByteString", func(a []any) (any, error) {
 			return int(strings.IndexByte(stdlib.Str(a[0]), byte(stdlib.Int64Of(a[1])))), nil
-		}),
+		}, strings.IndexByte),
 		"LastIndexByte": h.Fn2("bytealg.LastIndexByte", func(a []any) (any, error) {
 			return int(bytes.LastIndexByte(stdlib.ByteSlice(a[0]), byte(stdlib.Int64Of(a[1])))), nil
-		}),
+		}, bytes.LastIndexByte),
 		"LastIndexByteString": h.Fn2("bytealg.LastIndexByteString", func(a []any) (any, error) {
 			return int(strings.LastIndexByte(stdlib.Str(a[0]), byte(stdlib.Int64Of(a[1])))), nil
-		}),
-		"CompareString": h.Fn2("bytealg.CompareString", func(a []any) (any, error) { return strings.Compare(stdlib.Str(a[0]), stdlib.Str(a[1])), nil }),
+		}, strings.LastIndexByte),
+		"CompareString": h.Fn2("bytealg.CompareString", func(a []any) (any, error) { return strings.Compare(stdlib.Str(a[0]), stdlib.Str(a[1])), nil }, strings.Compare),
 		// gc's Cutover is an arch-tuned threshold: IndexByte calls it to
 		// decide when too many false-positive hits warrant switching to
 		// Index. Either search path returns the same offset, so a small

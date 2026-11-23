@@ -29,20 +29,20 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"GOARCH": goruntime.GOARCH,
 		"NumGoroutine": h.Fn("runtime.NumGoroutine", func(a []any) (any, error) {
 			return goruntime.NumGoroutine(), nil
-		}),
+		}, goruntime.NumGoroutine),
 		"Gosched": h.Fn("runtime.Gosched", func(a []any) (any, error) {
 			goruntime.Gosched()
 			return nil, nil
-		}),
-		"NumCPU": h.Fn("runtime.NumCPU", func(a []any) (any, error) { return goruntime.NumCPU(), nil }),
+		}, goruntime.Gosched),
+		"NumCPU": h.Fn("runtime.NumCPU", func(a []any) (any, error) { return goruntime.NumCPU(), nil }, goruntime.NumCPU),
 		"GOMAXPROCS": &runtime.BuiltinFunc{Name: "runtime.GOMAXPROCS", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			// read-only on the script side: GOMAXPROCS(0) reports the
 			// current setting without mutating the host process's
 			// parallelism.
 			return goruntime.GOMAXPROCS(0), nil
 		}},
-		"Version":  h.Fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }),
-		"GC":       h.Fn("runtime.GC", func(a []any) (any, error) { return nil, nil }),
+		"Version":  h.Fn("runtime.Version", func(a []any) (any, error) { return goruntime.Version(), nil }, goruntime.Version),
+		"GC":       h.Fn("runtime.GC", func(a []any) (any, error) { return nil, nil }, goruntime.GC),
 		"Compiler": "gc",
 		// //go:linkname targets other packages wire to (maphash's
 		// runtime_rand/runtime_memhash): unexported, so only reachable
@@ -154,7 +154,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 		"MemProfileRate": &runtime.Cell{Elem: int64(512 * 1024)},
 		// liveness hints and heap profiling have no GC to act on —
 		// KeepAlive is a no-op; MemProfile reports no records.
-		"KeepAlive": h.Fn("runtime.KeepAlive", func(a []any) (any, error) { return nil, nil }),
+		"KeepAlive": h.Fn("runtime.KeepAlive", func(a []any) (any, error) { return nil, nil }, goruntime.KeepAlive),
 		"MemProfile": &runtime.BuiltinFunc{Name: "runtime.MemProfile", Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return &runtime.Tuple{Elems: []runtime.Value{int64(0), true}}, nil
 		}},

@@ -25,7 +25,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 	tbl["Abs"] = h.Fn1("filepath.Abs", func(a []any) (any, error) { return stdlib.RetErr2(env.CwdAbs(stdlib.Str(a[0])), nil) })
 	tbl["Rel"] = h.Fn2("filepath.Rel", func(a []any) (any, error) {
 		return stdlib.RetErr2(filepath.Rel(env.CwdAbs(stdlib.Str(a[0])), env.CwdAbs(stdlib.Str(a[1]))))
-	})
+	}, filepath.Rel)
 	tbl["EvalSymlinks"] = h.Fn1("filepath.EvalSymlinks", func(a []any) (any, error) {
 		sp := stdlib.Str(a[0])
 		p, err := env.FsPath(sp)
@@ -34,7 +34,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 		}
 		r, err := filepath.EvalSymlinks(p)
 		return stdlib.RetErr2(r, stdlib.ScriptPathErr(err, sp, p))
-	})
+	}, filepath.EvalSymlinks)
 	tbl["Glob"] = h.Fn1("filepath.Glob", func(a []any) (any, error) {
 		pat := stdlib.Str(a[0])
 		ap, err := env.FsPath(pat)
@@ -64,7 +64,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 			}
 		}
 		return stdlib.RetErr2(m, nil)
-	})
+	}, filepath.Glob)
 	tbl["WalkDir"] = &runtime.BuiltinFunc{Name: "filepath.WalkDir", SyncCallbacks: true, Fn: func(v runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 2 {
 			return nil, fmt.Errorf("filepath.WalkDir needs 2 args, got %d", len(args))
