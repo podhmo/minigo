@@ -2675,6 +2675,13 @@ type BuiltinFunc struct {
 	// Target optionally holds the underlying Go func value the builtin
 	// adapts — inspect.Signature reads reflect.TypeOf it for the real
 	// signature. Nil for intrinsics that declare no target.
+	//
+	// It is not display-only metadata: funcMapElem hands Target to a
+	// template FuncMap verbatim, and the vm's arity/arg materializers
+	// consult it. An adapter that routes through the engine Env
+	// (FsPath, Cwd, AllowedRoots) or that is deliberately inert
+	// (os.Exit, runtime.Breakpoint) must keep it nil — attaching the
+	// real func would leak the unsandboxed call.
 	Target any
 	// Method optionally holds the reflected method this builtin adapts
 	// when it was created for member access on a host value — inspect
