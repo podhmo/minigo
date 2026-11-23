@@ -43,7 +43,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.WriteFile(p, stdlib.ByteSlice(a[1]), fs.FileMode(stdlib.IntOf(a[2]))), sp, p)), nil
-		}, os.WriteFile),
+		}),
 		"Mkdir": h.Fn2("os.Mkdir", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -51,7 +51,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.Mkdir(p, fs.FileMode(stdlib.IntOf(a[1]))), sp, p)), nil
-		}, os.Mkdir),
+		}),
 		"MkdirAll": h.Fn2("os.MkdirAll", func(a []any) (any, error) {
 			sp := stdlib.Str(a[0])
 			p, err := env.FsPath(sp)
@@ -59,7 +59,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers, env intbind.Env) {
 				return nil, err
 			}
 			return stdlib.ErrVal(stdlib.ScriptPathErr(os.MkdirAll(p, fs.FileMode(stdlib.IntOf(a[1]))), sp, p)), nil
-		}, os.MkdirAll),
+		}),
 		"Remove":    h.Fn1("os.Remove", func(a []any) (any, error) { return fsErrOp(env, "os.Remove", a, os.Remove) }),
 		"RemoveAll": h.Fn1("os.RemoveAll", func(a []any) (any, error) { return fsErrOp(env, "os.RemoveAll", a, os.RemoveAll) }),
 		"Chmod": h.Fn2("os.Chmod", func(a []any) (any, error) {
