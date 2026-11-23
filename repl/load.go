@@ -77,6 +77,7 @@ type shadowMark struct {
 // wins until the next load. A failed load leaves the session unchanged.
 // [REPL.Unload] reverses a load.
 func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
+	r.noteMutation()
 	r.warnings = nil
 	ref = unquoteRef(ref)
 	if ref == "" {
@@ -263,6 +264,7 @@ func (r *REPL) Load(ctx context.Context, ref string) ([]string, error) {
 // [REPL.Loaded]; a single file of a loaded directory cannot be unloaded.
 // It returns the unloaded ref's absolute path.
 func (r *REPL) Unload(ctx context.Context, ref string) (string, error) {
+	r.noteMutation()
 	r.warnings = nil
 	ref = unquoteRef(ref)
 	if ref == "" {

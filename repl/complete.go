@@ -559,7 +559,7 @@ func (r *REPL) resolveBase(text string) (runtime.Value, bool) {
 		// cannot answer it (call expressions, non-literal indexes) —
 		// evaluate the base itself when the policy allows.
 		if r.evalPolicy >= EvalBase {
-			if v, ok := r.evalBase(expr); ok {
+			if v, ok := r.evalBase(text[off:], expr); ok {
 				return v, true
 			}
 		}
@@ -578,10 +578,32 @@ func selectorBase(x ast.Expr) bool {
 	return true
 }
 
+// evalBaseResult is one memoized EvalBase outcome — failures memoize
+// too, so a trapping base does not trap on every TAB press.
+type evalBaseResult struct {
+	v  runtime.Value
+	ok bool
+}
+
+// noteMutation drops the EvalBase completion memo: any state change
+// (a new decl, an assignment, a :load, a package switch) can alter a
+// base expression's value, so cached results must not outlive it.
+func (r *REPL) noteMutation() { r.evalMemo = nil }
+
 // evalBase runs a parsed base expression through the EvalExpr bridge —
 // the EvalBase tier. The expression's side effects and package init
 // really happen; a trap, error or panic just yields no candidates.
-func (r *REPL) evalBase(expr ast.Expr) (v runtime.Value, ok bool) {
+// Results memoize on the base's source text — a repeated TAB on the
+// same line does not re-run user code — until any state-changing entry
+// point clears [REPL.evalMemo].
+func (r *REPL) evalBase(text string, expr ast.Expr) (v runtime.Value, ok bool) {
+	if res, hit := r.evalMemo[text]; hit {
+		return res.v, res.ok
+	}
+	if r.evalMemo == nil {
+		r.evalMemo = map[string]evalBaseResult{}
+	}
+	defer func() { r.evalMemo[text] = evalBaseResult{v, ok} }()
 	file := r.file()
 	if file == nil {
 		return nil, false

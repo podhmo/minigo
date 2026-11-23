@@ -77,6 +77,11 @@ type REPL struct {
 	// evalPolicy is the completion evaluation policy (EvalMinimal by
 	// default — see SetEvalPolicy).
 	evalPolicy EvalPolicy
+	// evalMemo memoizes EvalBase completion evaluations keyed on the
+	// base expression's source text, so pressing TAB twice on one line
+	// does not re-run its side effects. noteMutation clears it from
+	// every state-changing entry point (EvalLine, Load, Enter, ...).
+	evalMemo map[string]evalBaseResult
 	// loads are the :load units, in load order (load.go);
 	// pendingShadow the loaded decls the current input redefined.
 	loads         []*loadUnit
@@ -150,6 +155,7 @@ func (r *REPL) Reset() {
 // other statements). Meta commands (lines starting with `:`) are not
 // accepted; the caller dispatches them to the matching methods.
 func (r *REPL) EvalLine(ctx context.Context, input string) (runtime.Value, error) {
+	r.noteMutation()
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return nil, nil
@@ -932,6 +938,7 @@ func (r *REPL) reload() error {
 // ("strings", "example.com/mod/pkg") or a directory ("./dir", "/abs/dir").
 // Declarations still go to the scratch package unless [REPL.Pin] is on.
 func (r *REPL) Enter(ctx context.Context, ref string) (*runtime.Package, error) {
+	r.noteMutation()
 	r.Unpin() // write mode is bound to the package it entered
 	p, err := r.loadRef(ctx, ref)
 	if err != nil {
@@ -947,6 +954,7 @@ func (r *REPL) Enter(ctx context.Context, ref string) (*runtime.Package, error) 
 
 // Leave undoes [REPL.Enter], returning to the scratch package's scope.
 func (r *REPL) Leave() error {
+	r.noteMutation()
 	if r.entered == nil {
 		return nil
 	}
@@ -961,6 +969,7 @@ func (r *REPL) Leave() error {
 // initializes the package and fails when no package is entered.
 // [REPL.Unpin] turns it off, as do [REPL.Enter] and [REPL.Leave].
 func (r *REPL) Pin() error {
+	r.noteMutation()
 	if r.entered == nil {
 		return fmt.Errorf("pin: not inside a package (:cd first)")
 	}
@@ -997,6 +1006,7 @@ func (r *REPL) Pinned() bool { return r.writeMode }
 // package; session names that were shadowed by the package get their
 // previous values back.
 func (r *REPL) Unpin() {
+	r.noteMutation()
 	if !r.writeMode {
 		return
 	}
