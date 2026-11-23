@@ -171,6 +171,19 @@ func TestFormatCandidates(t *testing.T) {
 	}
 }
 
+func TestFormatCandidatesAmbiguous(t *testing.T) {
+	cands := []repl.Candidate{
+		{Name: "LA", Ambiguous: true}, {Name: "RB"},
+	}
+	got := formatCandidates(cands)
+	if !strings.Contains(got, "LA!") {
+		t.Fatalf("ambiguous name not marked: %q", got)
+	}
+	if strings.Contains(got, "RB!") {
+		t.Fatalf("unambiguous name marked: %q", got)
+	}
+}
+
 func TestCompleteSpliceLoadArg(t *testing.T) {
 	r := testREPL(t)
 	newLine, _, cands, ok := completeSplice(r, ":load ./insp", 12)
