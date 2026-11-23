@@ -46,7 +46,7 @@ var FileBudgets = map[string]int{
 	"installbound.go":                            120,
 	"internal/archcheck/all.go":                  57,
 	"internal/archcheck/archcheck.go":            643,
-	"internal/archcheck/budgets.go":                         408,
+	"internal/archcheck/budgets.go":              408,
 	"internal/archcheck/rules.go":                152,
 	"internal/cmd/simcheck/main.go":              359,
 	"internal/assetaudit/assetaudit.go":          112,
@@ -336,7 +336,7 @@ var FileBudgetExceptions = map[string]string{
 	// REPL completion experiment (Stack #1409): the completer and its
 	// REPL/CLI surface grow inside existing files while the experiment
 	// runs; split them once the feature settles.
-	"repl/load.go":                "REPL completion: noteMutation hooks in Load/Unload",
+	"repl/load.go": "REPL completion: noteMutation hooks in Load/Unload",
 	// Stack-layer growths predating the FileBudgetExceptions tracking,
 	// recorded once when the merge-base check first covered them.
 	"bytecode/bytecode.go":               "P4-6: ASTFragment.Cache field for the per-site chunk memo",
