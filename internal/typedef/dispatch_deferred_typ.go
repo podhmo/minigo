@@ -2,7 +2,6 @@ package typedef
 
 import (
 	"go/ast"
-	"reflect"
 
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/runtime"
@@ -68,25 +67,5 @@ func (r *Resolver) MemberTypOf(p *runtime.Package, name string, depth int) (*run
 // matches m's — bound packages store typedefs as globals and consts as
 // raw host values (compile's hostScalarTypeDefOf counterpart).
 func hostScalarTypedef(p *runtime.Package, m runtime.Value) *runtime.TypeDef {
-	if gv, ok := m.(*runtime.GoValue); ok {
-		m = gv.V
-	}
-	rt := reflect.TypeOf(m)
-	if rt == nil {
-		return nil
-	}
-	for _, n := range p.Globals.Names() {
-		v, ok := p.Globals.Get(n)
-		if !ok {
-			continue
-		}
-		td, ok := v.(*runtime.TypeDef)
-		if !ok || td.HostScalar == nil {
-			continue
-		}
-		if reflect.TypeOf(td.HostScalar) == rt {
-			return td
-		}
-	}
-	return nil
+	return runtime.HostScalarTypedefOf(p, m)
 }

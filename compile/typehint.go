@@ -16,7 +16,6 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
-	"reflect"
 	"strconv"
 	"strings"
 
@@ -870,27 +869,7 @@ func qualTypSel(p *runtime.Package, td *runtime.TypeDef) string {
 // time.Duration, not a Named, so its declared-type tag comes from
 // matching the host type back to the package's typedef table.
 func hostScalarTypeDefOf(p *runtime.Package, v runtime.Value) *runtime.TypeDef {
-	if gv, ok := v.(*runtime.GoValue); ok {
-		v = gv.V
-	}
-	rt := reflect.TypeOf(v)
-	if rt == nil {
-		return nil
-	}
-	for _, name := range p.Globals.Names() {
-		m, ok := p.Globals.Get(name)
-		if !ok {
-			continue
-		}
-		td, ok := m.(*runtime.TypeDef)
-		if !ok || td.HostScalar == nil {
-			continue
-		}
-		if reflect.TypeOf(td.HostScalar) == rt {
-			return td
-		}
-	}
-	return nil
+	return runtime.HostScalarTypedefOf(p, v)
 }
 
 // callOpTyp resolves a call operand's static type: conversions spell
