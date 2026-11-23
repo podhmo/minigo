@@ -99,10 +99,7 @@ type IfaceNil struct{ Typ *TypeDef }
 // — else nil. An untagged IfaceNil (Typ == nil) has no tag to report,
 // and a concrete tag means a boxed typed nil, not the nil interface.
 func IfaceTaggedNil(v Value) *TypeDef {
-	if in, ok := v.(*IfaceNil); ok && in.Typ != nil && in.Typ.Kind == KindInterface {
-		return in.Typ
-	}
-	return nil
+	return ifNilTyp(v, true)
 }
 
 // BoxedNilTyp returns the dynamic typedef of a typed nil boxed in an
@@ -110,10 +107,20 @@ func IfaceTaggedNil(v Value) *TypeDef {
 // The distinction is observable: the boxed nil is NOT nil (it has a
 // dynamic type), `x == nil` fails and `x.(T)` sees the tag.
 func BoxedNilTyp(v Value) *TypeDef {
-	if in, ok := v.(*IfaceNil); ok && in.Typ != nil && in.Typ.Kind != KindInterface {
-		return in.Typ
+	return ifNilTyp(v, false)
+}
+
+// ifNilTyp returns the typedef carried by a nil [IfaceNil] when its
+// tag kind matches iface (true = interface tag, false = concrete box).
+func ifNilTyp(v Value, iface bool) *TypeDef {
+	in, ok := v.(*IfaceNil)
+	if !ok || in.Typ == nil {
+		return nil
 	}
-	return nil
+	if (in.Typ.Kind == KindInterface) != iface {
+		return nil
+	}
+	return in.Typ
 }
 
 // NilDeclaredTyp returns the declared typedef of a nil value that still

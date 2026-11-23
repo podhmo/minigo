@@ -994,17 +994,11 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 // [Engine.Call]. An empty fnName calls main. The first package Run
 // loads becomes the main package that runtime/debug.ReadBuildInfo reports.
 func (e *Engine) Run(ctx context.Context, ref, fnName string, args ...runtime.Value) (runtime.Value, error) {
-	if fnName == "" {
-		fnName = "main"
-	}
 	pkg, err := e.Package(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
-	if e.mainPkg == nil {
-		e.mainPkg = pkg
-	}
-	return e.Call(ctx, pkg, fnName, args...)
+	return e.callMain(ctx, pkg, fnName, args...)
 }
 
 // modinfo answers runtime/debug's linker-provided build info the way a
@@ -1648,12 +1642,18 @@ func packageName(fset *token.FileSet, abs string) (string, error) {
 // calls fnName(args...) with [Engine.Call]. An empty fnName calls main.
 // A single file behaves like [Engine.Run] on it.
 func (e *Engine) RunFiles(ctx context.Context, files []string, fnName string, args ...runtime.Value) (runtime.Value, error) {
-	if fnName == "" {
-		fnName = "main"
-	}
 	pkg, err := e.packageFiles(ctx, files)
 	if err != nil {
 		return nil, err
+	}
+	return e.callMain(ctx, pkg, fnName, args...)
+}
+
+// callMain shares Run/RunFiles' tail: default fnName, the first-run
+// main-package pin (modinfo reads it), then Call.
+func (e *Engine) callMain(ctx context.Context, pkg *runtime.Package, fnName string, args ...runtime.Value) (runtime.Value, error) {
+	if fnName == "" {
+		fnName = "main"
 	}
 	if e.mainPkg == nil {
 		e.mainPkg = pkg

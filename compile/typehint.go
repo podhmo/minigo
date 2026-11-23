@@ -1820,10 +1820,7 @@ func (c *compiler) elemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Ex
 // channel type, through a named type's spec. file scopes the unfold
 // like elemTypExpr's.
 func (c *compiler) chanElemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
-	saved := c.pkgScopeTyp
-	c.pkgScopeTyp = file
-	defer func() { c.pkgScopeTyp = saved }()
-	if t, ok := c.unfoldTypExpr(te, depth).(*ast.ChanType); ok {
+	if t, ok := c.scopedUnfoldTypExpr(te, file, depth).(*ast.ChanType); ok {
 		return t.Value
 	}
 	return nil
@@ -1833,13 +1830,18 @@ func (c *compiler) chanElemTypExpr(te ast.Expr, file *syntax.File, depth int) as
 // type, through a named type's spec. file scopes the unfold like
 // elemTypExpr's.
 func (c *compiler) starBaseTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
-	saved := c.pkgScopeTyp
-	c.pkgScopeTyp = file
-	defer func() { c.pkgScopeTyp = saved }()
-	if t, ok := c.unfoldTypExpr(te, depth).(*ast.StarExpr); ok {
+	if t, ok := c.scopedUnfoldTypExpr(te, file, depth).(*ast.StarExpr); ok {
 		return t.X
 	}
 	return nil
+}
+
+// scopedUnfoldTypExpr unfolds te with pkgScopeTyp bound to file.
+func (c *compiler) scopedUnfoldTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
+	saved := c.pkgScopeTyp
+	c.pkgScopeTyp = file
+	defer func() { c.pkgScopeTyp = saved }()
+	return c.unfoldTypExpr(te, depth)
 }
 
 // fieldTypExpr resolves a selector's field inside a known named struct

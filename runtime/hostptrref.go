@@ -68,29 +68,25 @@ var hostNamedTyps sync.Map // reflect.Type -> *TypeDef
 // hostStructTyp mints the value-side typedef of a host struct's
 // pointee — KindStruct + HostIdent + HostNew.
 func hostStructTyp(rt reflect.Type) *TypeDef {
-	if td, ok := hostNamedTyps.Load(rt); ok {
-		return td.(*TypeDef)
-	}
-	td := &TypeDef{
-		Name:      rt.String(),
-		Kind:      KindStruct,
-		HostIdent: rt,
-		HostNew:   func() any { return reflect.New(rt).Interface() },
-	}
-	got, _ := hostNamedTyps.LoadOrStore(rt, td)
-	return got.(*TypeDef)
+	return hostNamedTyp(rt, KindStruct)
 }
 
 // hostNamedBasicTyp mints the same box for a named non-struct host
 // type — `type Counter int` — so `*p` keeps the host identity and
 // ptr-receiver methods can dispatch on the *T box.
 func hostNamedBasicTyp(rt reflect.Type) *TypeDef {
+	return hostNamedTyp(rt, KindNamedBasic)
+}
+
+// hostNamedTyp mints the value-side typedef of a named host type —
+// rt-keyed memo so `*p` keeps host identity across derefs.
+func hostNamedTyp(rt reflect.Type, kind TypeKind) *TypeDef {
 	if td, ok := hostNamedTyps.Load(rt); ok {
 		return td.(*TypeDef)
 	}
 	td := &TypeDef{
 		Name:      rt.String(),
-		Kind:      KindNamedBasic,
+		Kind:      kind,
 		HostIdent: rt,
 		HostNew:   func() any { return reflect.New(rt).Interface() },
 	}
