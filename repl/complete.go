@@ -78,6 +78,10 @@ type Candidate struct {
 	Name   string // the completion text
 	Kind   string // CandKeyword, CandBuiltin, CandFunc, ...
 	Detail string // signature or declared-type rendering, when cheaply known
+	// Ambiguous marks a promoted member provided by two embeds at the
+	// same depth — Go rejects the selector, but completion still offers
+	// the name with the flag set (the completer offers, not referees).
+	Ambiguous bool
 }
 
 // Values of [Candidate.Kind], for a UI to group or decorate candidates.
@@ -278,8 +282,10 @@ func completeContext(line string) completionCtx {
 // by name in resolution-precedence order (globals shadow index decls,
 // locals shadow builtins).
 type completer struct {
-	r    *REPL
-	seen map[string]bool
+	r        *REPL
+	seen     map[string]bool
+	fieldAt  map[string]int // field name -> promotion depth it was offered at
+	fieldIdx map[string]int // field name -> index into out
 }
 
 func (c *completer) add(out *[]Candidate, name, kind, detail string) {
@@ -288,6 +294,43 @@ func (c *completer) add(out *[]Candidate, name, kind, detail string) {
 	}
 	c.seen[name] = true
 	*out = append(*out, Candidate{Name: name, Kind: kind, Detail: detail})
+}
+
+// addField is add for struct fields, depth-aware: a name reaching the
+// output through a second embed at the SAME depth flags the emitted
+// candidate ambiguous rather than first-wins (Go rejects `x.F` there).
+// A shallower provider still shadows deeper ones — that is not
+// ambiguity, so differing depths dedup silently as before.
+func (c *completer) addField(out *[]Candidate, name, detail string, depth int) {
+	if name == "" || strings.HasPrefix(name, "__") {
+		return
+	}
+	if c.seen[name] {
+		prev, ok := c.fieldAt[name]
+		if !ok {
+			return // the name came from a method or scope, not a field
+		}
+		i := c.fieldIdx[name]
+		switch {
+		case depth == prev && depth > 0:
+			(*out)[i].Ambiguous = true
+		case depth < prev:
+			// DFS reaches a deep subtree first: a shallower provider
+			// shadows — and un-ambiguates — the deeper offering.
+			(*out)[i].Detail = detail
+			(*out)[i].Ambiguous = false
+			c.fieldAt[name] = depth
+		}
+		return
+	}
+	c.seen[name] = true
+	if c.fieldAt == nil {
+		c.fieldAt = map[string]int{}
+		c.fieldIdx = map[string]int{}
+	}
+	c.fieldAt[name] = depth
+	c.fieldIdx[name] = len(*out)
+	*out = append(*out, Candidate{Name: name, Kind: CandField, Detail: detail})
 }
 
 // file is the scratch package's single source file, or nil on a fresh
@@ -1467,30 +1510,38 @@ func (c *completer) typedefMethodsOpt(td *runtime.TypeDef, out *[]Candidate, ptr
 
 // structFields enumerates declared and promoted (embedded) fields.
 func (c *completer) structFields(td *runtime.TypeDef, out *[]Candidate) {
-	c.structFieldsOf(td, out, map[*runtime.TypeDef]bool{})
+	c.structFieldsOf(td, out, map[*runtime.TypeDef]int{}, 0)
 }
 
-// structFieldsOf is structFields with a visited set — recursive embeds
-// (`type Node struct{ *Node }`) are legal Go and must terminate.
-func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seen map[*runtime.TypeDef]bool) {
-	if td == nil || seen[td] {
+// structFieldsOf is structFields with a visited-depth set — recursive embeds
+// (`type Node struct{ *Node }`) are legal Go and must terminate. depth
+// counts promotion hops so same-depth providers flag Ambiguous.
+func (c *completer) structFieldsOf(td *runtime.TypeDef, out *[]Candidate, seenAt map[*runtime.TypeDef]int, depth int) {
+	if td == nil {
 		return
 	}
-	seen[td] = true
+	if prev, ok := seenAt[td]; ok && depth > prev {
+		// already offered through a shallower path — a deeper reach
+		// adds nothing; its members lose to the shallow offering.
+		return
+	}
+	// an equal- or shallower-depth reach still walks: addField marks
+	// each member ambiguous on a tie, or swaps Detail on a shadow.
+	seenAt[td] = depth
 	fts, _ := c.r.engine.FieldTypes(td)
 	for i, name := range td.Fields {
 		var detail string
 		if i < len(fts) && fts[i] != nil {
 			detail = runtime.DisplayName(fts[i])
 		}
-		c.add(out, name, CandField, detail)
+		c.addField(out, name, detail, depth)
 	}
 	for _, spec := range td.EmbedSpecs {
 		emb, err := c.r.engine.ResolveTypeRef(td, spec)
 		if err != nil || emb == nil {
 			continue
 		}
-		c.structFieldsOf(emb, out, seen)
+		c.structFieldsOf(emb, out, seenAt, depth+1)
 	}
 }
 
