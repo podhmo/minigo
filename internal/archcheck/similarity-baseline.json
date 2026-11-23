@@ -1,6 +1,7 @@
 {
   "pairs": [
     "internal/hostbridge/iface.go:scriptIface.ReadByte|internal/hostbridge/iface.go:scriptIface.WriteString",
+    "internal/stdlib/asmimpl.go:bigAddVV|internal/stdlib/asmimpl.go:bigSubVV",
     "minireflect/minireflect.go:Env.ptrTo|minireflect/minireflect.go:Env.sliceOf",
     "minireflect/minireflect.go:asRType|minireflect/minireflect.go:asRValue",
     "minireflect/rtype.go:RType.Fields|minireflect/rtype.go:RType.Ins",
