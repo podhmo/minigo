@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/podhmo/minigo/storybook"
+	"github.com/podhmo/minigo/x/storybook"
 )
 
 // The reload guarantee: every Render reads the current file contents —

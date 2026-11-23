@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/podhmo/minigo/storybook"
+	"github.com/podhmo/minigo/x/storybook"
 )
 
 func writeFile(t *testing.T, path, src string) {

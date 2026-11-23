@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/podhmo/minigo/storybook"
+	"github.com/podhmo/minigo/x/storybook"
 )
 
 const appDir = "../../app"
@@ -45,7 +45,7 @@ func golden(t *testing.T, name string) []byte {
 }
 
 func TestStories(t *testing.T) {
-	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
+	b := &storybook.Book{Dir: appDir, Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestDirectCLIStdout(t *testing.T) {
 }
 
 func TestRenderGolden(t *testing.T) {
-	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
+	b := &storybook.Book{Dir: appDir, Tag: "story"}
 	// Handler stories replay the status and headers their recorder captured.
 	wantStatus := map[string]int{
 		"StoryHttpListUsersByTag":   http.StatusOK,
@@ -156,7 +156,7 @@ func TestRenderMainPackage(t *testing.T) {
 	}
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/server\n\ngo 1.26.0\n")
 	writeFile(t, filepath.Join(dir, "main.go"), "package main\nfunc main() { panic(\"server must not start\") }\nfunc unfinished() { undefinedFunction() }\n")
-	got, err := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Render(context.Background(), "StoryUser")
+	got, err := (&storybook.Book{Dir: dir, Tag: "story"}).Render(context.Background(), "StoryUser")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestRenderMainPackage(t *testing.T) {
 
 func TestRenderRejectsNonStory(t *testing.T) {
 	for _, name := range []string{"StoryMissing", "RenderUser"} {
-		_, err := (&Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}).Render(context.Background(), name)
+		_, err := (&storybook.Book{Dir: appDir, Tag: "story"}).Render(context.Background(), name)
 		if err == nil || !strings.Contains(err.Error(), "not a story") {
 			t.Fatalf("want non-story error, got %v", err)
 		}
@@ -176,7 +176,7 @@ func TestRenderRejectsNonStory(t *testing.T) {
 
 func TestExport(t *testing.T) {
 	out := t.TempDir()
-	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
+	b := &storybook.Book{Dir: appDir, Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +221,7 @@ func TestExport(t *testing.T) {
 }
 
 // A minimal app with one story and one static asset.
-func staticStories(t *testing.T) (string, []Story) {
+func staticStories(t *testing.T) (string, []storybook.Story) {
 	t.Helper()
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/staticx\n\ngo 1.26.0\n")
@@ -231,7 +231,7 @@ func staticStories(t *testing.T) (string, []Story) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(dir, "static", "app.css"), "a{}\n")
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	b := &storybook.Book{Dir: dir, Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestExportFollowsStaticSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "out")
-	if err := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Export(context.Background(), out, stories); err != nil {
+	if err := (&storybook.Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(out, "static", "linked.css"))
@@ -264,7 +264,7 @@ func TestExportFollowsStaticSymlinks(t *testing.T) {
 func TestExportDropsStaleStaticAssets(t *testing.T) {
 	dir, stories := staticStories(t)
 	writeFile(t, filepath.Join(dir, "static", "stale.css"), "stale{}\n")
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	b := &storybook.Book{Dir: dir, Tag: "story"}
 	out := filepath.Join(t.TempDir(), "out")
 	if err := b.Export(context.Background(), out, stories); err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestExportStaticLinkCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "out")
-	if err := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Export(context.Background(), out, stories); err != nil {
+	if err := (&storybook.Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"app.css", filepath.Join("sub", "x.css"), filepath.Join("dup", "x.css")} {
@@ -322,7 +322,7 @@ func TestExportStaticRootSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "out")
-	if err := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Export(context.Background(), out, stories); err != nil {
+	if err := (&storybook.Book{Dir: dir, Tag: "story"}).Export(context.Background(), out, stories); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(out, "static", "app.css")); err != nil {
@@ -341,7 +341,7 @@ func TestExportRejectsOutputInsideRealStatic(t *testing.T) {
 	if err := os.Symlink(real, filepath.Join(dir, "static")); err != nil {
 		t.Fatal(err)
 	}
-	err := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Export(context.Background(), filepath.Join(real, "snap"), stories)
+	err := (&storybook.Book{Dir: dir, Tag: "story"}).Export(context.Background(), filepath.Join(real, "snap"), stories)
 	if err == nil {
 		t.Error("export into the resolved static directory must fail")
 	}
@@ -359,7 +359,7 @@ func TestExportRejectsStaticLinkInsideOutput(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "static"), filepath.Join(out, "static", "real")); err != nil {
 		t.Fatal(err)
 	}
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}, StaticDir: filepath.Join(out, "static", "real")}
+	b := &storybook.Book{Dir: dir, Tag: "story", Static: filepath.Join(out, "static", "real")}
 	if err := b.Export(context.Background(), out, stories); err == nil {
 		t.Error("export must refuse a static source linked inside its output")
 	}
@@ -377,7 +377,7 @@ func TestExportRejectsStaticInsideOutput(t *testing.T) {
 	if err := os.MkdirAll(deep, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}, StaticDir: deep}
+	b := &storybook.Book{Dir: dir, Tag: "story", Static: deep}
 	if err := b.Export(context.Background(), out, stories); err == nil {
 		t.Error("export must refuse a static source inside its output")
 	}
@@ -387,7 +387,7 @@ func TestExportRejectsStaticInsideOutput(t *testing.T) {
 // would recurse into itself.
 func TestExportRejectsStaticNesting(t *testing.T) {
 	dir, stories := staticStories(t)
-	err := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Export(context.Background(), filepath.Join(dir, "static", "nested"), stories)
+	err := (&storybook.Book{Dir: dir, Tag: "story"}).Export(context.Background(), filepath.Join(dir, "static", "nested"), stories)
 	if err == nil {
 		t.Error("export into the static directory must fail")
 	}
@@ -406,7 +406,7 @@ func TestExportRejectsOutputCoveringStaticSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	b := &storybook.Book{Dir: dir, Tag: "story"}
 	if err := b.Export(context.Background(), rel, stories); err == nil {
 		t.Error("export covering the static source must fail")
 	}
@@ -423,7 +423,7 @@ func TestExportRejectsFileStaticSource(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
 	writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\n\nfunc StoryX() {}\n")
 	writeFile(t, filepath.Join(dir, "static"), "not a directory\n")
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	b := &storybook.Book{Dir: dir, Tag: "story"}
 	stories, err := b.Stories()
 	if err != nil {
 		t.Fatal(err)
@@ -444,7 +444,7 @@ func TestExportRejectsFileStaticSource(t *testing.T) {
 // mirror must disappear too.
 func TestExportDropsStaticWhenSourceGone(t *testing.T) {
 	dir, stories := staticStories(t)
-	b := &Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}
+	b := &storybook.Book{Dir: dir, Tag: "story"}
 	out := filepath.Join(t.TempDir(), "out")
 	if err := b.Export(context.Background(), out, stories); err != nil {
 		t.Fatal(err)
@@ -464,7 +464,7 @@ func TestExportDropsStaticWhenSourceGone(t *testing.T) {
 }
 
 func TestHandler(t *testing.T) {
-	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
+	b := &storybook.Book{Dir: appDir, Tag: "story"}
 	wantStatus := map[string]int{
 		"StoryHttpListUsersByTag":   http.StatusOK,
 		"StoryHttpShowUser":         http.StatusOK,
@@ -586,7 +586,7 @@ func TestWatchRequiresHTTP(t *testing.T) {
 // and HTML story bodies — and serves its endpoints; non-HTML bodies stay
 // byte-identical.
 func TestHandlerWatch(t *testing.T) {
-	b := &Book{Book: &storybook.Book{Dir: appDir, Tag: "story"}}
+	b := &storybook.Book{Dir: appDir, Tag: "story"}
 	if err := b.Watch(context.Background(), time.Hour); err != nil {
 		t.Fatal(err)
 	}
@@ -631,7 +631,7 @@ func TestHandlerToleratesNoStories(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/empty\n\ngo 1.26.0\n")
 	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
 	rec := httptest.NewRecorder()
-	(&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	(&storybook.Book{Dir: dir, Tag: "story"}).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if diff := cmp.Diff(http.StatusOK, rec.Code); diff != "" {
 		t.Errorf("index status (-want +got):\n%s", diff)
 	}
@@ -644,7 +644,7 @@ func TestHandlerReloadsSource(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/preview\n\ngo 1.26.0\n")
 	writeFile(t, filepath.Join(dir, "app.go"), "package app\n")
-	handler := (&Book{Book: &storybook.Book{Dir: dir, Tag: "story"}}).Handler()
+	handler := (&storybook.Book{Dir: dir, Tag: "story"}).Handler()
 	for _, text := range []string{"before", "after"} {
 		writeFile(t, filepath.Join(dir, "story.go"), "//go:build story\n\npackage app\nimport \"fmt\"\nfunc StoryPage() { fmt.Print(\"<p>"+text+"</p>\") }\n")
 		rec := httptest.NewRecorder()
