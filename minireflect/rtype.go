@@ -1672,15 +1672,9 @@ func (t *RType) canRange(seq int) bool {
 // Fields returns reflect.Type.Fields' iterator as a script function
 // value: a script can range over it or call it with a yield function.
 func (t *RType) Fields() runtime.Value {
-	if t.Kind() != reflect.Struct {
-		plain("reflect: Fields of non-struct type %s", t)
-	}
-	return t.iterValues("reflect.Type.Fields", t.NumField(), func(i int) any {
-		if t.rt != nil {
-			return t.rt.Field(i)
-		}
-		return t.Field(i)
-	})
+	return t.iterAccessors("Fields", "struct", reflect.Struct, t.NumField,
+		func(rt reflect.Type, i int) any { return rt.Field(i) },
+		func(i int) any { return t.Field(i) })
 }
 
 // Methods returns reflect.Type.Methods' iterator as a script function
@@ -1697,28 +1691,32 @@ func (t *RType) Methods() runtime.Value {
 // Ins returns reflect.Type.Ins' iterator as a script function value,
 // like [RType.Fields].
 func (t *RType) Ins() runtime.Value {
-	if t.Kind() != reflect.Func {
-		plain("reflect: Ins of non-func type %s", t)
-	}
-	return t.iterValues("reflect.Type.Ins", t.NumIn(), func(i int) any {
-		if t.rt != nil {
-			return t.rt.In(i)
-		}
-		return t.In(i)
-	})
+	return t.iterAccessors("Ins", "func", reflect.Func, t.NumIn,
+		func(rt reflect.Type, i int) any { return rt.In(i) },
+		func(i int) any { return t.In(i) })
 }
 
 // Outs returns reflect.Type.Outs' iterator as a script function value,
 // like [RType.Fields].
 func (t *RType) Outs() runtime.Value {
-	if t.Kind() != reflect.Func {
-		plain("reflect: Outs of non-func type %s", t)
+	return t.iterAccessors("Outs", "func", reflect.Func, t.NumOut,
+		func(rt reflect.Type, i int) any { return rt.Out(i) },
+		func(i int) any { return t.Out(i) })
+}
+
+// iterAccessors shares Fields/Ins/Outs: the kind guard (want kind or
+// panic "reflect: <name> of non-<kind> type") then iterValues over
+// the host or script element accessor.
+func (t *RType) iterAccessors(name, noun string, want reflect.Kind, num func() int,
+	hostAt func(reflect.Type, int) any, scriptAt func(int) any) runtime.Value {
+	if t.Kind() != want {
+		plain("reflect: %s of non-%s type %s", name, noun, t)
 	}
-	return t.iterValues("reflect.Type.Outs", t.NumOut(), func(i int) any {
+	return t.iterValues("reflect.Type."+name, num(), func(i int) any {
 		if t.rt != nil {
-			return t.rt.Out(i)
+			return hostAt(t.rt, i)
 		}
-		return t.Out(i)
+		return scriptAt(i)
 	})
 }
 

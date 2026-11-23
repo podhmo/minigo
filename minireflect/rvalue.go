@@ -1856,41 +1856,31 @@ func (it *MapIter) Reset(v *RValue) {
 }
 
 func (v *RValue) SetIterKey(it *MapIter) {
-	// Go evaluates the iterator first: before Next the panic is
-	// `reflect: Value.SetIterKey called before Next`, ahead of the
-	// target's settable check, and an unassignable key reports under
-	// `reflect.MapIter.SetKey:`.
-	if it != nil && it.hit == nil {
-		if it.i == 0 {
-			plain("reflect: Value.SetIterKey called before Next")
-		}
-		if it.i > len(it.keys) {
-			plain("reflect: Value.SetIterKey called on exhausted iterator")
-		}
-	}
-	x := it.Key()
-	v.mustValid("SetIterKey")
-	v.mustBeSettable("SetIterKey")
-	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
-		plain("reflect.MapIter.SetKey: value of type %s is not assignable to type %s", xt.String(), vt.String())
-	}
-	v.set(x.get())
+	v.setIter(it, func(it *MapIter) *RValue { return it.Key() }, "SetIterKey", "reflect.MapIter.SetKey")
 }
 
 func (v *RValue) SetIterValue(it *MapIter) {
+	v.setIter(it, func(it *MapIter) *RValue { return it.Value() }, "SetIterValue", "reflect.MapIter.SetValue")
+}
+
+// setIter shares SetIterKey/SetIterValue: Go evaluates the iterator
+// first — before Next the panic is `reflect: Value.<name> called
+// before Next`, ahead of the target's settable check, and an
+// unassignable element reports under `<mapName>:`.
+func (v *RValue) setIter(it *MapIter, at func(*MapIter) *RValue, name, mapName string) {
 	if it != nil && it.hit == nil {
 		if it.i == 0 {
-			plain("reflect: Value.SetIterValue called before Next")
+			plain("reflect: Value.%s called before Next", name)
 		}
 		if it.i > len(it.keys) {
-			plain("reflect: Value.SetIterValue called on exhausted iterator")
+			plain("reflect: Value.%s called on exhausted iterator", name)
 		}
 	}
-	x := it.Value()
-	v.mustValid("SetIterValue")
-	v.mustBeSettable("SetIterValue")
+	x := at(it)
+	v.mustValid(name)
+	v.mustBeSettable(name)
 	if vt, xt := v.Type(), x.Type(); vt != nil && xt != nil && !xt.AssignableTo(vt) {
-		plain("reflect.MapIter.SetValue: value of type %s is not assignable to type %s", xt.String(), vt.String())
+		plain("%s: value of type %s is not assignable to type %s", mapName, xt.String(), vt.String())
 	}
 	v.set(x.get())
 }
@@ -1902,28 +1892,26 @@ func (v *RValue) Seq() runtime.Value {
 	// (converted to a named int type), slices/arrays/strings/ptr-to-arrays
 	// the index, maps the key, chans each received element. The range
 	// machinery's driveFuncIter feeds the same yield a direct call would.
-	if !v.Type().CanSeq() {
-		plain("reflect: %s cannot produce iter.Seq[Value]", v.Type())
-	}
-	return &runtime.BuiltinFunc{Name: "reflect.Value.Seq", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-		if len(args) != 1 {
-			return nil, fmt.Errorf("Seq expects a yield function")
-		}
-		return nil, v.driveSeq(vc, args[0], 1)
-	}}
+	return v.seqOf("Seq", v.Type().CanSeq(), "iter.Seq[Value]", 1)
 }
 
 // Seq2 returns reflect.Value.Seq2's iterator as a script function value,
 // like [RValue.Seq].
 func (v *RValue) Seq2() runtime.Value {
-	if !v.Type().CanSeq2() {
-		plain("reflect: %s cannot produce iter.Seq2[Value, Value]", v.Type())
+	return v.seqOf("Seq2", v.Type().CanSeq2(), "iter.Seq2[Value, Value]", 2)
+}
+
+// seqOf builds Seq/Seq2's iterator function value: n is the arity the
+// yield receives (1 for Seq, 2 for Seq2).
+func (v *RValue) seqOf(name string, can bool, sig string, n int) runtime.Value {
+	if !can {
+		plain("reflect: %s cannot produce %s", v.Type(), sig)
 	}
-	return &runtime.BuiltinFunc{Name: "reflect.Value.Seq2", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return &runtime.BuiltinFunc{Name: "reflect.Value." + name, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		if len(args) != 1 {
-			return nil, fmt.Errorf("Seq2 expects a yield function")
+			return nil, fmt.Errorf("%s expects a yield function", name)
 		}
-		return nil, v.driveSeq(vc, args[0], 2)
+		return nil, v.driveSeq(vc, args[0], n)
 	}}
 }
 
