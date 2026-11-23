@@ -117,7 +117,7 @@ package ./inspectpkg    dir
 - **文字列コンテキストは import・map key・meta-command の引数のみ**: → map key は解決済み: `m["`+TAB で生きている map の文字列キーを列挙する（`SnapshotKeys`、named string key も Unwrap で拾う）。meta-command の引数は `CompleteCommandArg` が扱う — `:load` は `.go` ファイルとディレクトリ（末尾 `/` 付きで次の TAB が潜る）、`:unload` は現在のロード、`:cd`/`:ls`/`:doc` はセッションの import 名・import パス・`./` ディレクトリ、`:doc name.Sy` はパッケージのメンバー、`:comp` は引数をコード断片として補完する（ディレクトリはその場で読み、キャッシュしない）。`:` 行そのものの補完はフロントエンド側の仕事（コマンド表は cmd/minigo にしかない）。importable 集合の列挙も近似: GOROOT は「ディレクトリに非 main パッケージがある」判定でビルド制約までは見ない、`replace` の影響は require の綴りだけ反映（import パスは module path のままなので実害なし）、`internal` は一律 prune（本来は近接ルール）。セッション中に作ったディレクトリは `importCands` キャッシュの関係で出ない。
 - ~~**same-depth の昇格曖昧性**~~ → 対応済み: 本物は compile error だが、補完は候補を出しつつ `Candidate.Ambiguous` で印をつける（候補を出す側は審判ではない、という割り切りは維持）。フィールド walk が promotion 深度を追跡し、同一深度の2つ目の供給元で印を立てる。浅い供給元は深い側を shadow する（DFS は深い枝を先に辿るので Detail の差し替えと ambiguous 解除が要る）。メソッド側は engine の typedef 平坦化の内側なので対象外。
 - **過剰なメソッド候補（値コンテキストのみ）**: 値基底では `methodFuncs` を ptr=true/false 両方で呼ぶので、文脈上取り得ないレシーバのメソッドも出ることがある。REPL の変数は全部 addressable なので実害は少ない。型レベル基底（`T.`）は method expression なので値メソッド集合だけに絞ってある（`func (p *T) M` は `T.M` では trap する）。Named host box に宣言メソッドがある場合も reflect セットが併記される（実行時は declared-only）— 補完として多めに出すのは害が少ない判断。
-- **昇格メソッドの Detail**: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶので、selector 修飾された型が曖昧に見えることがある。
+- ~~**昇格メソッドの Detail**~~ → 対応済み: 宣言元ファイルのスコープで `TypGoSpelling` を呼ぶ自体は正しいが、dot import された型の裸識別子が「宣言元パッケージの型」として修飾されてしまう問題があった（`import . "strings"` 中の `Builder` が `embedpkg.Builder` と綴られる）。`TypGoSpelling` が裸 ident をファイルの dot import 経由で先に解決するようにし、実家の句名で修飾する（パッケージローカル宣言は dot import に勝つので従来通り）。
 - **suffix fallback の誤爆**: `(u.` は正しく `u` のメンバーを出すが、`m[k.`（開いた index 式の中の `.`）も `k` のメンバーを出してしまう。`.` 末尾のコンテキストを未閉鎖グループ内と区別するには `resolveBase` 側の括弧深度追跡が要る — TODO に積んだ。
 - **adapter 系 builtin は Detail が空**: `strings.Compare` など `fn*` ラッパーは `Target` を持たないので reflect シグネチャを描けない。嘘の `func(...) any` より空の方がまし、という判断。
 
@@ -148,3 +148,4 @@ TODO.md の "REPL completion" エントリに列挙。大きいのは:
 - ~~eval ポリシー階層（`f().` など呼び出し結果の補完）~~ 済: `EvalBase` + `:eval on`
 - ~~残りの文字列コンテキスト（`:cd` 引数・map key）~~ 済: map key は `m["` で列挙（`:cd` 引数は `CompleteCommandArg` 済み）
 - ~~外部パッケージの `var x = f()`（宣言型なし）~~ 済: `inferInitType` で初期化式の形から typedef を読む
+- ~~昇格メソッドの Detail が宣言元パッケージ名で誤修飾~~ 済: dot import の裸 ident は実家の句名で修飾（`TypGoSpelling`）
