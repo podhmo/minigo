@@ -123,49 +123,34 @@ func (s *fscope) popBlock() {
 // recordType marks a just-declared name as a local `type` decl,
 // attaching the spec/typedef/interface metadata the decl carries.
 func (s *fscope) recordType(name string, ts *ast.TypeSpec, td *runtime.TypeDef, iface bool) {
-	if len(s.blocks) == 0 {
-		return
-	}
-	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+	s.mark(name, func(b *binding) {
 		b.typeDecl = true
 		b.tspec = ts
 		b.tdef = td
 		b.ifaceT = iface
-	}
+	})
 }
 
 // markIface records a just-declared name as interface-typed (its decl's
 // type annotation or initializer was an interface type/expression).
 // Interface-tag switches use it to pick pair-strict case equality.
 func (s *fscope) markIface(name string) {
-	if len(s.blocks) == 0 {
-		return
-	}
-	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
-		b.ifaceVar = true
-	}
+	s.mark(name, func(b *binding) { b.ifaceVar = true })
 }
 
 // noteConstDecl marks a just-declared `const` name — typed or untyped
 // — so constant-expression checks can distinguish it from a var.
 func (s *fscope) noteConstDecl(name string) {
-	if len(s.blocks) == 0 {
-		return
-	}
-	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
-		b.constDecl = true
-	}
+	s.mark(name, func(b *binding) { b.constDecl = true })
 }
 
 // noteConstVal records a just-declared `const` name's folded value, so
 // the scope-aware const evaluator folds references to it.
 func (s *fscope) noteConstVal(name string, cv constant.Value) {
-	if len(s.blocks) == 0 || cv == nil {
+	if cv == nil {
 		return
 	}
-	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
-		b.constVal = cv
-	}
+	s.mark(name, func(b *binding) { b.constVal = cv })
 }
 
 // noteUntypedConst marks a just-declared `const` name as untyped (no
@@ -670,4 +655,14 @@ func idxSpecIface(idx *index.Index, ts *ast.TypeSpec, depth int) bool {
 		return u.Name == "error" || u.Name == "any"
 	}
 	return false
+}
+
+// mark applies set to the binding `name` holds in the innermost block.
+func (s *fscope) mark(name string, set func(*binding)) {
+	if len(s.blocks) == 0 {
+		return
+	}
+	if b := s.blocks[len(s.blocks)-1][name]; b != nil {
+		set(b)
+	}
 }

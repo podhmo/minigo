@@ -1820,10 +1820,7 @@ func (c *compiler) elemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Ex
 // channel type, through a named type's spec. file scopes the unfold
 // like elemTypExpr's.
 func (c *compiler) chanElemTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
-	saved := c.pkgScopeTyp
-	c.pkgScopeTyp = file
-	defer func() { c.pkgScopeTyp = saved }()
-	if t, ok := c.unfoldTypExpr(te, depth).(*ast.ChanType); ok {
+	if t, ok := c.unfoldScopedTypExpr(te, file, depth).(*ast.ChanType); ok {
 		return t.Value
 	}
 	return nil
@@ -1833,10 +1830,7 @@ func (c *compiler) chanElemTypExpr(te ast.Expr, file *syntax.File, depth int) as
 // type, through a named type's spec. file scopes the unfold like
 // elemTypExpr's.
 func (c *compiler) starBaseTypExpr(te ast.Expr, file *syntax.File, depth int) ast.Expr {
-	saved := c.pkgScopeTyp
-	c.pkgScopeTyp = file
-	defer func() { c.pkgScopeTyp = saved }()
-	if t, ok := c.unfoldTypExpr(te, depth).(*ast.StarExpr); ok {
+	if t, ok := c.unfoldScopedTypExpr(te, file, depth).(*ast.StarExpr); ok {
 		return t.X
 	}
 	return nil

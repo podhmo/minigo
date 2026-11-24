@@ -1,8 +1,5 @@
 {
   "pairs": [
-    "compile/scope.go:fscope.markIface|compile/scope.go:fscope.noteConstDecl",
-    "compile/scope.go:fscope.noteConstVal|compile/typehint.go:fscope.noteDeferTyp",
-    "compile/typehint.go:compiler.chanElemTypExpr|compile/typehint.go:compiler.starBaseTypExpr",
     "internal/hostbridge/errors.go:ScriptError.As|internal/hostbridge/errors.go:ScriptError.Is",
     "internal/hostbridge/iface.go:scriptIface.Error|internal/hostbridge/iface.go:scriptIface.String",
     "internal/hostbridge/iface.go:scriptIface.ReadByte|internal/hostbridge/iface.go:scriptIface.WriteString",
@@ -10,7 +7,6 @@
     "internal/hostbridge/iface.go:scriptIface.readFrom|internal/hostbridge/iface.go:scriptIface.writeTo",
     "internal/stdlib/asmimpl.go:bigAddVV|internal/stdlib/asmimpl.go:bigSubVV",
     "internal/stdlib/io/io.go:scriptReader.Read|internal/stdlib/io/io.go:scriptReaderWriterTo.Read",
-    "minigo.go:Engine.Run|minigo.go:Engine.RunFiles",
     "minireflect/minireflect.go:Env.ptrTo|minireflect/minireflect.go:Env.sliceOf",
     "minireflect/minireflect.go:asRType|minireflect/minireflect.go:asRValue",
     "minireflect/rtype.go:RType.Fields|minireflect/rtype.go:RType.Ins",
@@ -21,14 +17,11 @@
     "minireflect/rvalue.go:RValue.Seq|minireflect/rvalue.go:RValue.Seq2",
     "minireflect/rvalue.go:RValue.SetBool|minireflect/rvalue.go:RValue.SetString",
     "minireflect/rvalue.go:RValue.SetIterKey|minireflect/rvalue.go:RValue.SetIterValue",
-    "runtime/hostptrref.go:hostNamedBasicTyp|runtime/hostptrref.go:hostStructTyp",
     "runtime/typedef.go:goFieldSpellings|runtime/typedef.go:typFieldSpellings",
-    "runtime/value.go:BoxedNilTyp|runtime/value.go:IfaceTaggedNil",
     "vm/convert.go:VM.convertChan|vm/convert.go:VM.convertMap"
   ],
   "windows": [
     "013e01cd1765b4c876c59d0149f0d6d749ae9bfd@vm/composite.go|vm/composite.go#2",
-    "019c8ffea45454cca4f7045ce90bd3b7eca38c83@minigo.go|minigo.go#2",
     "01a62f9533d299233c62dbf9172274ddd9579e6e@compile/lit.go|compile/typehint.go",
     "0235c612e0ad5e4ab41f41c8c547d8a2382de908@internal/source/parse_test.go|repl/load_test.go",
     "030d0015ecf21fe1d7ebdd400f1fefd22ce0bbba@deferred_facts_test.go|deferred_facts_test.go#2",
