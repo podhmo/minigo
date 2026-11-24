@@ -209,6 +209,9 @@ func wordOf(v runtime.Value) uint64 {
 	return 0
 }
 
+// addVV/subVV stay unmerged on purpose: a shared helper taking the
+// limb op as a parameter measured ~24% slower — the indirect call
+// defeats inlining on this hot loop (see the dedupe TODO item).
 func bigAddVV(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 	z, x, y := wordElems(args[0]), wordElems(args[1]), wordElems(args[2])
 	var c uint64
