@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"reflect"
 	"strconv"
 	"strings"
@@ -183,17 +184,7 @@ func BasicTypedef(name string) *TypeDef {
 // directly over: `type F32 float32` and float32 itself both give
 // "float32". It returns "" for other types.
 func BasicNameOf(td *TypeDef) string {
-	if td == nil {
-		return ""
-	}
-	if basicTypedefName(td.Name) {
-		return td.Name
-	}
-	x := td.TypeExpr()
-	if id, ok := x.(*ast.Ident); ok && basicTypedefName(id.Name) {
-		return id.Name
-	}
-	return ""
+	return TypedefIdentOf(td, basicTypedefName)
 }
 
 // canonBasicName folds predeclared aliases: byte is uint8 and rune is
@@ -1925,4 +1916,47 @@ func HostScalarTypedefOf(p *Package, v Value) *TypeDef {
 		}
 	}
 	return nil
+}
+
+// PackageTypeSpec finds the ast.TypeSpec declaring `name` inside the
+// package `fn` was compiled from.
+func PackageTypeSpec(fn *Function, name string) *ast.TypeSpec {
+	if fn == nil || fn.Pkg == nil {
+		return nil
+	}
+	for _, file := range fn.Pkg.Files {
+		if file == nil || file.AST == nil {
+			continue
+		}
+		for _, decl := range file.AST.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if ok && ts.Name.Name == name {
+					return ts
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// TypedefIdentOf reads the typedef's (or its underlying ident's) name
+// when `match` accepts it — the shared shape of BasicNameOf and vm's
+// sized-name lookup.
+func TypedefIdentOf(td *TypeDef, match func(string) bool) string {
+	if td == nil {
+		return ""
+	}
+	if match(td.Name) {
+		return td.Name
+	}
+	x := td.TypeExpr()
+	if id, ok := x.(*ast.Ident); ok && match(id.Name) {
+		return id.Name
+	}
+	return ""
 }
