@@ -74,7 +74,7 @@ func mapElemPtrs(rv reflect.Value) []uintptr {
 // of a top-level map arg.
 func (mb *Marshal) argBackOf(a runtime.Value, rv reflect.Value) argBack {
 	wb := argBack{arg: a, rv: rv, maps: mapElemPtrs(rv), mapSnaps: mapElemSnaps(a, rv)}
-	if sm := mapArg(a); sm != nil {
+	if sm := argAs[*runtime.Map](a); sm != nil {
 		wb.snap = sm.Clone()
 	}
 	return wb
@@ -83,7 +83,7 @@ func (mb *Marshal) argBackOf(a runtime.Value, rv reflect.Value) argBack {
 // mapElemSnaps clones each script-map element of a slice/array arg
 // (parallel to mapElemPtrs; nil for any other shape).
 func mapElemSnaps(a runtime.Value, rv reflect.Value) []*runtime.Map {
-	ss := sliceArg(a)
+	ss := argAs[*runtime.Slice](a)
 	if ss == nil {
 		return nil
 	}
@@ -160,26 +160,15 @@ func retagElem(old, nv runtime.Value) runtime.Value {
 	return runtime.Tag(on.Typ, p)
 }
 
-// mapArg resolves an argument to the script map it carries, through
-// Named tags and one level of pointer-like deref.
-func mapArg(a runtime.Value) *runtime.Map {
+// argAs resolves an argument to the script container it carries (map,
+// slice, …), through Named tags and one level of pointer-like deref.
+func argAs[T any](a runtime.Value) T {
 	u := runtime.Unwrap(a)
 	if dv, ok := runtime.Deref(u); ok {
 		u = runtime.Unwrap(dv)
 	}
-	m, _ := u.(*runtime.Map)
-	return m
-}
-
-// sliceArg resolves an argument to the script slice it carries, through
-// Named tags and one level of pointer-like deref.
-func sliceArg(a runtime.Value) *runtime.Slice {
-	u := runtime.Unwrap(a)
-	if dv, ok := runtime.Deref(u); ok {
-		u = runtime.Unwrap(dv)
-	}
-	s, _ := u.(*runtime.Slice)
-	return s
+	t, _ := u.(T)
+	return t
 }
 
 // refArg resolves an argument to the pointer-like node (Cell/FieldRef/
@@ -342,7 +331,7 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 		if wbp.IsValid() && (wbp.Kind() == reflect.Map || wbp.Kind() == reflect.Slice) && mb.projectedUsed(wbp.Pointer()) {
 			continue
 		}
-		if sm := mapArg(wb.arg); sm != nil {
+		if sm := argAs[*runtime.Map](wb.arg); sm != nil {
 			rv := wb.rv
 			if rv.Kind() == reflect.Interface {
 				rv = rv.Elem()
@@ -356,7 +345,7 @@ func (mb *Marshal) CallReflectFunc(h *CallHooks, name string, m reflect.Value, v
 				continue
 			}
 		}
-		if ss := sliceArg(wb.arg); ss != nil {
+		if ss := argAs[*runtime.Slice](wb.arg); ss != nil {
 			rv := wb.rv
 			if rv.Kind() == reflect.Interface {
 				rv = rv.Elem()
