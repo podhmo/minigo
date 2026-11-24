@@ -1058,20 +1058,21 @@ func (c *compiler) calleeExpr(fun ast.Expr) {
 // call — `func make(x int)` receiving `make(1)` must not parse `1` as
 // a type.
 func (c *compiler) isTypePositionCall(x *ast.CallExpr) bool {
-	id, ok := x.Fun.(*ast.Ident)
-	if !ok || id.Name != "make" {
-		return false
-	}
-	_, shadowed := c.resolveName(id.Name)
-	return !shadowed
+	return c.isBuiltinCall(x, "make")
 }
 
 // isNewCall reports whether the call names the new builtin — its first
 // argument is a type OR an expression since Go 1.26. A nearer `new`
 // declaration shadows it like `make`.
 func (c *compiler) isNewCall(x *ast.CallExpr) bool {
+	return c.isBuiltinCall(x, "new")
+}
+
+// isBuiltinCall reports whether the call names builtin `name` unshadowed
+// by a nearer declaration.
+func (c *compiler) isBuiltinCall(x *ast.CallExpr, name string) bool {
 	id, ok := x.Fun.(*ast.Ident)
-	if !ok || id.Name != "new" {
+	if !ok || id.Name != name {
 		return false
 	}
 	_, shadowed := c.resolveName(id.Name)

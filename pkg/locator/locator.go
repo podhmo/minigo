@@ -473,20 +473,20 @@ func getReplaceDirectivesFromBytes(content []byte) ([]ReplaceDirective, error) {
 
 // getGoRoot finds the GOROOT of the local toolchain by calling `go env GOROOT`.
 func getGoRoot() (string, error) {
-	cmd := exec.Command("go", "env", "GOROOT")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("failed to run 'go env GOROOT': %w", err)
-	}
-	return strings.TrimSpace(string(output)), nil
+	return goEnv("GOROOT")
 }
 
 // getGoModCache finds the path to the module cache directory by calling `go env GOMODCACHE`.
 func getGoModCache() (string, error) {
-	cmd := exec.Command("go", "env", "GOMODCACHE")
+	return goEnv("GOMODCACHE")
+}
+
+// goEnv runs `go env <key>` and returns the trimmed value.
+func goEnv(key string) (string, error) {
+	cmd := exec.Command("go", "env", key)
 	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to run 'go env GOMODCACHE': %w", err)
+		return "", fmt.Errorf("failed to run 'go env %s': %w", key, err)
 	}
 	return strings.TrimSpace(string(output)), nil
 }
