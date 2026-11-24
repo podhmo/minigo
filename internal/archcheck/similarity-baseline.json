@@ -1,12 +1,10 @@
 {
   "pairs": [
-    "internal/hostbridge/errors.go:ScriptError.As|internal/hostbridge/errors.go:ScriptError.Is",
     "internal/hostbridge/iface.go:scriptIface.Error|internal/hostbridge/iface.go:scriptIface.String",
     "internal/hostbridge/iface.go:scriptIface.ReadByte|internal/hostbridge/iface.go:scriptIface.WriteString",
     "internal/hostbridge/iface.go:scriptIface.Read|internal/hostbridge/iface.go:scriptIface.Write",
     "internal/hostbridge/iface.go:scriptIface.readFrom|internal/hostbridge/iface.go:scriptIface.writeTo",
     "internal/stdlib/asmimpl.go:bigAddVV|internal/stdlib/asmimpl.go:bigSubVV",
-    "internal/stdlib/io/io.go:scriptReader.Read|internal/stdlib/io/io.go:scriptReaderWriterTo.Read",
     "minireflect/minireflect.go:Env.ptrTo|minireflect/minireflect.go:Env.sliceOf",
     "minireflect/minireflect.go:asRType|minireflect/minireflect.go:asRValue",
     "minireflect/rtype.go:RType.Fields|minireflect/rtype.go:RType.Ins",

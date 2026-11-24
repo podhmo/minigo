@@ -388,21 +388,6 @@ func (s *scriptReader) Read(p []byte) (int, error) {
 	return n, err2
 }
 
-func (s *scriptReaderWriterTo) Read(p []byte) (int, error) {
-	m, ok := s.v.Member(s.recv, "Read")
-	if !ok || m == nil || m == runtime.NIL {
-		return 0, fmt.Errorf("runtime error: invalid memory address or nil pointer dereference")
-	}
-	pv := stdlib.ScriptVal(p)
-	r, err := s.v.Call(m, []runtime.Value{pv})
-	if err != nil {
-		panic(err)
-	}
-	n, err2 := readResult(s.v, r)
-	copyBackBytes(p, pv, n)
-	return n, err2
-}
-
 func (s *scriptReaderWriterTo) WriteTo(w io.Writer) (int64, error) {
 	m, ok := s.v.Member(s.recv, "WriteTo")
 	if !ok || m == nil || m == runtime.NIL {
