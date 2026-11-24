@@ -467,22 +467,23 @@ func plain(format string, args ...any) {
 // asRValue unwraps a script argument to its facade value: a GoValue
 // boxing an *RValue returns the facade object itself.
 func asRValue(v runtime.Value) *RValue {
-	if gv, ok := runtime.Unwrap(v).(*runtime.GoValue); ok {
-		if rv, ok := gv.V.(*RValue); ok {
-			return rv
-		}
-	}
-	return nil
+	return asGo[*RValue](v)
 }
 
 // asRType unwraps a script argument to its facade type.
 func asRType(v runtime.Value) *RType {
+	return asGo[*RType](v)
+}
+
+// asGo unwraps a script argument's GoValue payload to facade type T.
+func asGo[T any](v runtime.Value) T {
+	var zero T
 	if gv, ok := runtime.Unwrap(v).(*runtime.GoValue); ok {
-		if rt, ok := gv.V.(*RType); ok {
-			return rt
+		if t, ok := gv.V.(T); ok {
+			return t
 		}
 	}
-	return nil
+	return zero
 }
 
 // ---- package-level reflect functions ----
@@ -648,33 +649,37 @@ func (e *Env) zeroOf(vc runtime.Zeroer, td *runtime.TypeDef) runtime.Value {
 }
 
 func (e *Env) ptrTo(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-	if len(args) != 1 {
-		return nil, fmt.Errorf("reflect.PtrTo needs 1 arg, got %d", len(args))
-	}
-	t := asRType(args[0])
-	if t == nil {
-		return nil, fmt.Errorf("reflect.PtrTo: arg is %T, not a reflect.Type", args[0])
-	}
-	if t.rt != nil {
-		return &runtime.GoValue{V: e.hostTypeOf(reflect.PointerTo(t.rt))}, nil
-	}
-	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindPointer, Elem: t.td,
-		Anon: &ast.StarExpr{X: e.exprOf(t.td)}})}, nil
+	return e.typeCtorOf("reflect.PtrTo", args, reflect.PointerTo,
+		runtime.KindPointer, &ast.StarExpr{})
 }
 
 func (e *Env) sliceOf(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return e.typeCtorOf("reflect.SliceOf", args, reflect.SliceOf,
+		runtime.KindSlice, &ast.ArrayType{})
+}
+
+// typeCtorOf shares PtrTo/SliceOf: one RType arg, host reflect ctor
+// when the type is host-backed, else a script typedef with `anon` as
+// its spelling (its wrapper field filled below).
+func (e *Env) typeCtorOf(name string, args []runtime.Value, host func(reflect.Type) reflect.Type,
+	kind runtime.TypeKind, anon ast.Expr) (runtime.Value, error) {
 	if len(args) != 1 {
-		return nil, fmt.Errorf("reflect.SliceOf needs 1 arg, got %d", len(args))
+		return nil, fmt.Errorf("%s needs 1 arg, got %d", name, len(args))
 	}
 	t := asRType(args[0])
 	if t == nil {
-		return nil, fmt.Errorf("reflect.SliceOf: arg is %T, not a reflect.Type", args[0])
+		return nil, fmt.Errorf("%s: arg is %T, not a reflect.Type", name, args[0])
 	}
 	if t.rt != nil {
-		return &runtime.GoValue{V: e.hostTypeOf(reflect.SliceOf(t.rt))}, nil
+		return &runtime.GoValue{V: e.hostTypeOf(host(t.rt))}, nil
 	}
-	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: runtime.KindSlice, Elem: t.td,
-		Anon: &ast.ArrayType{Elt: e.exprOf(t.td)}})}, nil
+	switch a := anon.(type) {
+	case *ast.StarExpr:
+		a.X = e.exprOf(t.td)
+	case *ast.ArrayType:
+		a.Elt = e.exprOf(t.td)
+	}
+	return &runtime.GoValue{V: e.rtypeOf(&runtime.TypeDef{Kind: kind, Elem: t.td, Anon: anon})}, nil
 }
 
 func (e *Env) mapOf(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {

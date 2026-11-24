@@ -2,8 +2,6 @@
   "pairs": [
     "internal/hostbridge/iface.go:scriptIface.ReadByte|internal/hostbridge/iface.go:scriptIface.WriteString",
     "internal/stdlib/asmimpl.go:bigAddVV|internal/stdlib/asmimpl.go:bigSubVV",
-    "minireflect/minireflect.go:Env.ptrTo|minireflect/minireflect.go:Env.sliceOf",
-    "minireflect/minireflect.go:asRType|minireflect/minireflect.go:asRValue",
     "minireflect/rtype.go:RType.Fields|minireflect/rtype.go:RType.Ins",
     "minireflect/rtype.go:RType.Fields|minireflect/rtype.go:RType.Outs",
     "minireflect/rtype.go:RType.Ins|minireflect/rtype.go:RType.Outs",
@@ -12,7 +10,6 @@
     "minireflect/rvalue.go:RValue.Seq|minireflect/rvalue.go:RValue.Seq2",
     "minireflect/rvalue.go:RValue.SetBool|minireflect/rvalue.go:RValue.SetString",
     "minireflect/rvalue.go:RValue.SetIterKey|minireflect/rvalue.go:RValue.SetIterValue",
-    "runtime/typedef.go:goFieldSpellings|runtime/typedef.go:typFieldSpellings",
     "vm/convert.go:VM.convertChan|vm/convert.go:VM.convertMap"
   ],
   "windows": [
