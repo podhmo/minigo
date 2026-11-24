@@ -415,7 +415,7 @@ func typSpelling(e ast.Expr, ctx *TypeDef, under bool) string {
 					sb.WriteString(n.Name)
 				}
 				if len(f.Names) == 0 {
-					sb.WriteString(anonFieldName(f.Type))
+					sb.WriteString(AnonFieldName(f.Type))
 				}
 				sb.WriteString(" ")
 				sb.WriteString(typSpelling(f.Type, ctx, under))
@@ -463,30 +463,11 @@ func typLocalSpelling(td *TypeDef, under bool) string {
 	return name
 }
 
-// anonFieldName derives the field name of an embedded struct field —
-// the unqualified type name, ignoring pointers, packages and type
-// args. compile.embedFieldName wraps this for the compiler.
-func anonFieldName(x ast.Expr) string {
-	switch t := x.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return anonFieldName(t.X)
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return anonFieldName(t.X)
-	case *ast.IndexListExpr:
-		return anonFieldName(t.X)
-	}
-	return ""
-}
-
 // AnonFieldName returns the field name of an embedded field of type x:
 // the unqualified type name, ignoring pointers, packages and type
 // arguments.
 func AnonFieldName(x ast.Expr) string {
-	return anonFieldName(x)
+	return syntax.AnonFieldName(x)
 }
 
 // structTagKey normalizes a field tag literal for identity spellings:

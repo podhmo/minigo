@@ -180,3 +180,22 @@ func FieldCount(fl *ast.FieldList) int {
 	}
 	return n
 }
+
+// AnonFieldName returns the field name of an embedded field of type x:
+// the unqualified type name, ignoring pointers, packages and type
+// arguments.
+func AnonFieldName(x ast.Expr) string {
+	switch t := x.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.StarExpr:
+		return AnonFieldName(t.X)
+	case *ast.SelectorExpr:
+		return t.Sel.Name
+	case *ast.IndexExpr:
+		return AnonFieldName(t.X)
+	case *ast.IndexListExpr:
+		return AnonFieldName(t.X)
+	}
+	return ""
+}

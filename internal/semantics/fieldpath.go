@@ -5,6 +5,7 @@ import (
 	"go/ast"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // FieldPath records where a selector's field name lands inside a
@@ -61,7 +62,7 @@ func (s *Service) FieldPathOf(t TypeRef, name string, p Policy) Result[FieldPath
 				if len(f.Names) == 0 {
 					// an embedded field is itself a member under its
 					// unqualified type name, and opens its subtree.
-					if an := anonFieldName(f.Type); an == name {
+					if an := syntax.AnonFieldName(f.Type); an == name {
 						hits = append(hits, FieldPath{
 							Index:    appendIdx(q.path, idx),
 							PkgPath:  q.ref.Ctx.Pkg,
@@ -293,25 +294,6 @@ func packageNameOf(ix *index.Index) string {
 		if d.File != nil && d.File.AST != nil && d.File.AST.Name != nil {
 			return d.File.AST.Name.Name
 		}
-	}
-	return ""
-}
-
-// anonFieldName derives the field name of an embedded struct field —
-// the unqualified type name, ignoring pointers, packages and type
-// arguments.
-func anonFieldName(x ast.Expr) string {
-	switch t := x.(type) {
-	case *ast.Ident:
-		return t.Name
-	case *ast.StarExpr:
-		return anonFieldName(t.X)
-	case *ast.SelectorExpr:
-		return t.Sel.Name
-	case *ast.IndexExpr:
-		return anonFieldName(t.X)
-	case *ast.IndexListExpr:
-		return anonFieldName(t.X)
 	}
 	return ""
 }
