@@ -7,9 +7,7 @@
     "minireflect/rtype.go:RType.Ins|minireflect/rtype.go:RType.Outs",
     "minireflect/rtype.go:RType.In|minireflect/rtype.go:RType.Out",
     "minireflect/rtype.go:RType.NumIn|minireflect/rtype.go:RType.NumOut",
-    "minireflect/rvalue.go:RValue.Seq|minireflect/rvalue.go:RValue.Seq2",
     "minireflect/rvalue.go:RValue.SetBool|minireflect/rvalue.go:RValue.SetString",
-    "minireflect/rvalue.go:RValue.SetIterKey|minireflect/rvalue.go:RValue.SetIterValue",
     "vm/convert.go:VM.convertChan|vm/convert.go:VM.convertMap"
   ],
   "windows": [
