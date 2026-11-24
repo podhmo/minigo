@@ -8,7 +8,6 @@
     "inspect/inspect.go:recvTypeParamNames|inspect/inspect.go:typeParamNames",
     "internal/hostbridge/callhost.go:mapArg|internal/hostbridge/callhost.go:sliceArg",
     "internal/hostbridge/errors.go:ScriptError.As|internal/hostbridge/errors.go:ScriptError.Is",
-    "internal/hostbridge/errors.go:errValOf|internal/stdlib/bind.go:ErrVal",
     "internal/hostbridge/iface.go:scriptIface.Error|internal/hostbridge/iface.go:scriptIface.String",
     "internal/hostbridge/iface.go:scriptIface.ReadByte|internal/hostbridge/iface.go:scriptIface.WriteString",
     "internal/hostbridge/iface.go:scriptIface.Read|internal/hostbridge/iface.go:scriptIface.Write",

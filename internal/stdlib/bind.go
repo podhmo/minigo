@@ -280,15 +280,7 @@ func HostType(name string, new func() any) *runtime.TypeDef {
 }
 
 func ErrVal(err error) runtime.Value {
-	if err == nil {
-		return runtime.NIL
-	}
-	if sb, ok := err.(runtime.ScriptBoxed); ok {
-		// a script error that went through host code (a %w cause, a
-		// cancel cause, a callback's result) reads back as itself.
-		return sb.ScriptValue()
-	}
-	return &runtime.GoValue{V: err} // boxed: method calls (Error(), Unwrap()) dispatch via reflection
+	return hostbridge.ErrValOf(err)
 }
 
 // NamedSized boxes a host-sized int with its declared typedef so %T

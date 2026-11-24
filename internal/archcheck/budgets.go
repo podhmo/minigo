@@ -247,7 +247,7 @@ var FileBudgets = map[string]int{
 	"vm/special.go":                                  288,
 	"vm/trace.go":                                    216,
 	"vm/vm.go":                                       1030,
-	"internal/stdlib/bind.go":                        543,
+	"internal/stdlib/bind.go":                        535,
 	"internal/stdlib/num.go":                         147,
 	"internal/stdlib/bytealg/bytealg.go":             92,
 	"internal/stdlib/godebug/godebug.go":             63,
