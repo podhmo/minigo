@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"go/ast"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -1896,4 +1897,32 @@ func AnonPtrTypedefOf(et *TypeDef) *TypeDef {
 		Pkg:  et.Pkg,
 		File: et.File,
 	}
+}
+
+// HostScalarTypedefOf finds the package typedef whose HostScalar Go
+// type a raw bound value carries — bound packages store typedefs as
+// globals while consts bind bare host values, so the declared-type tag
+// comes from matching the host type back to the typedef table.
+func HostScalarTypedefOf(p *Package, v Value) *TypeDef {
+	if gv, ok := v.(*GoValue); ok {
+		v = gv.V
+	}
+	rt := reflect.TypeOf(v)
+	if rt == nil {
+		return nil
+	}
+	for _, name := range p.Globals.Names() {
+		m, ok := p.Globals.Get(name)
+		if !ok {
+			continue
+		}
+		td, ok := m.(*TypeDef)
+		if !ok || td.HostScalar == nil {
+			continue
+		}
+		if reflect.TypeOf(td.HostScalar) == rt {
+			return td
+		}
+	}
+	return nil
 }
