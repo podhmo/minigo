@@ -11,15 +11,16 @@ import (
 )
 
 // pkgState reports a built package's loading stage for per-path
-// verification; ok=false means the run never built it.
-func pkgState(e *Engine, path string) (runtime.State, bool) {
+// verification; every path queried here is expected to have been built.
+func pkgState(t *testing.T, e *Engine, path string) runtime.State {
+	t.Helper()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p, ok := e.pkgs[path]
 	if !ok {
-		return 0, false
+		t.Fatalf("package %s was not built", path)
 	}
-	return p.State(), true
+	return p.State()
 }
 
 // TestLazyInitPin pins the per-path laziness (M0-4 / M4-8):
@@ -106,8 +107,7 @@ func TestLazyInitPin(t *testing.T) {
 		}
 		states := map[string]runtime.State{}
 		for _, path := range []string{depa, depb, depc} {
-			st, _ := pkgState(e, path)
-			states[path] = st
+			states[path] = pkgState(t, e, path)
 		}
 		want := map[string]runtime.State{
 			depa: runtime.Ready,
@@ -124,10 +124,10 @@ func TestLazyInitPin(t *testing.T) {
 		if _, err := e.Run(ctx, "./testdata/lazypin/main", "BranchNotTaken", false); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		if st, _ := pkgState(e, depc); st != runtime.Indexed {
+		if st := pkgState(t, e, depc); st != runtime.Indexed {
 			t.Errorf("depc state = %v, want Indexed (indexed but never initialized)", st)
 		}
-		if st, _ := pkgState(e, depa); st != runtime.Ready {
+		if st := pkgState(t, e, depa); st != runtime.Ready {
 			t.Errorf("depa state = %v, want Ready", st)
 		}
 	})
@@ -144,7 +144,7 @@ func TestLazyInitPin(t *testing.T) {
 			if _, err := e.Run(ctx, "./testdata/lazypin/main", "TypeQueryOnly"); err != nil {
 				t.Fatalf("%s TypeQueryOnly: %v", name, err)
 			}
-			if st, _ := pkgState(e, depb); st != runtime.Indexed {
+			if st := pkgState(t, e, depb); st != runtime.Indexed {
 				t.Errorf("%s: depb state = %v, want Indexed", name, st)
 			}
 		}
@@ -163,7 +163,7 @@ func TestLazyInitPin(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "BOOM") {
 				t.Fatalf("%s MethodTouch: expected init BOOM panic, got %v", name, err)
 			}
-			if st, _ := pkgState(e, depb); st != runtime.Failed {
+			if st := pkgState(t, e, depb); st != runtime.Failed {
 				t.Errorf("%s: depb state = %v, want Failed", name, st)
 			}
 		}
@@ -180,7 +180,7 @@ func TestLazyInitPin(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "BOOM") {
 				t.Fatalf("%s ValueMemberTouch: expected init BOOM panic, got %v", name, err)
 			}
-			if st, _ := pkgState(e, depb); st != runtime.Failed {
+			if st := pkgState(t, e, depb); st != runtime.Failed {
 				t.Errorf("%s: depb state = %v, want Failed", name, st)
 			}
 		}
