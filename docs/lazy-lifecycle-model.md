@@ -15,16 +15,21 @@ The machinery lives in three entangled state machines:
 ## 1. Package lifecycle
 
 `runtime.State` declares five stages: `Parsed`, `Indexed`,
-`Initializing`, `Ready`, `Failed`. A `Package` is born at `Parsed`
-(`Engine.newPackage` calls `SetState(Parsed)` before publishing it). The
-lifecycle is:
+`Initializing`, `Ready`, `Failed`. `Parsed` is the zero value, so a
+`Package` is born at `Parsed` when `Engine.newPackage` publishes the
+shell. `runtime.Package` owns every mutation through one private transition
+method backed by the verified table; loaders call narrow operations such
+as `CompleteIndexing`, `FailLoad`, and `MarkHostReady`. The lifecycle is:
 
 ```
-                 (parse error)  (index error)
-                     ↘             ↘
+                  (parse/index error)
+                         ↓
 Parsed → Indexed → Initializing → Ready
-                     ↘
-                      Failed
+  │                    ↑     ↘
+  │                    │      Failed (init-time; absorbing)
+  │                    │
+  │                    └────── Failed (load-time; initOnce unconsumed)
+  └─→ Ready (host-bound package)
 ```
 
 Explicit transitions and their triggers:
@@ -35,30 +40,31 @@ Explicit transitions and their triggers:
 | Parsed | Failed | file parse error | `minigo.go` `loadPathFrom` |
 | Parsed | Failed | index error (redeclaration, lang gate, cgo) | `minigo.go` `indexFiles` |
 | Parsed | Indexed | index built; import scopes wired; `Bootstrap`/`ConstBootstrap` hooks attached | `minigo.go` `indexFiles` |
-| Indexed | Initializing | first `EnsureReadyRun` that wins `initOnce` | `runtime/package.go` |
-| Initializing | Ready | `Bootstrap` returns nil | `runtime/package.go` |
-| Initializing | Failed | `Bootstrap` returns error or panics | `execution.Init` fail callback |
+| Parsed | Ready | host-bound package publication | `runtime/package_lifecycle.go` `MarkHostReady` |
+| Indexed | Initializing | first `EnsureReadyRun` that wins `initOnce` | `runtime/package_lifecycle.go` |
+| Initializing | Ready | `Bootstrap` returns nil | `runtime/package_lifecycle.go` |
+| Initializing | Failed | `Bootstrap` returns error or panics | `execution.Init` fail callback through `runtime/package_lifecycle.go` |
 | Ready | — | terminal for initialization | |
-| Failed | — | see the terminality caveat below | |
+| Failed | Initializing | load-time failure only: `initStarted` is still false | `runtime/package_lifecycle.go` |
 
-**Terminality caveat** — `Failed` is absorbing only for *init-time*
+**Terminality is explicit.** `Failed` is absorbing for *init-time*
 failures, where `initOnce` has been consumed and later `MemberV` calls
 re-return the cached error. A package that failed during *loading*
-(parse/index errors) never ran `initOnce`, so a member access would
-enter `EnsureReadyRun` for real — in practice such a package has no
-usable index, but the state machine itself does not forbid the
-transition. `Failed` is really two states sharing one name.
+(parse/index errors) never consumed `initOnce`; the transition table
+therefore allows `Failed → Initializing` only while `initStarted` is
+false. This keeps the two failure meanings separate without widening the
+public state enum.
 
-Implicit rules not visible in the enum:
+The table also makes the remaining enum rules enforceable:
 
 - **Monotonicity** — except for the jump to `Failed`, the stage never
-  regresses. Nothing enforces this; it holds only because no code path
-  stores an earlier stage. `SetState` is public and unconditional.
-- **`Failed` is absorbing, yet `EnsureReadyRun` still runs its body** —
-  the `initOnce` is already consumed, so `Run` returns the cached error
-  without re-executing. The `MemberV` fast path on `Failed` therefore
-  never re-enters bootstrap; the extra `EnsureReadyRun` call exists only
-  to surface the cached error.
+  regresses. the private transition method panics rather than storing an earlier stage.
+- **Init-time `Failed` cannot restart** — once `initStarted` is true,
+  `Failed → Initializing` is rejected. The `initOnce` is already
+  consumed, so `Run` returns the cached error without re-executing. The
+  `MemberV` fast path on `Failed` therefore never re-enters bootstrap;
+  the extra `EnsureReadyRun` call exists only to surface the cached
+  error.
 - **The indexed gate is a shadow state** — `IndexGate` (marked /
   finished) is orthogonal to `state`. A package can be `Parsed` with
   the gate open (readers block) or `Failed` with the gate closed. The
@@ -140,7 +146,8 @@ then reads the completed state as before.
 - **INV1 monotonicity**: along the order Indexed < Initializing < Ready,
   the stage never decreases; `Failed` only reached from Initializing or
   the load phase.
-- **INV2 terminality**: `Ready` and `Failed` are absorbing.
+- **INV2 terminality**: `Ready` and init-time `Failed` are absorbing;
+  load-time `Failed` may initialize because `initOnce` is unconsumed.
 - **INV3 at-most-once init**: `Bootstrap` executes at most once per
   package, however many accessors race.
 - **INV4 serve-safety**: an in-VM member access returns a value only
@@ -162,10 +169,11 @@ then reads the completed state as before.
 
 ## What this suggests for the production code
 
-The enum exists but the transitions are scattered across `minigo.go`,
-`runtime/package.go` and `execution.Init`, and two of the state machines
-(const-only init, indexed gate) live outside the enum entirely. A
-follow-up refactor could centralize transitions in one function
-(`p.advance(to)` with a legality table) and make the const-bound flag an
-explicit field. That rewrite is deliberately *not* part of this change —
-the Quint model first pins the behavior the refactor must preserve.
+The enum transitions now converge in one private
+`runtime.Package.advanceState`, whose legality table transcribes the Quint
+model. Loader code uses narrow transition operations and cannot install
+an arbitrary state; the conditional `Failed → Initializing` edge is
+checked against `initStarted`. Two state
+machines still live outside the enum: const-only initialization
+(`constOnce`/`ConstBootstrap`) and the indexed gate. Making const-bound
+explicit remains follow-up work.

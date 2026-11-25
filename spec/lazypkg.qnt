@@ -42,7 +42,7 @@ module lazypkg {
     else 5 // FAILED
 
   // ---- the fixed world ---------------------------------------------
-  pure val pkgs = Set("main", "lib", "plain")
+  pure val pkgs = Set("main", "lib", "plain", "host")
 
   // import edges; lib imports main back, forming a cycle
   pure def deps(p) =
@@ -127,10 +127,30 @@ module lazypkg {
         highWater' = bump(highWater, p, 2),
       },
       all {
+        // load-time failure is not absorbing: initOnce is unconsumed,
+        // so a later member touch may still begin initialization. The
+        // high-water mark therefore does not record terminal failure.
         stage' = stage.set(p, FAILED),
-        highWater' = bump(highWater, p, 5),
+        highWater' = highWater,
       },
     },
+    initStarted' = initStarted,
+    bootstraps' = bootstraps,
+    constsBound' = constsBound,
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
+    stack' = stack,
+    partialServes' = partialServes,
+    depsTouched' = depsTouched,
+  }
+
+  // A host-bound package has no source index or initializer: publishing
+  // its table completes the lifecycle immediately.
+  action publishHost(p) = all {
+    p == "host",
+    stage.get(p) == PARSED,
+    stage' = stage.set(p, READY),
+    highWater' = bump(highWater, p, 4),
     initStarted' = initStarted,
     bootstraps' = bootstraps,
     constsBound' = constsBound,
@@ -146,7 +166,8 @@ module lazypkg {
   // an explicit EnsureReady) consumes initOnce and pushes the frame.
   // Corresponds to EnsureReadyRun winning the once.
   action beginInit(p) = all {
-    stage.get(p) == INDEXED,
+    stage.get(p) == INDEXED or
+      (stage.get(p) == FAILED and not(initStarted.get(p))),
     not(initStarted.get(p)),
     // a single logical goroutine runs one cascade at a time: an
     // external trigger cannot arrive mid-cascade (the goroutine is
@@ -341,6 +362,7 @@ module lazypkg {
 
   // ---- step ----------------------------------------------------------
   action step = any {
+    publishHost("host"),
     finishIndexing("main"),
     finishIndexing("lib"),
     finishIndexing("plain"),
@@ -392,9 +414,10 @@ module lazypkg {
     pkgs.forall(p => stageOrd(stage.get(p)) >= highWater.get(p) or
                      stageOrd(stage.get(p)) == highWater.get(p))
 
-  // INV2: ready and failed are absorbing — encoded structurally (no
-  // action fires out of them), cross-checked by monotonic + the fact
-  // that only completeInit writes them.
+  // INV2: ready and init-time failed are absorbing — structurally, no
+  // action fires out of READY, and beginInit leaves FAILED only while
+  // initStarted is false (the load-time failure case). completeInit's
+  // failure bump makes init-time failure terminal.
 
   // INV-W (witness, not an invariant): cyclic initialization does
   // occur — `quint run --invariant=noPartialServeYet` reporting a
@@ -406,6 +429,10 @@ module lazypkg {
   // cyclic read is reachable too — a violation trace of noUnboundCycleYet
   // exhibits the loud-trap path that replaced the sync.Once self-deadlock.
   val noUnboundCycleYet = unboundCycleTraps == 0
+
+  // INV-W3 (witness, not an invariant): the direct host-package edge is
+  // reachable — a violation trace publishes host straight to READY.
+  val noHostReadyYet = stage.get("host") != READY
 
   // everything at once, for a single --invariant run
   val allInvariants =

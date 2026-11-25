@@ -13,21 +13,7 @@ import (
 	"github.com/podhmo/minigo/bytecode"
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/execution"
-	"github.com/podhmo/minigo/internal/spike"
 	"github.com/podhmo/minigo/syntax"
-)
-
-// State is a [Package]'s stage in loading, reported by [Package.State].
-// A package moves forward through the stages in order; [Failed] means
-// its initialization failed.
-type State int
-
-const (
-	Parsed State = iota
-	Indexed
-	Initializing
-	Ready
-	Failed
 )
 
 // Env maps names to values: a package's globals ([Package.Globals]) or
@@ -274,8 +260,9 @@ type PackageInstance struct {
 	// — including panics, which re-panic after being recorded so the
 	// once does not leave the package stuck Initializing. initOwner is
 	// the goroutine running that once, for cycle re-entry detection.
-	initOnce  execution.Init
-	initOwner atomic.Int64
+	initOnce    execution.Init
+	initOwner   atomic.Int64
+	initStarted atomic.Bool
 	// Bootstrap builds and runs the package initializer (var/const decls +
 	// init() funcs). Injected by the engine; called exactly once. The run
 	// argument executes the __init__ function — supplied by the triggering
@@ -321,13 +308,6 @@ type PackageInstance struct {
 	specM     map[SpecKey]*TypeDef // specialized generic typedefs (Specialized)
 	specCount map[*ast.TypeSpec]int
 }
-
-// State reports the package's loading stage.
-func (p *Package) State() State { return State(p.state.Load()) }
-
-// SetState records the package's loading stage. It is for loaders;
-// [Package.EnsureReady] advances the stage itself.
-func (p *Package) SetState(s State) { p.state.Store(int32(s)) }
 
 // MarkIndexed declares that the package is still being indexed: until
 // [Package.FinishIndexing], member lookups from other goroutines wait.
@@ -378,51 +358,6 @@ func (p *Package) MatCache(d *index.Decl, build func(*Package, *index.Decl) (Val
 	return v, nil
 }
 
-// EnsureReady initializes the package — its var declarations and init
-// functions — if it is not [Ready] yet, and returns the initialization
-// error. Initialization runs at most once; a failure leaves the package
-// [Failed] and is returned again by later calls. It runs on a fresh
-// interpreter through RunInit; see [Package.EnsureReadyRun].
-func (p *Package) EnsureReady() error {
-	return p.EnsureReadyRun(nil)
-}
-
-// EnsureReadyRun is [Package.EnsureReady] with an explicit runner: run
-// executes the package initializer, so code already running on an
-// interpreter initializes the package on that same interpreter. A nil run
-// falls back to RunInit.
-func (p *Package) EnsureReadyRun(run func(*Function) error) error {
-	return p.initOnce.Run(func() error {
-		if p.State() == Ready {
-			return nil
-		}
-		p.initOwner.Store(execution.GoroutineID())
-		p.SetState(Initializing)
-		spike.NoteInitDuringCompile()
-		if err := p.runBootstrap(run); err != nil {
-			return err
-		}
-		p.SetState(Ready)
-		return nil
-	}, func(error) { p.SetState(Failed) })
-}
-
-// runBootstrap invokes p.Bootstrap with the init runner; [Init.Run]
-// around it records panics and marks the package Failed before
-// re-panicking.
-func (p *Package) runBootstrap(run func(*Function) error) (err error) {
-	if p.Bootstrap == nil {
-		return nil
-	}
-	if run == nil {
-		run = p.RunInit
-	}
-	if run == nil {
-		return fmt.Errorf("package %s: no init runner", p.Name)
-	}
-	return p.Bootstrap(p, run)
-}
-
 // Member returns the package member name, initializing the package
 // first when the member needs it. Declared functions and types are built
 // by materialize, which the engine provides. It reports an error when the
@@ -430,27 +365,6 @@ func (p *Package) runBootstrap(run func(*Function) error) (err error) {
 // interpreter uses [Package.MemberV] instead.
 func (p *Package) Member(name string, materialize func(*Package, *index.Decl) (Value, error)) (Value, error) {
 	return p.MemberV(name, materialize, nil)
-}
-
-// EnsureConstsRun binds the package's constants through ConstBootstrap,
-// without running var initializers or init functions. It runs at most
-// once and does nothing for a package already [Ready]. An error (also
-// from a panic) only means the constants are not bound; the caller can
-// fall back to [Package.EnsureReadyRun].
-func (p *Package) EnsureConstsRun(run func(*Function) error) error {
-	return p.constOnce.Try(func() error {
-		if p.State() == Ready || p.ConstBootstrap == nil {
-			return nil
-		}
-		if run == nil {
-			run = p.RunInit
-		}
-		if run == nil {
-			return fmt.Errorf("package %s: no init runner", p.Name)
-		}
-		spike.NoteInitDuringCompile()
-		return p.ConstBootstrap(p, run)
-	})
 }
 
 // MemberV is [Package.Member] with an explicit init runner (see
