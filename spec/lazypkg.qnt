@@ -61,8 +61,8 @@ module lazypkg {
   // the one abstract member cell whose cyclic read the model tracks:
   // bound cells serve partial state; an unbound cell traps the reader
   var memberBound: str -> bool
-  // counts cyclic reads of a not-yet-bound member — the loud-trap fix
-  // for the sync.Once re-entry deadlock
+  // counts cross-package cyclic reads of a not-yet-bound member — the
+  // loud-trap fix for the sync.Once re-entry deadlock
   var unboundCycleTraps: int
   // explicit cascade frames, innermost frame first
   var stack: List[str]
@@ -223,7 +223,7 @@ module lazypkg {
       all {
         inStack(stack, q),
         not(memberBound.get(q)),
-        unboundCycleTraps' = unboundCycleTraps + 1,
+        unboundCycleTraps' = if (q == p) unboundCycleTraps else unboundCycleTraps + 1,
         partialServes' = partialServes,
         memberBound' = memberBound,
         stage' = stage.set(p, FAILED),
@@ -402,9 +402,9 @@ module lazypkg {
   // behavior.
   val noPartialServeYet = partialServes == 0
 
-  // INV-W2 (witness, not an invariant): the unbound-member cyclic read
-  // is reachable too — a violation trace of noUnboundCycleYet exhibits
-  // the loud-trap path that replaced the sync.Once self-deadlock.
+  // INV-W2 (witness, not an invariant): a cross-package unbound-member
+  // cyclic read is reachable too — a violation trace of noUnboundCycleYet
+  // exhibits the loud-trap path that replaced the sync.Once self-deadlock.
   val noUnboundCycleYet = unboundCycleTraps == 0
 
   // everything at once, for a single --invariant run
