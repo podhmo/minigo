@@ -18,8 +18,6 @@
 //     (a cycle), plain -> {}. `plain` exercises the acyclic path.
 //   - the const-only fast path is modeled as a separate once that can
 //     bind constants without full initialization, for host-side access.
-//   - the Unseen/Located stages are omitted: nothing in the codebase
-//     ever uses them (packages are born Parsed).
 //
 // Frames are pushed at the FRONT of the stack list: head() is the
 // innermost initializing package, tail() pops it.

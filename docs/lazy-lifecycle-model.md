@@ -14,12 +14,10 @@ The machinery lives in three entangled state machines:
 
 ## 1. Package lifecycle
 
-`runtime.State` declares seven stages: `Unseen`, `Located`, `Parsed`,
-`Indexed`, `Initializing`, `Ready`, `Failed`. In practice the first two
-never occur: a `Package` is born at `Parsed` (`Engine.newPackage` calls
-`SetState(Parsed)` before publishing it), and nothing in the codebase
-ever sets `Unseen` or `Located` — only `internal/stdlib/inspect` even
-reads them. The effective lifecycle is:
+`runtime.State` declares five stages: `Parsed`, `Indexed`,
+`Initializing`, `Ready`, `Failed`. A `Package` is born at `Parsed`
+(`Engine.newPackage` calls `SetState(Parsed)` before publishing it). The
+lifecycle is:
 
 ```
                  (parse error)  (index error)
