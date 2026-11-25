@@ -62,7 +62,8 @@ module lazypkg {
   var constsBound: str -> bool
   // explicit cascade frames, innermost frame first
   var stack: List[str]
-  // counts in-cycle partial serves (a witness of the cyclic behavior)
+  // counts partial serves of any mid-init package — cyclic reentry
+  // or a callback reading the very package being initialized
   var partialServes: int
   // dependencies actually touched by each package's init so far —
   // completion and failure propagation wait only for these, not for
@@ -287,10 +288,18 @@ module lazypkg {
     beginInit("main"),
     beginInit("lib"),
     beginInit("plain"),
+    // all pairs: the stackDeps union makes any package touchable from
+    // any frame mid-cascade, including the frame's own package (a
+    // callback reading the very package whose init is in progress)
+    touchDep("main", "main"),
     touchDep("main", "lib"),
     touchDep("main", "plain"),
     touchDep("lib", "main"),
+    touchDep("lib", "lib"),
     touchDep("lib", "plain"),
+    touchDep("plain", "main"),
+    touchDep("plain", "lib"),
+    touchDep("plain", "plain"),
     completeInit("main"),
     completeInit("lib"),
     completeInit("plain"),
