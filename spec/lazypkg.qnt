@@ -169,12 +169,13 @@ module lazypkg {
     q.in(stackDeps(stack)),
     depsTouched' = depsTouched.set(p, depsTouched.get(p).union(Set(q))),
     any {
-      // cycle: serve partial, count the witness — with beginInit
-      // single-cascade, q in the stack IS a genuine ancestor frame, so
-      // this branch is reached only through cascade reentry
+      // cycle: serve partial — with beginInit single-cascade, q in
+      // the stack IS a genuine ancestor frame. The witness counts only
+      // cross-package reentry (q != p): a self-read is the same partial
+      // semantics but proves nothing about cyclic initialization
       all {
         inStack(stack, q),
-        partialServes' = partialServes + 1,
+        partialServes' = if (q == p) partialServes else partialServes + 1,
         stage' = stage,
         highWater' = highWater,
         initStarted' = initStarted,
