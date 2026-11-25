@@ -124,15 +124,16 @@ minigo's lazy loader exhibits because it tolerates cyclic imports at
 all. The invariant above is therefore a requirement on minigo, not a
 compatibility property.
 
-**The invariant is violated today for not-yet-bound members.** The
-partial-serve fast path only applies when the member cell already
-exists in `Globals` (runtime/package.go:468-489). A cyclic read of a
-var whose cell is not yet bound — `var Y = b.ReadY()` with `ReadY`
-reading back `a.Y` — falls through to `EnsureReadyRun`
-(runtime/package.go:529), which re-enters the `sync.Once` inside
-`execution.Init` on the same goroutine and **deadlocks** (confirmed by
-experiment: the process hangs in `sync.Once.doSlow`, reached through
-`MemberV` → `EnsureReadyRun` → `Once.Do`). Tracked in TODO.md.
+**Not-yet-bound members fail loudly instead of re-entering the once.**
+The partial-serve fast path only applies when the member cell already
+exists in `Globals`. A cyclic read of a var whose cell is not yet bound —
+`var Y = b.ReadY()` with `ReadY` reading back `a.Y` — cannot serve even
+a partial value. `MemberV` detects that the package's `initOnce` is
+already running on the calling goroutine and returns
+`initialization cycle: a.Y is not bound yet`; the active initializer
+fails and the error propagates through the cascade as an ordinary
+dependency failure. A different goroutine still blocks on the once and
+then reads the completed state as before.
 
 ## Invariants extracted for verification
 
@@ -151,9 +152,10 @@ experiment: the process hangs in `sync.Once.doSlow`, reached through
   the reachability direction: traces exist in which cyclic inits
   complete (and the `noPartialServeYet` witness shows the partial-serve
   path is exercised). A cycle of repeated partial serves that never
-  completes is not excluded by the checked invariants — and, per the
-  not-yet-bound-member finding above, the implementation today can in
-  fact deadlock, so INV5 is known-false until the TODO entry is fixed.
+  completes is not excluded by the checked invariants. The former
+  sync.Once self-deadlock is excluded structurally for the single
+  goroutine the model covers: an unbound cyclic read fails the active
+  initializer immediately instead of re-entering its once.
 - **INV6 host const fast path**: a const may be served host-side before
   full init, but in-VM service of the same member implies `Ready` or
   `Initializing` afterwards.

@@ -20,10 +20,12 @@ quint typecheck spec/lazypkg.qnt
 quint run spec/lazypkg.qnt --backend=typescript \
   --max-steps=60 --max-samples=300 --invariant=allInvariants
 
-# witness: cyclic init's partial-serve behavior is reachable — this
-# MUST report a violation; the violating trace is the witness
+# witness: cyclic init's partial-serve behavior is reachable — these
+# MUST report violations; each violating trace is the witness
 quint run spec/lazypkg.qnt --backend=typescript \
   --max-steps=40 --max-samples=500 --invariant=noPartialServeYet
+quint run spec/lazypkg.qnt --backend=typescript \
+  --max-steps=40 --max-samples=500 --invariant=noUnboundCycleYet
 
 # symbolic verification via Apalache (needs Java 21+)
 quint verify spec/lazypkg.qnt --invariant=allInvariants
