@@ -91,6 +91,15 @@ module lazypkg {
   pure def bump(hw, p, ord) =
     hw.set(p, if (hw.get(p) > ord) hw.get(p) else ord)
 
+  // dependencies touchable mid-cascade: not just the innermost
+  // frame's own imports — a callback into any package already in the
+  // cascade can touch ITS imports too (lib's init calling a main
+  // function that reads main's other import). Attributed to the
+  // innermost frame, which is an over-approximation in the sound
+  // direction for safety invariants.
+  pure def stackDeps(st) =
+    st.foldl(Set(), (acc, f) => acc.union(deps(f)))
+
   // deps of p that still block its completion: not ready, not failed,
   // and not already mid-init. A cycle member counts as resolved — Go
   // serves its partial globals, which is all there will ever be.
@@ -156,7 +165,7 @@ module lazypkg {
   action touchDep(p, q) = all {
     stack.length() > 0,
     p == stack.head(),
-    q.in(deps(p)),
+    q.in(stackDeps(stack)),
     depsTouched' = depsTouched.set(p, depsTouched.get(p).union(Set(q))),
     any {
       // cycle: serve partial, count the witness — with beginInit
@@ -281,6 +290,7 @@ module lazypkg {
     touchDep("main", "lib"),
     touchDep("main", "plain"),
     touchDep("lib", "main"),
+    touchDep("lib", "plain"),
     completeInit("main"),
     completeInit("lib"),
     completeInit("plain"),
