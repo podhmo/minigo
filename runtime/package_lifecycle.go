@@ -108,6 +108,7 @@ func (p *Package) EnsureReady() error {
 // interpreter initializes the package on that same interpreter. A nil run
 // falls back to RunInit.
 func (p *Package) EnsureReadyRun(run func(*Function) error) error {
+	p.WaitIndexed()
 	return p.initOnce.Run(func() error {
 		if p.State() == Ready {
 			return nil
@@ -127,17 +128,25 @@ func (p *Package) EnsureReadyRun(run func(*Function) error) error {
 // runBootstrap invokes p.Bootstrap with the init runner; [execution.Init.Run]
 // around it records panics and marks the package Failed before
 // re-panicking.
-func (p *Package) runBootstrap(run func(*Function) error) (err error) {
+func (p *Package) runBootstrap(run func(*Function) error) error {
 	if p.Bootstrap == nil {
 		return nil
 	}
+	run, err := p.resolveInitRunner(run)
+	if err != nil {
+		return err
+	}
+	return p.Bootstrap(p, run)
+}
+
+func (p *Package) resolveInitRunner(run func(*Function) error) (func(*Function) error, error) {
 	if run == nil {
 		run = p.RunInit
 	}
 	if run == nil {
-		return fmt.Errorf("package %s: no init runner", p.Name)
+		return nil, fmt.Errorf("package %s: no init runner", p.Name)
 	}
-	return p.Bootstrap(p, run)
+	return run, nil
 }
 
 // EnsureConstsRun binds the package's constants through ConstBootstrap,
@@ -150,11 +159,9 @@ func (p *Package) EnsureConstsRun(run func(*Function) error) error {
 		if p.State() == Ready || p.ConstBootstrap == nil {
 			return nil
 		}
-		if run == nil {
-			run = p.RunInit
-		}
-		if run == nil {
-			return fmt.Errorf("package %s: no init runner", p.Name)
+		run, err := p.resolveInitRunner(run)
+		if err != nil {
+			return err
 		}
 		spike.NoteInitDuringCompile()
 		return p.ConstBootstrap(p, run)
