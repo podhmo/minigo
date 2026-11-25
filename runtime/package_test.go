@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestMemberInitCycleOnSameGoroutineFails(t *testing.T) {
@@ -24,8 +26,8 @@ func TestMemberInitCycleOnSameGoroutineFails(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "initialization cycle: p.X is not bound yet") {
 		t.Fatalf("same-goroutine cyclic read = %v, want initialization cycle", err)
 	}
-	if p.State() != Failed {
-		t.Fatalf("state = %v, want Failed", p.State())
+	if diff := cmp.Diff(Failed, p.State()); diff != "" {
+		t.Fatalf("state mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -51,25 +53,30 @@ func TestMemberConcurrentInitWaitsForOwner(t *testing.T) {
 	go func() { initDone <- p.EnsureReady() }()
 	<-started
 
-	memberDone := make(chan error, 1)
+	type memberResult struct {
+		v   Value
+		err error
+	}
+	memberDone := make(chan memberResult, 1)
 	go func() {
 		v, err := p.Member("X", nil)
-		if err == nil && v != int64(7) {
-			t.Errorf("Member(X) = %#v, want 7", v)
-		}
-		memberDone <- err
+		memberDone <- memberResult{v: v, err: err}
 	}()
 
 	select {
-	case err := <-memberDone:
-		t.Fatalf("concurrent Member returned before init completed: %v", err)
+	case res := <-memberDone:
+		t.Fatalf("concurrent Member returned before init completed: %v", res.err)
 	case <-time.After(10 * time.Millisecond):
 	}
 	close(release)
 	if err := <-initDone; err != nil {
 		t.Fatalf("EnsureReady: %v", err)
 	}
-	if err := <-memberDone; err != nil {
-		t.Fatalf("concurrent Member: %v", err)
+	res := <-memberDone
+	if res.err != nil {
+		t.Fatalf("concurrent Member: %v", res.err)
+	}
+	if diff := cmp.Diff(int64(7), res.v); diff != "" {
+		t.Fatalf("Member(X) mismatch (-want +got):\n%s", diff)
 	}
 }

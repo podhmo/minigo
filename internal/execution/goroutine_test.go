@@ -1,18 +1,22 @@
 package execution
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+)
 
 func TestGoroutineID(t *testing.T) {
 	self := GoroutineID()
-	if self == 0 {
+	if diff := cmp.Diff(int64(0), self); diff == "" {
 		t.Fatal("GoroutineID() = 0 on the test goroutine")
 	}
-	if got := GoroutineID(); got != self {
-		t.Fatalf("same goroutine id = %d, want %d", got, self)
+	if diff := cmp.Diff(self, GoroutineID()); diff != "" {
+		t.Fatalf("same goroutine id mismatch (-want +got):\n%s", diff)
 	}
 	other := make(chan int64, 1)
 	go func() { other <- GoroutineID() }()
-	if got := <-other; got == self {
-		t.Fatalf("different goroutine id = %d, want distinct from %d", got, self)
+	if diff := cmp.Diff(self, <-other); diff == "" {
+		t.Fatalf("different goroutines reported the same id %d", self)
 	}
 }
