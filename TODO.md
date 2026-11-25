@@ -13,6 +13,8 @@ migration; history above that point lives in the source repository.
 
 ## To Be Implemented
 
+- [ ] **Deadlock: cyclic init reading a not-yet-bound member re-enters `initOnce`**: with `a` importing `b` importing `a`, when `a`'s var initializer `var Y = b.ReadY()` reads back `a.Y` before it is bound, `MemberV` falls through to `EnsureReadyRun` (runtime/package.go:529) and the `sync.Once` inside `execution.Init` re-enters on the same goroutine — the process hangs in `sync.Once.doSlow`. Reproduced with a two-package module (SIGQUIT stack shows `MemberV` → `EnsureReadyRun` → `Once.Do`); minigo otherwise tolerates import cycles gc rejects, serving partial globals for already-bound cells, so the missing-cell path needs the same cycle treatment (serve a partial/zero view or trap loudly instead of deadlocking). Found while Quint-modeling the lazy lifecycle (docs/lazy-lifecycle-model.md, #1433).
+
 - [x] **A package-level function named `make` is compiled as the builtin**: `func make(x int) int { return x }; var X = make(1)` traps with `unsupported type expression *ast.BasicLit` in normal and strict modes. The call should pass `1` as a value.
 
 - [x] **Deferred mismatch diagnostics omit the package name of a channel element type**: comparing a receive from `origin.Named` (declared as `chan origin.Count` from the caller's view) with a `string` reports `Count and string` in strict mode. The ordinary compile gate and Go report `origin.Count and string`. → `tdNameIn` qualifies a named typedef by its declaring package's name when the name itself is unqualified (running-package types stay bare like gc's); pinned by `gate_chanpkgmismatch` in the strict lazy corpus.

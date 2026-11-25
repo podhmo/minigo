@@ -62,8 +62,12 @@ module lazypkg {
   var constsBound: str -> bool
   // explicit cascade frames, innermost frame first
   var stack: List[str]
-  // counts in-cycle partial serves (a witness of Go's cyclic behavior)
+  // counts in-cycle partial serves (a witness of the cyclic behavior)
   var partialServes: int
+  // dependencies actually touched by each package's init so far —
+  // completion and failure propagation wait only for these, not for
+  // declared imports the initializer never used
+  var depsTouched: str -> Set[str]
   // ghost: highest forward stage ever reached, for monotonicity
   var highWater: str -> int
 
@@ -74,17 +78,24 @@ module lazypkg {
     constsBound' = pkgs.mapBy(p => false),
     stack' = List(),
     partialServes' = 0,
+    depsTouched' = pkgs.mapBy(p => Set()),
     highWater' = pkgs.mapBy(p => 1),
   }
 
   // ---- helpers ------------------------------------------------------
   pure def inStack(st, p) = st.indices().exists(i => st.nth(i) == p)
 
+  // high-water marks only ever rise: the ghost records the maximum
+  // forward stage ever reached, so a regressed stage can never drag
+  // the mark down with it (which would make `monotonic` vacuous)
+  pure def bump(hw, p, ord) =
+    hw.set(p, if (hw.get(p) > ord) hw.get(p) else ord)
+
   // deps of p that still block its completion: not ready, not failed,
   // and not already mid-init. A cycle member counts as resolved — Go
   // serves its partial globals, which is all there will ever be.
-  pure def unresolvedDeps(stageOf, st, p) =
-    deps(p).filter(q =>
+  pure def unresolvedDeps(stageOf, st, touched, p) =
+    touched.get(p).filter(q =>
       stageOf.get(q) != READY and
       stageOf.get(q) != FAILED and
       not(inStack(st, q)))
@@ -97,11 +108,11 @@ module lazypkg {
     any {
       all {
         stage' = stage.set(p, INDEXED),
-        highWater' = highWater.set(p, 2),
+        highWater' = bump(highWater, p, 2),
       },
       all {
         stage' = stage.set(p, FAILED),
-        highWater' = highWater.set(p, 5),
+        highWater' = bump(highWater, p, 5),
       },
     },
     initStarted' = initStarted,
@@ -109,6 +120,7 @@ module lazypkg {
     constsBound' = constsBound,
     stack' = stack,
     partialServes' = partialServes,
+    depsTouched' = depsTouched,
   }
 
   // ---- initialization triggers --------------------------------------
@@ -118,13 +130,18 @@ module lazypkg {
   action beginInit(p) = all {
     stage.get(p) == INDEXED,
     not(initStarted.get(p)),
+    // a single logical goroutine runs one cascade at a time: an
+    // external trigger cannot arrive mid-cascade (the goroutine is
+    // busy inside it), and a nested trigger is touchDep's recursion
+    stack == List(),
     stage' = stage.set(p, INITIALIZING),
-    highWater' = highWater.set(p, 3),
+    highWater' = bump(highWater, p, 3),
     initStarted' = initStarted.set(p, true),
     bootstraps' = bootstraps.set(p, bootstraps.get(p) + 1),
     stack' = List(p).concat(stack),
     constsBound' = constsBound,
     partialServes' = partialServes,
+    depsTouched' = depsTouched,
   }
 
   // The innermost initializing package's init body reads a member of
@@ -140,8 +157,11 @@ module lazypkg {
     stack.length() > 0,
     p == stack.head(),
     q.in(deps(p)),
+    depsTouched' = depsTouched.set(p, depsTouched.get(p).union(Set(q))),
     any {
-      // cycle: serve partial, count the witness
+      // cycle: serve partial, count the witness — with beginInit
+      // single-cascade, q in the stack IS a genuine ancestor frame, so
+      // this branch is reached only through cascade reentry
       all {
         inStack(stack, q),
         partialServes' = partialServes + 1,
@@ -158,7 +178,7 @@ module lazypkg {
         stage.get(q) == INDEXED,
         not(initStarted.get(q)),
         stage' = stage.set(q, INITIALIZING),
-        highWater' = highWater.set(q, 3),
+        highWater' = bump(highWater, q, 3),
         initStarted' = initStarted.set(q, true),
         bootstraps' = bootstraps.set(q, bootstraps.get(q) + 1),
         stack' = List(q).concat(stack),
@@ -176,22 +196,23 @@ module lazypkg {
   action completeInit(p) = all {
     stack.length() > 0,
     p == stack.head(),
-    unresolvedDeps(stage, stack, p) == Set(),
+    unresolvedDeps(stage, stack, depsTouched, p) == Set(),
     initStarted' = initStarted,
     bootstraps' = bootstraps,
     constsBound' = constsBound,
     partialServes' = partialServes,
+    depsTouched' = depsTouched,
     stack' = stack.tail(),
     any {
       all {
-        // success is impossible when a dependency failed
-        not(deps(p).exists(q => stage.get(q) == FAILED)),
+        // success is impossible when a touched dependency failed
+        not(depsTouched.get(p).exists(q => stage.get(q) == FAILED)),
         stage' = stage.set(p, READY),
-        highWater' = highWater.set(p, 4),
+        highWater' = bump(highWater, p, 4),
       },
       all {
         stage' = stage.set(p, FAILED),
-        highWater' = highWater.set(p, 5),
+        highWater' = bump(highWater, p, 5),
       },
     },
   }
@@ -203,13 +224,32 @@ module lazypkg {
   action bindConsts(p) = all {
     stage.get(p) == INDEXED,
     not(constsBound.get(p)),
-    constsBound' = constsBound.set(p, true),
-    stage' = stage,
-    highWater' = highWater,
-    initStarted' = initStarted,
-    bootstraps' = bootstraps,
-    stack' = stack,
+    any {
+      // success: constants bind, vars and init() stay pending
+      all {
+        constsBound' = constsBound.set(p, true),
+        stage' = stage,
+        highWater' = highWater,
+        initStarted' = initStarted,
+        bootstraps' = bootstraps,
+        stack' = stack,
+      },
+      // the const-only path cannot evaluate the specs (they reference
+      // vars or funcs — see TestConstMemberVarFallback): the caller
+      // falls back to the full initializer, exactly like beginInit
+      all {
+        not(initStarted.get(p)),
+        stack == List(),
+        constsBound' = constsBound,
+        stage' = stage.set(p, INITIALIZING),
+        highWater' = bump(highWater, p, 3),
+        initStarted' = initStarted.set(p, true),
+        bootstraps' = bootstraps.set(p, bootstraps.get(p) + 1),
+        stack' = List(p).concat(stack),
+      },
+    },
     partialServes' = partialServes,
+    depsTouched' = depsTouched,
   }
 
   // Terminal stutter: once every package has settled (ready or failed)
@@ -227,6 +267,7 @@ module lazypkg {
     constsBound' = constsBound,
     stack' = stack,
     partialServes' = partialServes,
+    depsTouched' = depsTouched,
   }
 
   // ---- step ----------------------------------------------------------

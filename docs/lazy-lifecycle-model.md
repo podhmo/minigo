@@ -41,7 +41,15 @@ Explicit transitions and their triggers:
 | Initializing | Ready | `Bootstrap` returns nil | `runtime/package.go` |
 | Initializing | Failed | `Bootstrap` returns error or panics | `execution.Init` fail callback |
 | Ready | — | terminal for initialization | |
-| Failed | — | terminal: later `MemberV` re-returns the cached error | |
+| Failed | — | see the terminality caveat below | |
+
+**Terminality caveat** — `Failed` is absorbing only for *init-time*
+failures, where `initOnce` has been consumed and later `MemberV` calls
+re-return the cached error. A package that failed during *loading*
+(parse/index errors) never ran `initOnce`, so a member access would
+enter `EnsureReadyRun` for real — in practice such a package has no
+usable index, but the state machine itself does not forbid the
+transition. `Failed` is really two states sharing one name.
 
 Implicit rules not visible in the enum:
 
@@ -111,7 +119,22 @@ invariant is:
 
 > no goroutine ever blocks waiting for an init it itself is performing.
 
-Go (gc) has the same property and the same partial-read semantics.
+Note that gc never faces this situation: it **rejects import cycles at
+compile time** (`import cycle not allowed`), so "Go's cyclic-init
+partial-read semantics" is not a gc behavior — it is the semantics
+minigo's lazy loader exhibits because it tolerates cyclic imports at
+all. The invariant above is therefore a requirement on minigo, not a
+compatibility property.
+
+**The invariant is violated today for not-yet-bound members.** The
+partial-serve fast path only applies when the member cell already
+exists in `Globals` (runtime/package.go:468-489). A cyclic read of a
+var whose cell is not yet bound — `var Y = b.ReadY()` with `ReadY`
+reading back `a.Y` — falls through to `EnsureReadyRun`
+(runtime/package.go:529), which re-enters the `sync.Once` inside
+`execution.Init` on the same goroutine and **deadlocks** (confirmed by
+experiment: the process hangs in `sync.Once.doSlow`, reached through
+`MemberV` → `EnsureReadyRun` → `Once.Do`). Tracked in TODO.md.
 
 ## Invariants extracted for verification
 
@@ -124,7 +147,15 @@ Go (gc) has the same property and the same partial-read semantics.
 - **INV4 serve-safety**: an in-VM member access returns a value only
   when the package is `Ready` or `Initializing`.
 - **INV5 deadlock freedom**: in a cyclic import graph, every initiated
-  bootstrap eventually completes (`Ready` or `Failed`).
+  bootstrap eventually completes (`Ready` or `Failed`). NOTE: this is a
+  liveness property and is *not* machine-verified — `quint run`/`verify`
+  check state invariants (safety) only. What the simulation does pin is
+  the reachability direction: traces exist in which cyclic inits
+  complete (and the `noPartialServeYet` witness shows the partial-serve
+  path is exercised). A cycle of repeated partial serves that never
+  completes is not excluded by the checked invariants — and, per the
+  not-yet-bound-member finding above, the implementation today can in
+  fact deadlock, so INV5 is known-false until the TODO entry is fixed.
 - **INV6 host const fast path**: a const may be served host-side before
   full init, but in-VM service of the same member implies `Ready` or
   `Initializing` afterwards.
