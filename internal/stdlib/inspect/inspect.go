@@ -757,10 +757,6 @@ func Install(bind stdlib.Bind, h Hooks) {
 
 func stateName(s runtime.State) string {
 	switch s {
-	case runtime.Unseen:
-		return "unseen"
-	case runtime.Located:
-		return "located"
 	case runtime.Parsed:
 		return "parsed"
 	case runtime.Indexed:

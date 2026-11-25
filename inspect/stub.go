@@ -379,8 +379,8 @@ func Path(p *runtime.Package) string { panic("minigo intrinsic") }
 // Dir returns p's directory, with forward slashes.
 func Dir(p *runtime.Package) string { panic("minigo intrinsic") }
 
-// State returns how far p has been loaded: "unseen", "located", "parsed",
-// "indexed", "initializing", "ready" or "failed".
+// State returns how far p has been loaded: "parsed", "indexed",
+// "initializing", "ready" or "failed".
 func State(p *runtime.Package) string { panic("minigo intrinsic") }
 
 // Standard reports whether p is a standard library package: for a source

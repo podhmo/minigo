@@ -23,9 +23,7 @@ import (
 type State int
 
 const (
-	Unseen State = iota
-	Located
-	Parsed
+	Parsed State = iota
 	Indexed
 	Initializing
 	Ready

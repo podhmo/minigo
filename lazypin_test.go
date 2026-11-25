@@ -17,7 +17,7 @@ func pkgState(e *Engine, path string) (runtime.State, bool) {
 	defer e.mu.Unlock()
 	p, ok := e.pkgs[path]
 	if !ok {
-		return runtime.Unseen, false
+		return 0, false
 	}
 	return p.State(), true
 }
