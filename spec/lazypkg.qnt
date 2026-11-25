@@ -257,7 +257,8 @@ module lazypkg {
       // recurse into q
       all {
         not(inStack(stack, q)),
-        stage.get(q) == INDEXED,
+        stage.get(q) == INDEXED or
+          (stage.get(q) == FAILED and not(initStarted.get(q))),
         not(initStarted.get(q)),
         stage' = stage.set(q, INITIALIZING),
         highWater' = bump(highWater, q, 3),
