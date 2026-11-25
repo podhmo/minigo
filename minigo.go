@@ -1344,7 +1344,6 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
 	if err := e.indexFiles(p, files, true); err != nil {
-		p.FailLoad()
 		return nil, err
 	}
 	e.mu.Lock()
@@ -1408,7 +1407,6 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
 	if err := e.indexFiles(p, files, lenient); err != nil {
-		p.FailLoad()
 		return nil, err
 	}
 	return p, nil
@@ -1444,10 +1442,15 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 // indexFiles finishes a package over already-selected files: declaration
 // index, file-by-name map, per-file import scopes, and the lazy initializer
 // hook. Directory discovery and build-constraint filtering happen upstream.
-func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bool) error {
-	// the indexed gate closes however this returns: a failed package is
-	// finished too (its State reports Failed) rather than hanging waiters
-	defer p.FinishIndexing()
+func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bool) (err error) {
+	// the indexed gate closes however this returns; record a load failure
+	// first so a released waiter cannot initialize a still-Parsed shell
+	defer func() {
+		if err != nil {
+			p.FailLoad()
+		}
+		p.FinishIndexing()
+	}()
 	p.Files = files
 	p.FileByName = map[string]*syntax.File{}
 	for _, sf := range files {
