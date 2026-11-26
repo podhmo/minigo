@@ -52,6 +52,7 @@ func (m *Marshal) endMerge(s *callScopeStack) {
 // so after each callback every entry syncs, not just the resolved
 // ones.
 func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
+	m.noteScriptCallback()
 	s, es := m.mergeEntries(false)
 	if s == nil {
 		return

@@ -430,6 +430,23 @@ func SharedAnyArgs() string {
 	return fmt.Sprint(identity.Same(m, m))
 }
 
+type MutablePage struct{ Name string }
+
+// CallbackReturnsFresh mutates the render data and returns the same
+// struct pointer. Conversion identity must refresh the projection at
+// that mutation barrier rather than serve the pre-callback field copy.
+func CallbackReturnsFresh() string {
+	data := &MutablePage{Name: "old"}
+	t := template.Must(template.New("callback-fresh").Funcs(template.FuncMap{
+		"current": func() any { data.Name = "new"; return data },
+	}).Parse(`{{with current}}{{.Name}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 type RenderPage struct{ Name string }
 
 // Render re-renders its receiver. The nested template reads only a field,

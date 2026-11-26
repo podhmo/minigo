@@ -52,14 +52,17 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	_, valueRecv := recv.(*runtime.Struct)
 	key := structProjectionKey{s: s, valueRecv: valueRecv}
 	if old, ok := h.Walk.Seen(key); ok {
-		// A merge reuses the projection already handed to the host, but it
-		// must not reuse stale field values: refresh the existing object in
-		// place. A recursive reference reached while that same projection is
-		// still being built is not a merge refresh.
-		if !h.M.insideMerge() || h.filling[key] {
+		// Conversion identity shares the projection until a script callback
+		// creates a mutation barrier. After one, refresh the object in place
+		// so a callback that mutates and returns the same struct does not
+		// serve the pre-callback field values. A projection still under
+		// construction is returned as is: refreshing it would recurse into
+		// the method currently being marshaled.
+		if h.filling[key] || h.M.activeProjectionHit(key) || !h.M.projectionStale(key) {
 			return old
 		}
 		if h.refreshStructProjection(old, recv, s, vc) {
+			h.M.markProjectionFresh(key)
 			return old
 		}
 		// Promoted members depend on embedded values: initializing a nil

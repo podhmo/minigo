@@ -42,11 +42,6 @@ type projEntry struct {
 	host map[string]bool          // host key repr -> seen at last merge
 }
 
-type activeProjection struct {
-	recv runtime.Value
-	out  any
-}
-
 type callScopeStack struct {
 	mu sync.Mutex
 	// walk folds repeat projections of the same script object inside one
@@ -72,6 +67,13 @@ type callScopeStack struct {
 	slices []sliceReg
 	used   map[uintptr]bool
 	active map[structProjectionKey]activeProjection
+	// scriptEpoch advances whenever a script callback returns: the callback
+	// may have mutated any captured object. projectionEpochs records the
+	// epoch a struct projection last represented, so conversion identity can
+	// refresh exactly once after such a mutation barrier instead of either
+	// serving the stale copy or re-running methods on every repeated edge.
+	scriptEpoch      uint64
+	projectionEpochs map[structProjectionKey]uint64
 	// originals strongly owns the script values backing struct projections
 	// for the duration of this goroutine's outermost host call. The
 	// process-wide StructOrig registry is weak; this bounded lifetime is
@@ -134,45 +136,6 @@ func (m *Marshal) scopedWalk() *HostMarshal {
 		return m.NewWalk()
 	}
 	return &HostMarshal{M: m, Walk: w, Budget: HostEvalBudget}
-}
-
-// beginActiveProjection marks a struct projection as under construction
-// until the returned func runs. Only active projections cross conversion
-// walks; completed ones would be stale copies.
-func (m *Marshal) beginActiveProjection(key structProjectionKey, recv runtime.Value, out any) func() {
-	st, ok := m.ownStack()
-	if !ok {
-		return func() {}
-	}
-	s := st
-	s.mu.Lock()
-	if s.active == nil {
-		s.active = map[structProjectionKey]activeProjection{}
-	}
-	s.active[key] = activeProjection{recv: recv, out: out}
-	s.mu.Unlock()
-	return func() {
-		s.mu.Lock()
-		delete(s.active, key)
-		s.mu.Unlock()
-	}
-}
-
-// retainProjectionOrig keeps a projected struct's script original alive
-// for the owning host call. Unlike the projection-identity walk, this is
-// not a conversion cache, so retaining it cannot serve stale values.
-func (m *Marshal) retainProjectionOrig(v runtime.Value) {
-	st, ok := m.ownStack()
-	if !ok {
-		return
-	}
-	s := st
-	s.mu.Lock()
-	if s.originals == nil {
-		s.originals = map[runtime.Value]bool{}
-	}
-	s.originals[v] = true
-	s.mu.Unlock()
 }
 
 // pushCallScope opens a projection scope for the duration of a host
