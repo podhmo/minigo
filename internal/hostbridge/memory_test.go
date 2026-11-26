@@ -7,6 +7,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -83,10 +84,28 @@ func TestStructOrigsReleaseProjections(t *testing.T) {
 	}
 }
 
-func TestStructOrigTokensAreDistinct(t *testing.T) {
-	a := &structOrigToken{}
-	b := &structOrigToken{}
-	if a == b {
-		t.Fatal("registration tokens share an address; a stale cleanup could delete a reused projection's registration")
+func TestStructOrigStaleCleanupKeepsNewRegistration(t *testing.T) {
+	rt := reflect.StructOf([]reflect.StructField{{Name: "X", Type: reflect.TypeFor[string]()}})
+	x := reflect.New(rt).Interface()
+	key, ok := structOrigKey(x)
+	if !ok {
+		t.Fatal("projection key unavailable")
 	}
+	oldToken := &structOrigToken{}
+	newToken := &structOrigToken{}
+	structOrigs.Store(key, structOrigEntry{token: newToken})
+	defer structOrigs.Delete(key)
+
+	forgetStructOrig(structOrigCleanupArg{key: key, token: oldToken})
+	_, registered := structOrigs.Load(key)
+	if diff := cmp.Diff(true, registered); diff != "" {
+		t.Fatalf("stale cleanup removed new registration (-want +got):\n%s", diff)
+	}
+
+	forgetStructOrig(structOrigCleanupArg{key: key, token: newToken})
+	_, registered = structOrigs.Load(key)
+	if diff := cmp.Diff(false, registered); diff != "" {
+		t.Fatalf("current cleanup did not remove its registration (-want +got):\n%s", diff)
+	}
+	goruntime.KeepAlive(x)
 }

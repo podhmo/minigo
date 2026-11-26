@@ -65,6 +65,12 @@ type structOrigCleanupArg struct {
 	token *structOrigToken
 }
 
+func forgetStructOrig(arg structOrigCleanupArg) {
+	if cur, ok := structOrigs.Load(arg.key); ok && cur.(structOrigEntry).token == arg.token {
+		structOrigs.CompareAndDelete(arg.key, cur)
+	}
+}
+
 // RecordStructOrig stores the script value a fabricated *struct{...}
 // projection stands for; structDataHost in vm mints the projections.
 func RecordStructOrig(x any, orig runtime.Value) {
@@ -87,9 +93,5 @@ func RecordStructOrig(x any, orig runtime.Value) {
 	// attach through a non-dereferenced byte pointer; the cleanup receives
 	// only the address key, never the object.
 	p, _ := structOrigPointer(x)
-	goruntime.AddCleanup((*byte)(p), func(arg structOrigCleanupArg) {
-		if cur, ok := structOrigs.Load(arg.key); ok && cur.(structOrigEntry).token == arg.token {
-			structOrigs.CompareAndDelete(arg.key, cur)
-		}
-	}, structOrigCleanupArg{key: key, token: token})
+	goruntime.AddCleanup((*byte)(p), forgetStructOrig, structOrigCleanupArg{key: key, token: token})
 }
