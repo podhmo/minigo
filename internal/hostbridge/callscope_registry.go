@@ -53,6 +53,10 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	}
 	if n := len(s.scopes); n > 0 {
 		s.scopes[n-1][rv.Pointer()] = e
+		s.scriptScopes[n-1][v] = e
+		if u := runtime.Unwrap(v); u != v {
+			s.scriptScopes[n-1][u] = e
+		}
 		if reg != nil {
 			s.slices = append(s.slices, *reg)
 		}
@@ -82,11 +86,12 @@ func withScopeStack[T any](m *Marshal, fn func(*callScopeStack) T) T {
 func (m *Marshal) projectedForScript(v runtime.Value) *projEntry {
 	u := runtime.Unwrap(v)
 	return withScopeStack(m, func(s *callScopeStack) *projEntry {
-		for i := len(s.scopes) - 1; i >= 0; i-- {
-			for _, e := range s.scopes[i] {
-				if e.sv == v || e.sv == u {
-					return e
-				}
+		for i := len(s.scriptScopes) - 1; i >= 0; i-- {
+			if e, ok := s.scriptScopes[i][v]; ok {
+				return e
+			}
+			if e, ok := s.scriptScopes[i][u]; ok {
+				return e
 			}
 		}
 		return nil

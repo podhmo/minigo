@@ -61,6 +61,10 @@ type callScopeStack struct {
 	// projections a callback actually consumed so write-back leaves
 	// their script value authoritative.
 	scopes []map[uintptr]*projEntry
+	// scriptScopes mirrors scopes with the reverse lookup: merging a parent
+	// container often needs the child projection by script identity, and a
+	// row list would make a scan over every entry quadratic.
+	scriptScopes []map[runtime.Value]*projEntry
 	// walks mirrors scopes: one conversion-identity walk per host call, so
 	// two args in the same call share a projection without leaking that
 	// copy into a nested or later host call.
@@ -183,6 +187,7 @@ func (m *Marshal) pushCallScope() func() {
 	s := st.(*callScopeStack)
 	s.mu.Lock()
 	s.scopes = append(s.scopes, map[uintptr]*projEntry{})
+	s.scriptScopes = append(s.scriptScopes, map[runtime.Value]*projEntry{})
 	s.walks = append(s.walks, runtime.NewWalk())
 	if s.used == nil {
 		s.used = map[uintptr]bool{}
@@ -191,6 +196,7 @@ func (m *Marshal) pushCallScope() func() {
 	return func() {
 		s.mu.Lock()
 		s.scopes = s.scopes[:len(s.scopes)-1]
+		s.scriptScopes = s.scriptScopes[:len(s.scriptScopes)-1]
 		s.walks = s.walks[:len(s.walks)-1]
 		n := len(s.scopes)
 		s.mu.Unlock()
