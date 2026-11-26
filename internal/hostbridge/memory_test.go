@@ -82,3 +82,11 @@ func TestStructOrigsReleaseProjections(t *testing.T) {
 		time.Sleep(5 * time.Millisecond) // cleanups run on their own goroutine
 	}
 }
+
+func TestStructOrigTokensAreDistinct(t *testing.T) {
+	a := &structOrigToken{}
+	b := &structOrigToken{}
+	if a == b {
+		t.Fatal("registration tokens share an address; a stale cleanup could delete a reused projection's registration")
+	}
+}

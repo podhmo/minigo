@@ -10,7 +10,7 @@ import (
 // original. The process-wide table must not own that original, or it
 // becomes the root of the session/projection cycle it exists to describe;
 // the host call's identity walk owns the strong round-trip lifetime.
-type structOrigToken struct{}
+type structOrigToken struct{ _ byte }
 
 // structOrigEntry pairs the weak original with a registration token:
 // a cleanup for an old projection must not delete the entry minted when a
