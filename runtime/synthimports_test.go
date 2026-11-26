@@ -25,11 +25,12 @@ func TestSynthImportRegistryReleasesRefs(t *testing.T) {
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if wp.Value() == nil && SynthImportRef(name) == nil {
+		_, registered := synthImports.Load(name)
+		if wp.Value() == nil && !registered {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("synthetic import outlived its ref: ref=%v entry=%v", wp.Value() != nil, SynthImportRef(name) != nil)
+			t.Fatalf("synthetic import outlived its ref: ref=%v registered=%v", wp.Value() != nil, registered)
 		}
 		goruntime.GC()
 		time.Sleep(5 * time.Millisecond) // cleanups run on their own goroutine
