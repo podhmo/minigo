@@ -509,6 +509,50 @@ func MethodMapStaysFresh() string {
 	return sb.String()
 }
 
+type NestedMapPage struct {
+	Parent map[string]any
+	Child  map[string]any
+}
+
+func (p *NestedMapPage) Mutate() any {
+	p.Child["x"] = "new"
+	return p.Parent
+}
+
+// NestedChildMapStaysFresh mutates a child map but returns its parent.
+// Refreshing the parent must refresh the already projected child too;
+// otherwise the parent keeps pointing at the child's pre-mutation copy.
+func NestedChildMapStaysFresh() string {
+	child := map[string]any{"x": "old"}
+	data := &NestedMapPage{Parent: map[string]any{"child": child}, Child: child}
+	t := template.Must(template.New("nested-child-fresh").Parse(`{{with .Mutate}}{{index .child "x"}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type IntKeyPage struct{ M map[any]string }
+
+func (p *IntKeyPage) Mutate() any {
+	p.M[1] = "new"
+	return p.M
+}
+
+// IntKeyMapStaysCanonical rewrites one interface-keyed int entry. Sync
+// must use the same canonical key form as the initial conversion; an
+// int64/int mismatch would insert a duplicate key and report len 2.
+func IntKeyMapStaysCanonical() string {
+	data := &IntKeyPage{M: map[any]string{1: "old"}}
+	t := template.Must(template.New("int-key-canonical").Parse(`{{with .Mutate}}{{len .}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 type RenderPage struct{ Name string }
 
 // Render re-renders its receiver. The nested template reads only a field,
