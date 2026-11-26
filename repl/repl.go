@@ -139,7 +139,6 @@ func newREPL(h *replhooks.Hooks) *REPL {
 			},
 		},
 	}
-	p.SetState(runtime.Parsed)
 	p.Bootstrap = h.Bootstrap
 	return &REPL{engine: h, pkg: p}
 }
@@ -930,6 +929,9 @@ func (r *REPL) reload() error {
 		})
 	}
 	p.Globals.Touch() // the new scopes/index invalidate cached globals
+	if p.State() == runtime.Parsed {
+		p.CompleteIndexing()
+	}
 	return p.EnsureReady()
 }
 

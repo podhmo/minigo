@@ -42,7 +42,7 @@ module lazypkg {
     else 5 // FAILED
 
   // ---- the fixed world ---------------------------------------------
-  pure val pkgs = Set("main", "lib", "plain")
+  pure val pkgs = Set("main", "lib", "plain", "host")
 
   // import edges; lib imports main back, forming a cycle
   pure def deps(p) =
@@ -89,6 +89,23 @@ module lazypkg {
     highWater' = pkgs.mapBy(p => 1),
   }
 
+  // Symbolic verification starts after the independent host publication.
+  // That keeps the depth budget focused on source-package cascades; the
+  // default init still models the host edge itself, and noHostReadyYet
+  // witnesses it in simulation.
+  action verificationInit = all {
+    stage' = pkgs.mapBy(p => if (p == "host") READY else PARSED),
+    initStarted' = pkgs.mapBy(p => false),
+    bootstraps' = pkgs.mapBy(p => 0),
+    constsBound' = pkgs.mapBy(p => false),
+    memberBound' = pkgs.mapBy(p => false),
+    unboundCycleTraps' = 0,
+    stack' = List(),
+    partialServes' = 0,
+    depsTouched' = pkgs.mapBy(p => Set()),
+    highWater' = pkgs.mapBy(p => if (p == "host") 4 else 1),
+  }
+
   // ---- helpers ------------------------------------------------------
   pure def inStack(st, p) = st.indices().exists(i => st.nth(i) == p)
 
@@ -118,8 +135,13 @@ module lazypkg {
 
   // ---- loader progression -------------------------------------------
   // indexing finishes, successfully or not (redeclaration, lang gate,
-  // cgo import — the load-phase failures of indexFiles)
+  // cgo import — the load-phase failures of indexFiles). Independent
+  // indexing actions commute, so use one canonical package order as a
+  // partial-order reduction; only the success/failure outcomes branch.
   action finishIndexing(p) = all {
+    stage.get("host") == READY,
+    p != "lib" or stage.get("main") != PARSED,
+    p != "plain" or stage.get("lib") != PARSED,
     stage.get(p) == PARSED,
     any {
       all {
@@ -127,10 +149,33 @@ module lazypkg {
         highWater' = bump(highWater, p, 2),
       },
       all {
+        // load-time failure is not absorbing: initOnce is unconsumed,
+        // so a later member touch may still begin initialization. The
+        // high-water mark therefore does not record terminal failure.
         stage' = stage.set(p, FAILED),
-        highWater' = bump(highWater, p, 5),
+        highWater' = highWater,
       },
     },
+    initStarted' = initStarted,
+    bootstraps' = bootstraps,
+    constsBound' = constsBound,
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
+    stack' = stack,
+    partialServes' = partialServes,
+    depsTouched' = depsTouched,
+  }
+
+  // A host-bound package has no source index or initializer: publishing
+  // its table completes the lifecycle immediately. It never interacts
+  // with the source packages, so the model publishes it before any other
+  // action — a partial-order reduction that removes irrelevant
+  // interleavings while preserving every source-package behavior.
+  action publishHost(p) = all {
+    p == "host",
+    stage.get(p) == PARSED,
+    stage' = stage.set(p, READY),
+    highWater' = bump(highWater, p, 4),
     initStarted' = initStarted,
     bootstraps' = bootstraps,
     constsBound' = constsBound,
@@ -146,7 +191,12 @@ module lazypkg {
   // an explicit EnsureReady) consumes initOnce and pushes the frame.
   // Corresponds to EnsureReadyRun winning the once.
   action beginInit(p) = all {
-    stage.get(p) == INDEXED,
+    stage.get("host") == READY,
+    // indexing of unrelated packages is independent of initialization;
+    // canonicalize that load phase before an external init trigger
+    pkgs.forall(q => q == "host" or stage.get(q) != PARSED),
+    stage.get(p) == INDEXED or
+      (stage.get(p) == FAILED and not(initStarted.get(p))),
     not(initStarted.get(p)),
     // a single logical goroutine runs one cascade at a time: an
     // external trigger cannot arrive mid-cascade (the goroutine is
@@ -168,6 +218,7 @@ module lazypkg {
   // making progress. Ancestor frames cannot bind while a nested package
   // initializes — their init is suspended inside the dependency touch.
   action bindMember(p) = all {
+    stage.get("host") == READY,
     stack.length() > 0,
     p == stack.head(),
     not(memberBound.get(p)),
@@ -193,6 +244,7 @@ module lazypkg {
   //   - q is ready or failed already: no transition (the touch is a
   //     plain read), so there is deliberately no branch for it.
   action touchDep(p, q) = all {
+    stage.get("host") == READY,
     stack.length() > 0,
     p == stack.head(),
     q.in(stackDeps(stack)),
@@ -236,7 +288,8 @@ module lazypkg {
       // recurse into q
       all {
         not(inStack(stack, q)),
-        stage.get(q) == INDEXED,
+        stage.get(q) == INDEXED or
+          (stage.get(q) == FAILED and not(initStarted.get(q))),
         not(initStarted.get(q)),
         stage' = stage.set(q, INITIALIZING),
         highWater' = bump(highWater, q, 3),
@@ -257,6 +310,7 @@ module lazypkg {
   // Otherwise the outcome is nondeterministic — the body itself may
   // error or panic.
   action completeInit(p) = all {
+    stage.get("host") == READY,
     stack.length() > 0,
     p == stack.head(),
     unresolvedDeps(stage, stack, depsTouched, p) == Set(),
@@ -287,6 +341,7 @@ module lazypkg {
   // while vars and init() stay pending. Never touches the stage — the
   // hidden second state machine of docs/lazy-lifecycle-model.md.
   action bindConsts(p) = all {
+    stage.get("host") == READY,
     stage.get(p) == INDEXED,
     not(constsBound.get(p)),
     any {
@@ -325,6 +380,7 @@ module lazypkg {
   // a stack that is non-empty with no enabled action IS a real
   // deadlock and stays reportable.
   action settle = all {
+    stage.get("host") == READY,
     stack == List(),
     pkgs.forall(p => stage.get(p) == READY or stage.get(p) == FAILED),
     stage' = stage,
@@ -341,6 +397,20 @@ module lazypkg {
 
   // ---- step ----------------------------------------------------------
   action step = any {
+    publishHost("host"),
+    verificationStep,
+    settle,
+    bindConsts("main"),
+    bindConsts("lib"),
+    bindConsts("plain"),
+  }
+
+  // Symbolic lifecycle verification omits the already-published host
+  // edge, terminal stuttering, and the const-only fast path. The hidden
+  // const machine does not feed back into the lifecycle invariants; its
+  // fallback is only another initialization trigger, already
+  // over-approximated by beginInit.
+  action verificationStep = any {
     finishIndexing("main"),
     finishIndexing("lib"),
     finishIndexing("plain"),
@@ -365,10 +435,6 @@ module lazypkg {
     completeInit("main"),
     completeInit("lib"),
     completeInit("plain"),
-    bindConsts("main"),
-    bindConsts("lib"),
-    bindConsts("plain"),
-    settle,
   }
 
   // ---- invariants ----------------------------------------------------
@@ -392,9 +458,10 @@ module lazypkg {
     pkgs.forall(p => stageOrd(stage.get(p)) >= highWater.get(p) or
                      stageOrd(stage.get(p)) == highWater.get(p))
 
-  // INV2: ready and failed are absorbing — encoded structurally (no
-  // action fires out of them), cross-checked by monotonic + the fact
-  // that only completeInit writes them.
+  // INV2: ready and init-time failed are absorbing — structurally, no
+  // action fires out of READY, and beginInit leaves FAILED only while
+  // initStarted is false (the load-time failure case). completeInit's
+  // failure bump makes init-time failure terminal.
 
   // INV-W (witness, not an invariant): cyclic initialization does
   // occur — `quint run --invariant=noPartialServeYet` reporting a
@@ -406,6 +473,10 @@ module lazypkg {
   // cyclic read is reachable too — a violation trace of noUnboundCycleYet
   // exhibits the loud-trap path that replaced the sync.Once self-deadlock.
   val noUnboundCycleYet = unboundCycleTraps == 0
+
+  // INV-W3 (witness, not an invariant): the direct host-package edge is
+  // reachable — a violation trace publishes host straight to READY.
+  val noHostReadyYet = stage.get("host") != READY
 
   // everything at once, for a single --invariant run
   val allInvariants =

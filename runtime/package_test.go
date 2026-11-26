@@ -1,12 +1,63 @@
 package runtime
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 )
+
+func TestLifecycleTransitionTable(t *testing.T) {
+	assertPanics := func(t *testing.T, fn func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Fatal("expected invalid transition panic")
+			}
+		}()
+		fn()
+	}
+
+	p := &Package{}
+	p.advanceState(Indexed)
+	p.advanceState(Initializing)
+	p.advanceState(Ready)
+	if diff := cmp.Diff(Ready, p.State()); diff != "" {
+		t.Fatalf("state mismatch (-want +got):\n%s", diff)
+	}
+	assertPanics(t, func() { p.advanceState(Failed) })
+
+	loadFailed := &Package{}
+	loadFailed.advanceState(Failed)
+	loadFailed.advanceState(Initializing)
+	if diff := cmp.Diff(Initializing, loadFailed.State()); diff != "" {
+		t.Fatalf("load-failed state mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestLifecycleInitFailureIsAbsorbing(t *testing.T) {
+	errBoom := errors.New("boom")
+	p := &Package{
+		Name: "p",
+		PackageInstance: PackageInstance{
+			Globals: NewEnv(),
+		},
+	}
+	p.advanceState(Indexed)
+	p.Bootstrap = func(*Package, func(*Function) error) error { return errBoom }
+	p.RunInit = func(*Function) error { return nil }
+	if err := p.EnsureReady(); !errors.Is(err, errBoom) {
+		t.Fatalf("EnsureReady error = %v, want %v", err, errBoom)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("init-time Failed accepted a new initialization")
+		}
+	}()
+	p.advanceState(Initializing)
+}
 
 func TestMemberInitCycleOnSameGoroutineFails(t *testing.T) {
 	p := &Package{
@@ -15,7 +66,7 @@ func TestMemberInitCycleOnSameGoroutineFails(t *testing.T) {
 			Globals: NewEnv(),
 		},
 	}
-	p.SetState(Indexed)
+	p.advanceState(Indexed)
 	p.Bootstrap = func(p *Package, run func(*Function) error) error {
 		_, err := p.Member("X", nil)
 		return err
@@ -38,7 +89,7 @@ func TestMemberConcurrentInitWaitsForOwner(t *testing.T) {
 			Globals: NewEnv(),
 		},
 	}
-	p.SetState(Indexed)
+	p.advanceState(Indexed)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	p.Bootstrap = func(p *Package, run func(*Function) error) error {

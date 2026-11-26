@@ -1105,7 +1105,7 @@ func (e *Engine) bindTable(importPath string, symbols map[string]runtime.Value, 
 		// bound paths without a dot in the first element stand in for GOROOT.
 		Standard: !strings.Contains(strings.SplitN(importPath, "/", 2)[0], "."),
 	}
-	p.SetState(runtime.Ready)
+	p.MarkHostReady()
 	for k, v := range symbols {
 		if e.hostPolicy != nil && !e.hostPolicy(importPath, k) {
 			continue
@@ -1340,11 +1340,10 @@ func (e *Engine) SourceOf(ctx context.Context, path string) (*runtime.Package, e
 	p.GoFiles = meta.GoFiles
 	files, failed, err := e.pcache.Files(e.fset, meta.GoFiles, meta.Lang)
 	if err != nil {
-		p.SetState(runtime.Failed)
+		p.FailLoad()
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
 	if err := e.indexFiles(p, files, true); err != nil {
-		p.SetState(runtime.Failed)
 		return nil, err
 	}
 	e.mu.Lock()
@@ -1403,12 +1402,11 @@ func (e *Engine) buildPackage(meta *resolve.PackageMeta, lenient bool) (*runtime
 
 	files, failed, err := e.pcache.Files(e.fset, meta.GoFiles, meta.Lang)
 	if err != nil {
-		p.SetState(runtime.Failed)
+		p.FailLoad()
 		p.FinishIndexing()
 		return nil, fmt.Errorf("parse %s: %w", failed, err)
 	}
 	if err := e.indexFiles(p, files, lenient); err != nil {
-		p.SetState(runtime.Failed)
 		return nil, err
 	}
 	return p, nil
@@ -1437,7 +1435,6 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 			},
 		},
 	}
-	p.SetState(runtime.Parsed)
 	p.MarkIndexed()
 	return p
 }
@@ -1445,10 +1442,15 @@ func (e *Engine) newPackage(path, name, dir string) *runtime.Package {
 // indexFiles finishes a package over already-selected files: declaration
 // index, file-by-name map, per-file import scopes, and the lazy initializer
 // hook. Directory discovery and build-constraint filtering happen upstream.
-func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bool) error {
-	// the indexed gate closes however this returns: a failed package is
-	// finished too (its State reports Failed) rather than hanging waiters
-	defer p.FinishIndexing()
+func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bool) (err error) {
+	// the indexed gate closes however this returns; record a load failure
+	// first so a released waiter cannot initialize a still-Parsed shell
+	defer func() {
+		if err != nil {
+			p.FailLoad()
+		}
+		p.FinishIndexing()
+	}()
 	p.Files = files
 	p.FileByName = map[string]*syntax.File{}
 	for _, sf := range files {
@@ -1477,7 +1479,6 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 		return fmt.Errorf("index %s: %w", p.Path, err)
 	}
 	p.Index = ix
-	p.SetState(runtime.Indexed)
 	if e.assetAudit {
 		h, err := assetaudit.HashPackage(e.fset, p.Files, ix)
 		if err != nil {
@@ -1517,6 +1518,7 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 
 	p.Bootstrap = e.bootstrap
 	p.ConstBootstrap = e.bootstrapConsts
+	p.CompleteIndexing()
 	return nil
 }
 
