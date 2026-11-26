@@ -540,12 +540,14 @@ func (p *IntKeyPage) Mutate() any {
 	return p.M
 }
 
-// IntKeyMapStaysCanonical rewrites one interface-keyed int entry. Sync
-// must use the same canonical key form as the initial conversion; an
-// int64/int mismatch would insert a duplicate key and report len 2.
+// IntKeyMapStaysCanonical rewrites one interface-keyed int entry, then
+// passes the shared map through a callback. Both merge directions must
+// use the same canonical key form as the initial conversion; an
+// int64/int mismatch would duplicate the key in sync or drop it in pull.
 func IntKeyMapStaysCanonical() string {
 	data := &IntKeyPage{M: map[any]string{1: "old"}}
-	t := template.Must(template.New("int-key-canonical").Parse(`{{with .Mutate}}{{len .}}{{end}}`))
+	fm := template.FuncMap{"read": func(m map[any]string) int { return len(m) }}
+	t := template.Must(template.New("int-key-canonical").Funcs(fm).Parse(`{{$x := .Mutate}}{{read .M}}`))
 	var sb strings.Builder
 	if err := t.Execute(&sb, data); err != nil {
 		return "error: " + err.Error()
