@@ -327,6 +327,12 @@ func (v *VM) retypeStore(f *frame, oldElem runtime.Value, typ *runtime.TypeDef, 
 	if typ != nil {
 		return v.coerce(f, val, typ)
 	}
+	if _, isConst := constPayload(val); !isConst && sameBareScalar(oldElem, val) {
+		// a bare scalar into a slot holding the same bare kind: re-typing
+		// is the identity — skip the builtin typedef lookup and the UConst
+		// round trip on the hot `x = x + 1` path.
+		return val
+	}
 	// an unstamped slot's declared type is the tag its initial value
 	// carried — `x := int8(1)` leaves Named{int8} in the slot, and a
 	// later `x = v` enforces the same assignability. Bare values
@@ -349,12 +355,6 @@ func (v *VM) retypeStore(f *frame, oldElem runtime.Value, typ *runtime.TypeDef, 
 			return v.materializeConst(f, u, ct)
 		}
 		return v.materialize(f, val)
-	}
-	if sameBareScalar(oldElem, val) {
-		// a bare scalar into a slot holding the same bare kind: ct is
-		// that kind's builtin type, so re-typing is the identity —
-		// skip the UConst round trip on the hot `x = x + 1` path.
-		return val
 	}
 	if u2, isScalar := bareScalarConst(val); isScalar && ct != nil {
 		// `x = 300` re-types into the slot's tag — an out-of-range
