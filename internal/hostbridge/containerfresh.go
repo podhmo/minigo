@@ -25,10 +25,5 @@ func (m *Marshal) markProjectedContainerFresh(e *projEntry) {
 // object template already holds, so updating it in place preserves identity
 // while making method-side writes visible.
 func (m *Marshal) refreshProjectedContainer(v runtime.Value, out any, vc runtime.VMCaller) {
-	e := m.projectedForScript(v)
-	if e == nil || !m.projectedContainerStale(e) {
-		return
-	}
-	m.syncProjected(e, vc)
-	m.markProjectedContainerFresh(e)
+	m.refreshProjectedEntry(m.projectedForScript(v), vc, map[*projEntry]bool{})
 }
