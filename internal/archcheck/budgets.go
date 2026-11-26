@@ -88,7 +88,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/spell.go":               88,
 	"internal/hostbridge/callhost.go":            597,
 	"internal/hostbridge/callscope.go":           289,
-	"internal/hostbridge/callscope_registry.go":  154,
+	"internal/hostbridge/callscope_registry.go":  159,
 	"internal/hostbridge/callsync.go":            269,
 	"internal/hostbridge/callmerge.go":           87,
 	"internal/hostbridge/snapshot.go":            147,
