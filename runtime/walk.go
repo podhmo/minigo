@@ -7,11 +7,11 @@ package runtime
 // Use a new Walk for each conversion. [Walk.Container] converts slices
 // and maps; the caller handles every other value.
 type Walk struct {
-	// The maps allocate lazily: a scalar-only walk never pays for them.
-	// DeepUnwrap, the vm package's host marshal, and the root package's
-	// fmt-bound walk all run their container arms through it.
+	// The maps allocate lazily: scalar-only walks never pay for them; all
+	// container conversion arms share them.
 	seen   map[Value]any
 	peeled map[Value]struct{}
+	meta   map[any]any
 }
 
 // NewWalk returns an empty [Walk].

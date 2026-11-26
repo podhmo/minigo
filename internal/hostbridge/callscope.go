@@ -67,13 +67,12 @@ type callScopeStack struct {
 	slices []sliceReg
 	used   map[uintptr]bool
 	active map[structProjectionKey]activeProjection
-	// scriptEpoch advances whenever a script callback returns: the callback
-	// may have mutated any captured object. projectionEpochs records the
-	// epoch a struct projection last represented, so conversion identity can
-	// refresh exactly once after such a mutation barrier instead of either
+	// scriptEpoch advances whenever invoked script code returns: it may
+	// have mutated any captured object. Each conversion walk records the
+	// epoch a struct projection last represented, so conversion identity
+	// can refresh exactly once after a mutation barrier instead of either
 	// serving the stale copy or re-running methods on every repeated edge.
-	scriptEpoch      uint64
-	projectionEpochs map[structProjectionKey]uint64
+	scriptEpoch uint64
 	// originals strongly owns the script values backing struct projections
 	// for the duration of this goroutine's outermost host call. The
 	// process-wide StructOrig registry is weak; this bounded lifetime is

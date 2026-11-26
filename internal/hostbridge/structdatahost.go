@@ -58,11 +58,11 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 		// serve the pre-callback field values. A projection still under
 		// construction is returned as is: refreshing it would recurse into
 		// the method currently being marshaled.
-		if h.filling[key] || h.M.activeProjectionHit(key) || !h.M.projectionStale(key) {
+		if h.filling[key] || h.M.activeProjectionHit(key) || !h.M.projectionStale(h.Walk, key) {
 			return old
 		}
 		if h.refreshStructProjection(old, recv, s, vc) {
-			h.M.markProjectionFresh(key)
+			h.M.markProjectionFresh(h.Walk, key)
 			return old
 		}
 		// Promoted members depend on embedded values: initializing a nil
@@ -80,7 +80,7 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	h.Walk.Register(recv, out.Interface())
 	RecordStructOrig(out.Interface(), recv)
 	h.M.retainProjectionOrig(recv)
-	endActive := h.M.beginActiveProjection(key, recv, out.Interface())
+	endActive := h.M.beginActiveProjection(key, recv, out.Interface(), h.Walk)
 	defer endActive()
 	if h.filling == nil {
 		h.filling = map[runtime.Value]bool{}
