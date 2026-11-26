@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -28,14 +29,9 @@ func TestSyncProjectedCanonicalizesHostIntKeyAlias(t *testing.T) {
 			m := &Marshal{}
 			m.syncProjected(e, nil)
 
-			if len(tc.host) != 1 {
-				t.Fatalf("len(host map) = %d, want 1: %#v", len(tc.host), tc.host)
-			}
-			if got := tc.host[int64(1)]; got != "host" {
-				t.Fatalf("canonical key value = %q, want host", got)
-			}
-			if _, ok := tc.host[int(1)]; ok {
-				t.Fatalf("host alias key survived: %#v", tc.host)
+			want := map[any]string{int64(1): "host"}
+			if diff := cmp.Diff(want, tc.host); diff != "" {
+				t.Fatalf("host map mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
