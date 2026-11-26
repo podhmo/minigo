@@ -401,6 +401,26 @@ func NestedRenderEmbedInit() string {
 	return sb.String()
 }
 
+// ChildMapWrite keeps a nested map's canonical projection across the
+// merge after an unrelated callback. A later callback receiving the child
+// must write through to the script map.
+func ChildMapWrite() string {
+	child := map[string]any{}
+	data := map[string]any{"child": child}
+	t := template.Must(template.New("child-write").Funcs(template.FuncMap{
+		"first": func() string { return "" },
+		"write": func(m map[string]any) string { m["x"] = "ok"; return "" },
+	}).Parse(`{{first}}{{write .child}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	if got, ok := child["x"].(string); ok {
+		return got
+	}
+	return "missing"
+}
+
 // SharedAnyArgs passes one map twice in a single host call. The two `any`
 // arguments must share one host projection, as the same Go map would.
 func SharedAnyArgs() string {

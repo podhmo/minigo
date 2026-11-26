@@ -59,6 +59,47 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	}
 }
 
+// projectedForScript returns the canonical merge state already registered
+// for a script container on this goroutine, preferring the innermost
+// scope. During a merge this identity lookup is what keeps a child
+// container's existing host projection canonical: re-projecting it would
+// install an unregistered copy into its parent.
+func (m *Marshal) projectedForScript(v runtime.Value) *projEntry {
+	u := runtime.Unwrap(v)
+	st, ok := m.ownStack()
+	if !ok {
+		return nil
+	}
+	s := st
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.scopes) - 1; i >= 0; i-- {
+		for _, e := range s.scopes[i] {
+			if e.sv == v || e.sv == u {
+				return e
+			}
+		}
+	}
+	return nil
+}
+
+// projectedReflectValue adapts the canonical host projection of a script
+// container to the target type when possible.
+func (m *Marshal) projectedReflectValue(v runtime.Value, typ reflect.Type) (reflect.Value, bool) {
+	e := m.projectedForScript(v)
+	if e == nil {
+		return reflect.Value{}, false
+	}
+	rv := e.rv
+	for rv.IsValid() && rv.Kind() == reflect.Interface {
+		rv = rv.Elem()
+	}
+	if !rv.IsValid() || !rv.Type().AssignableTo(typ) {
+		return reflect.Value{}, false
+	}
+	return rv, true
+}
+
 // projectedVal returns the merge state registered for the host
 // container an `any` parameter is receiving — the projection an outer
 // call on this goroutine handed in — else nil.

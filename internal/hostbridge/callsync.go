@@ -192,9 +192,9 @@ func (m *Marshal) pullElem(cur runtime.Value, has bool, sk runtime.Value, parent
 // projection the host keeps reading after the call — template
 // {{range}} sees the callback's writes like gc's shared map would.
 // Host-side writes survive: deletes apply only to keys the merge knew,
-// and a value the script left alone stays untouched. A child
-// container re-projects to a fresh host value, which registers so a
-// later callback receiving it resolves back.
+// and a value the script left alone stays untouched. A child container
+// already registered on this goroutine keeps its canonical host projection;
+// otherwise its parent would point at an unregistered copy.
 func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 	rv := e.rv
 	for rv.IsValid() && rv.Kind() == reflect.Interface {
@@ -226,9 +226,13 @@ func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 			if err != nil {
 				continue
 			}
-			hv, err := m.ToReflect(sv, ert, vc)
-			if err != nil {
-				continue
+			hv, reused := m.projectedReflectValue(sv, ert)
+			if !reused {
+				var err error
+				hv, err = m.ToReflect(sv, ert, vc)
+				if err != nil {
+					continue
+				}
 			}
 			rv.SetMapIndex(hk, hv)
 			m.registerProjected(sv, hv.Interface())
@@ -247,9 +251,13 @@ func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 		}
 		ert := rv.Type().Elem()
 		for i := 0; i < rv.Len() && i < len(s.Elems); i++ {
-			ev, err := m.ToReflect(s.Elems[i], ert, vc)
-			if err != nil {
-				continue
+			ev, reused := m.projectedReflectValue(s.Elems[i], ert)
+			if !reused {
+				var err error
+				ev, err = m.ToReflect(s.Elems[i], ert, vc)
+				if err != nil {
+					continue
+				}
 			}
 			if el := rv.Index(i); el.CanSet() {
 				el.Set(ev)
