@@ -1179,7 +1179,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 	if isIface {
 		f.trapCode(runtime.TrapCodeUndefined, "interface value has no field %s", name)
 	}
-	f.trap("select %s on nil %s", name, tdName(td))
+	f.trapCode(runtime.TrapCodeUndefined, "select %s on nil %s", name, tdName(td))
 	return nil
 }
 

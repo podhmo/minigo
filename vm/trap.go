@@ -16,6 +16,17 @@ func trapFromConst(pos token.Pos, v any) *runtime.Trap {
 	return &runtime.Trap{Pos: pos, Code: runtime.TrapCodeRuntime, Reason: fmt.Sprint(v)}
 }
 
+type strictMemberLookup interface {
+	strictMember(base runtime.Value, name string) (runtime.Value, bool)
+}
+
+func methodExprMember(vm runtime.VMCaller, base runtime.Value, name string) (runtime.Value, bool) {
+	if strict, ok := vm.(strictMemberLookup); ok {
+		return strict.strictMember(base, name)
+	}
+	return vm.Member(base, name)
+}
+
 func trapCodeForErr(err error) runtime.TrapCode {
 	var trap *runtime.Trap
 	if errors.As(err, &trap) {

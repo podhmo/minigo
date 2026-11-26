@@ -626,6 +626,11 @@ func overwriteArrayElems(dst, src *runtime.Slice) {
 	}
 }
 
+func (v *VM) strictMember(base runtime.Value, name string) (runtime.Value, bool) {
+	fr := &frame{fn: &runtime.Function{Name: "<member>"}, v: v, base: len(v.vals)}
+	return v.selectMember(fr, base, name), true
+}
+
 // Member implements [runtime.VMCaller].
 func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) {
 	// selectMember over a dummy frame, reporting failure instead of

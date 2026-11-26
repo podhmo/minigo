@@ -491,7 +491,7 @@ func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
 			if runtime.IsNilIface(args[0]) {
 				panic(runtime.NilDerefPanic())
 			}
-			m, ok := vm.Member(args[0], name)
+			m, ok := methodExprMember(vm, args[0], name)
 			if !ok {
 				return nil, &runtime.UndefinedError{Reason: fmt.Sprintf("type %s has no method %s", tdName(td), name)}
 			}
