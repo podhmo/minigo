@@ -241,10 +241,15 @@ func TestREPLLoadErrors(t *testing.T) {
 		"dropped/ok.go":     "package dropped\nfunc Ok() int { return 1 }\n",
 		"dropped/hidden.go": "package dropped\nfunc Hidden() int { return 2 }\n",
 	})
-	if err := os.Chmod(filepath.Join(dir, "dropped", "hidden.go"), 0o000); err != nil {
+	// A self-referential symlink is unreadable as source even for
+	// root, unlike permission bits on a regular file.
+	hidden := filepath.Join(dir, "dropped", "hidden.go")
+	if err := os.Remove(hidden); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(filepath.Join(dir, "dropped", "hidden.go"), 0o644)
+	if err := os.Symlink("hidden.go", hidden); err != nil {
+		t.Fatal(err)
+	}
 	r := New(minigo.NewEngine(dir))
 	if _, err := r.Load(ctx, "m.go"); err != nil {
 		t.Fatal(err)
