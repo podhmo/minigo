@@ -69,9 +69,15 @@ func TestStrictLazyConformance(t *testing.T) {
 // runDiffCase runs one difffuzz dir and applies the verdict contract:
 // stdout against want.stdout, stderr against want.stderr when present,
 // an error containing want.err's text when present, and the pending
-// marker's must-still-diverge protocol. extra prepends engine options
-// (e.g. WithStrictLazyCompile).
+// marker's must-still-diverge protocol. A REQUIRES_NON_ROOT marker skips
+// cases whose oracle depends on filesystem permission errors when running
+// as root. extra prepends engine options (e.g. WithStrictLazyCompile).
 func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
+	if os.Geteuid() == 0 {
+		if _, err := os.Stat(filepath.Join(dir, "REQUIRES_NON_ROOT")); err == nil {
+			t.Skip("case requires a non-root user")
+		}
+	}
 	{
 		want, err := os.ReadFile(filepath.Join(dir, "want.stdout"))
 		if err != nil {
