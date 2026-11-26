@@ -276,6 +276,7 @@ func TestREPLLoadUnreadableFile(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{
+		"m.go": "package m\nfunc F() int { return 1 }\n",
 		// an unreadable .go file must not vanish from the index
 		// silently: the package would read as complete while missing
 		// decls. Loading fails and names it.
@@ -293,12 +294,15 @@ func TestREPLLoadUnreadableFile(t *testing.T) {
 	}
 
 	r := New(minigo.NewEngine(dir))
+	if _, err := r.Load(ctx, "m.go"); err != nil {
+		t.Fatal(err)
+	}
 	_, err := r.Load(ctx, "dropped")
 	if err == nil || !strings.Contains(err.Error(), "hidden.go") {
 		t.Fatalf("Load(dropped): want error containing %q, got %v", "hidden.go", err)
 	}
-	if len(r.Loaded()) != 0 {
-		t.Errorf("failed load must leave the session empty: %v", r.Loaded())
+	if diff := cmp.Diff([]string{filepath.Join(dir, "m.go")}, r.Loaded()); diff != "" {
+		t.Errorf("Loaded after failure (-want +got):\n%s", diff)
 	}
 }
 
