@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+
+	"github.com/podhmo/minigo/testdata/funcmap/identity"
 )
 
 type user struct{ Name string }
@@ -425,11 +427,7 @@ func ChildMapWrite() string {
 // arguments must share one host projection, as the same Go map would.
 func SharedAnyArgs() string {
 	m := map[string]int{"x": 1}
-	parts := strings.Fields(fmt.Sprintf("%p %p", m, m))
-	if len(parts) != 2 {
-		return "bad"
-	}
-	return fmt.Sprint(parts[0] == parts[1])
+	return fmt.Sprint(identity.Same(m, m))
 }
 
 type RenderPage struct{ Name string }
