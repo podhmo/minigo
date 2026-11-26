@@ -56,10 +56,17 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 		// must not reuse stale field values: refresh the existing object in
 		// place. A recursive reference reached while that same projection is
 		// still being built is not a merge refresh.
-		if h.M.insideMerge() && !h.filling[key] {
-			h.refreshStructProjection(old, recv, s, vc)
+		if !h.M.insideMerge() || h.filling[key] {
+			return old
 		}
-		return old
+		if h.refreshStructProjection(old, recv, s, vc) {
+			return old
+		}
+		// Promoted members depend on embedded values: initializing a nil
+		// embedded pointer can enlarge the projection's shape. The old
+		// host object cannot grow fields, so fall through and mint the
+		// current shape rather than returning a projection known to be
+		// missing members.
 	}
 	plan := planStructProjection(recv, s, vc)
 	out := reflect.New(plan.typ)

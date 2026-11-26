@@ -375,6 +375,32 @@ func NestedRenderFresh() string {
 	return sb.String()
 }
 
+type EmbedInner struct{ X int }
+type EmbedOuter struct{ *EmbedInner }
+
+// NestedRenderEmbedInit initializes a nil embedded pointer after the
+// outer render first projected its object. A re-render must project the
+// object's current promoted surface rather than the first shape.
+func NestedRenderEmbedInit() string {
+	o := &EmbedOuter{}
+	data := map[string]any{"o": o}
+	t := template.Must(template.New("nested-embed").Funcs(template.FuncMap{
+		"init": func() string { o.EmbedInner = &EmbedInner{X: 7}; return "" },
+		"render": func() string {
+			var inner strings.Builder
+			if err := template.Must(template.New("inner-embed").Parse(`{{.o.X}}`)).Execute(&inner, data); err != nil {
+				return "error: " + err.Error()
+			}
+			return inner.String()
+		},
+	}).Parse(`{{init}}{{render}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 func main() {
 	fmt.Println(Builtins())
 	fmt.Println(Text())
