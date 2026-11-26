@@ -77,6 +77,8 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	h.Walk.Register(recv, out.Interface())
 	RecordStructOrig(out.Interface(), recv)
 	h.M.retainProjectionOrig(recv)
+	endActive := h.M.beginActiveProjection(key, recv, out.Interface())
+	defer endActive()
 	if h.filling == nil {
 		h.filling = map[runtime.Value]bool{}
 	}

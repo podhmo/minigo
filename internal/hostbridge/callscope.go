@@ -42,6 +42,11 @@ type projEntry struct {
 	host map[string]bool          // host key repr -> seen at last merge
 }
 
+type activeProjection struct {
+	recv runtime.Value
+	out  any
+}
+
 type callScopeStack struct {
 	mu sync.Mutex
 	// walk folds repeat projections of the same script object inside one
@@ -56,8 +61,13 @@ type callScopeStack struct {
 	// projections a callback actually consumed so write-back leaves
 	// their script value authoritative.
 	scopes []map[uintptr]*projEntry
+	// walks mirrors scopes: one conversion-identity walk per host call, so
+	// two args in the same call share a projection without leaking that
+	// copy into a nested or later host call.
+	walks  []*runtime.Walk
 	slices []sliceReg
 	used   map[uintptr]bool
+	active map[structProjectionKey]activeProjection
 	// originals strongly owns the script values backing struct projections
 	// for the duration of this goroutine's outermost host call. The
 	// process-wide StructOrig registry is weak; this bounded lifetime is
@@ -88,23 +98,60 @@ func (m *Marshal) callGid() int64 {
 	return m.GoroutineID()
 }
 
-// scopedWalk starts a marshal over the projection-identity walk shared by
-// this goroutine's merge passes. The budget is per conversion while the
-// identity walk lasts for the pass: a merge that mentions one script object
-// twice must reuse its projection, not mint two competing copies.
+// scopedWalk starts a marshal over the current conversion-identity walk.
+// Ordinary host calls use the walk of their own scope: arguments in one
+// call share projections, while nested and later calls cannot reuse a
+// stale completed copy. Merge passes use their pass-wide walk instead.
+// In-progress struct projections are seeded into either walk so a method
+// that re-enters template rendering with its own receiver sees the object
+// already being built rather than recursively reprojecting it.
 func (m *Marshal) scopedWalk() *HostMarshal {
 	st, ok := m.ownStack()
-	if !ok || !m.insideMerge() {
+	if !ok {
 		return m.NewWalk()
 	}
 	s := st
 	s.mu.Lock()
-	if s.walk == nil {
-		s.walk = runtime.NewWalk()
+	var w *runtime.Walk
+	if s.merging > 0 {
+		if s.walk == nil {
+			s.walk = runtime.NewWalk()
+		}
+		w = s.walk
+	} else if n := len(s.walks); n > 0 {
+		w = s.walks[n-1]
 	}
-	w := s.walk
+	for key, ap := range s.active {
+		w.Register(key, ap.out)
+		w.Register(ap.recv, ap.out)
+	}
 	s.mu.Unlock()
+	if w == nil {
+		return m.NewWalk()
+	}
 	return &HostMarshal{M: m, Walk: w, Budget: HostEvalBudget}
+}
+
+// beginActiveProjection marks a struct projection as under construction
+// until the returned func runs. Only active projections cross conversion
+// walks; completed ones would be stale copies.
+func (m *Marshal) beginActiveProjection(key structProjectionKey, recv runtime.Value, out any) func() {
+	st, ok := m.ownStack()
+	if !ok {
+		return func() {}
+	}
+	s := st
+	s.mu.Lock()
+	if s.active == nil {
+		s.active = map[structProjectionKey]activeProjection{}
+	}
+	s.active[key] = activeProjection{recv: recv, out: out}
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		delete(s.active, key)
+		s.mu.Unlock()
+	}
 }
 
 // retainProjectionOrig keeps a projected struct's script original alive
@@ -136,6 +183,7 @@ func (m *Marshal) pushCallScope() func() {
 	s := st.(*callScopeStack)
 	s.mu.Lock()
 	s.scopes = append(s.scopes, map[uintptr]*projEntry{})
+	s.walks = append(s.walks, runtime.NewWalk())
 	if s.used == nil {
 		s.used = map[uintptr]bool{}
 	}
@@ -143,6 +191,7 @@ func (m *Marshal) pushCallScope() func() {
 	return func() {
 		s.mu.Lock()
 		s.scopes = s.scopes[:len(s.scopes)-1]
+		s.walks = s.walks[:len(s.walks)-1]
 		n := len(s.scopes)
 		s.mu.Unlock()
 		if n == 0 {

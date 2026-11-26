@@ -401,6 +401,39 @@ func NestedRenderEmbedInit() string {
 	return sb.String()
 }
 
+// SharedAnyArgs passes one map twice in a single host call. The two `any`
+// arguments must share one host projection, as the same Go map would.
+func SharedAnyArgs() string {
+	m := map[string]int{"x": 1}
+	parts := strings.Fields(fmt.Sprintf("%p %p", m, m))
+	if len(parts) != 2 {
+		return "bad"
+	}
+	return fmt.Sprint(parts[0] == parts[1])
+}
+
+type RenderPage struct{ Name string }
+
+// Render re-renders its receiver. The nested template reads only a field,
+// so it must not recursively invoke Render while projecting the receiver.
+func (p *RenderPage) Render() string {
+	var sb strings.Builder
+	if err := template.Must(template.New("render-page-inner").Parse(`{{.Name}}`)).Execute(&sb, p); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+// NestedRenderMethod invokes a template-facing method that passes its own
+// receiver to another template.
+func NestedRenderMethod() string {
+	var sb strings.Builder
+	if err := template.Must(template.New("render-page-outer").Parse(`{{.Render}}`)).Execute(&sb, &RenderPage{Name: "ok"}); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 func main() {
 	fmt.Println(Builtins())
 	fmt.Println(Text())
