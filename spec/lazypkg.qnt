@@ -120,6 +120,7 @@ module lazypkg {
   // indexing finishes, successfully or not (redeclaration, lang gate,
   // cgo import — the load-phase failures of indexFiles)
   action finishIndexing(p) = all {
+    stage.get("host") == READY,
     stage.get(p) == PARSED,
     any {
       all {
@@ -145,7 +146,10 @@ module lazypkg {
   }
 
   // A host-bound package has no source index or initializer: publishing
-  // its table completes the lifecycle immediately.
+  // its table completes the lifecycle immediately. It never interacts
+  // with the source packages, so the model publishes it before any other
+  // action — a partial-order reduction that removes irrelevant
+  // interleavings while preserving every source-package behavior.
   action publishHost(p) = all {
     p == "host",
     stage.get(p) == PARSED,
@@ -166,6 +170,7 @@ module lazypkg {
   // an explicit EnsureReady) consumes initOnce and pushes the frame.
   // Corresponds to EnsureReadyRun winning the once.
   action beginInit(p) = all {
+    stage.get("host") == READY,
     stage.get(p) == INDEXED or
       (stage.get(p) == FAILED and not(initStarted.get(p))),
     not(initStarted.get(p)),
@@ -189,6 +194,7 @@ module lazypkg {
   // making progress. Ancestor frames cannot bind while a nested package
   // initializes — their init is suspended inside the dependency touch.
   action bindMember(p) = all {
+    stage.get("host") == READY,
     stack.length() > 0,
     p == stack.head(),
     not(memberBound.get(p)),
@@ -214,6 +220,7 @@ module lazypkg {
   //   - q is ready or failed already: no transition (the touch is a
   //     plain read), so there is deliberately no branch for it.
   action touchDep(p, q) = all {
+    stage.get("host") == READY,
     stack.length() > 0,
     p == stack.head(),
     q.in(stackDeps(stack)),
@@ -279,6 +286,7 @@ module lazypkg {
   // Otherwise the outcome is nondeterministic — the body itself may
   // error or panic.
   action completeInit(p) = all {
+    stage.get("host") == READY,
     stack.length() > 0,
     p == stack.head(),
     unresolvedDeps(stage, stack, depsTouched, p) == Set(),
@@ -309,6 +317,7 @@ module lazypkg {
   // while vars and init() stay pending. Never touches the stage — the
   // hidden second state machine of docs/lazy-lifecycle-model.md.
   action bindConsts(p) = all {
+    stage.get("host") == READY,
     stage.get(p) == INDEXED,
     not(constsBound.get(p)),
     any {
@@ -347,6 +356,7 @@ module lazypkg {
   // a stack that is non-empty with no enabled action IS a real
   // deadlock and stays reportable.
   action settle = all {
+    stage.get("host") == READY,
     stack == List(),
     pkgs.forall(p => stage.get(p) == READY or stage.get(p) == FAILED),
     stage' = stage,

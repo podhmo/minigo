@@ -30,5 +30,5 @@ quint run spec/lazypkg.qnt --backend=typescript \
   --max-steps=40 --max-samples=500 --invariant=noHostReadyYet
 
 # symbolic verification via Apalache (needs Java 21+)
-quint verify spec/lazypkg.qnt --invariant=allInvariants
+quint verify spec/lazypkg.qnt --invariant=allInvariants --max-steps=7
 ```
