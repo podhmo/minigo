@@ -3707,10 +3707,14 @@ func TestHostNilMap(t *testing.T) {
 // `go run ./testdata/funcmap`.
 func TestTemplateFuncMap(t *testing.T) {
 	e := newEngine(t)
-	e.Bind("github.com/podhmo/minigo/testdata/funcmap/identity", map[string]runtime.Value{"Same": &runtime.GoValue{V: func(a, b any) bool {
-		av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
-		return av.IsValid() && bv.IsValid() && av.Type() == bv.Type() && av.Pointer() == bv.Pointer()
-	}}})
+	e.Bind("github.com/podhmo/minigo/testdata/funcmap/identity", map[string]runtime.Value{
+		"Same": &runtime.GoValue{V: func(a, b any) bool {
+			av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+			return av.IsValid() && bv.IsValid() && av.Type() == bv.Type() && av.Pointer() == bv.Pointer()
+		}},
+		"AddIntKey": &runtime.GoValue{V: func(x any) { x.(map[any]string)[int(1)] = "host" }},
+		"Len":       &runtime.GoValue{V: func(m map[any]string) int { return len(m) }},
+	})
 	var got []any
 	for _, fn := range []string{
 		"Text", "Fail", "HTML", "NilFields", "Builtins",

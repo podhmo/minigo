@@ -536,18 +536,18 @@ func NestedChildMapStaysFresh() string {
 type IntKeyPage struct{ M map[any]string }
 
 func (p *IntKeyPage) Mutate() any {
-	p.M[1] = "new"
+	identity.AddIntKey(p.M)
 	return p.M
 }
 
-// IntKeyMapStaysCanonical rewrites one interface-keyed int entry, then
-// passes the shared map through a callback. Both merge directions must
-// use the same canonical key form as the initial conversion; an
-// int64/int mismatch would duplicate the key in sync or drop it in pull.
+// IntKeyMapStaysCanonical lets the host add one interface-keyed int
+// entry, then reads the shared map's host length. Both merge directions
+// must use one canonical key form; an int64/int mismatch would duplicate
+// the key in the host projection even though the script has one entry.
 func IntKeyMapStaysCanonical() string {
-	data := &IntKeyPage{M: map[any]string{1: "old"}}
-	fm := template.FuncMap{"read": func(m map[any]string) int { return len(m) }}
-	t := template.Must(template.New("int-key-canonical").Funcs(fm).Parse(`{{$x := .Mutate}}{{read .M}}`))
+	data := &IntKeyPage{M: map[any]string{}}
+	fm := template.FuncMap{"noop": func(m map[any]string) string { return "" }, "hostlen": identity.Len}
+	t := template.Must(template.New("int-key-canonical").Funcs(fm).Parse(`{{$x := .Mutate}}{{noop .M}}{{hostlen .M}}`))
 	var sb strings.Builder
 	if err := t.Execute(&sb, data); err != nil {
 		return "error: " + err.Error()
