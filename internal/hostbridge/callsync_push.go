@@ -11,8 +11,7 @@ import (
 // {{range}} sees the callback's writes like gc's shared map would.
 // Host-side writes survive: deletes apply only to keys the merge knew,
 // and a value the script left alone stays untouched. A child container
-// already registered on this goroutine keeps its canonical host projection;
-// otherwise its parent would point at an unregistered copy.
+// already registered on this goroutine keeps its canonical projection.
 func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 	seen := map[*projEntry]bool{e: true}
 	m.syncProjectedSeen(e, vc, seen)
@@ -61,6 +60,7 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 					continue
 				}
 			}
+			dropCanonicalKeyAliases(rv, hk)
 			rv.SetMapIndex(hk, hv)
 			m.registerProjected(sv, hv.Interface())
 		}
