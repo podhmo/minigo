@@ -15,7 +15,7 @@ func TestHelpTopics(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	want := []string{"", "gen-intrinsics", "repl", "run", "vet"}
+	want := []string{"", "env", "examples", "gen-intrinsics", "repl", "run", "vet"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("help topics mismatch (-want +got):\n%s", diff)
 	}
@@ -73,6 +73,8 @@ func TestHelpTopic(t *testing.T) {
 	}{
 		{[]string{"help"}, ""},
 		{[]string{"help", "run"}, "run"},
+		{[]string{"help", "examples"}, "examples"},
+		{[]string{"help", "env"}, "env"},
 		{[]string{"help", "-h"}, ""},
 		{[]string{"help", "--help"}, ""},
 	} {
