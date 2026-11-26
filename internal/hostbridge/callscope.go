@@ -44,9 +44,11 @@ type projEntry struct {
 
 type callScopeStack struct {
 	mu sync.Mutex
-	// walk folds repeat projections of the same script object across the
-	// host calls nested on this goroutine, so write-back reprojection reuses
-	// the projection the host already holds instead of minting a fresh one.
+	// walk folds repeat projections of the same script object inside one
+	// merge pass, so write-back reprojection reuses the projection the host
+	// already holds instead of minting a fresh one. Ordinary nested host
+	// calls use fresh walks: a script mutation made immediately before the
+	// inner call must marshal as its current value, not a cached copy.
 	walk *runtime.Walk
 	// scopes maps a projected host container's pointer to its merge
 	// state; slices mirrors the slice registrations so a windowed
@@ -82,12 +84,12 @@ func (m *Marshal) callGid() int64 {
 }
 
 // scopedWalk starts a marshal over the projection-identity walk shared by
-// this goroutine's host-call scopes. The budget is per conversion while the
-// identity walk lasts for the outer call: a merge that mentions one script
-// object twice must reuse its projection, not mint two competing copies.
+// this goroutine's merge passes. The budget is per conversion while the
+// identity walk lasts for the pass: a merge that mentions one script object
+// twice must reuse its projection, not mint two competing copies.
 func (m *Marshal) scopedWalk() *HostMarshal {
 	st, ok := m.ownStack()
-	if !ok {
+	if !ok || !m.insideMerge() {
 		return m.NewWalk()
 	}
 	s := st

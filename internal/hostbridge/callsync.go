@@ -276,6 +276,10 @@ func (m *Marshal) mergeEntries(usedOnly bool) (*callScopeStack, []*projEntry) {
 		return nil, nil
 	}
 	s.merging++
+	// Identity reuse lasts exactly one merge pass. Keeping the walk into a
+	// later pass would cache containers beside the snapshot machinery and
+	// could serve the pre-mutation copy again.
+	s.walk = runtime.NewWalk()
 	var es []*projEntry
 	for i := range s.scopes {
 		for p, e := range s.scopes[i] {
@@ -293,6 +297,9 @@ func (m *Marshal) mergeEntries(usedOnly bool) (*callScopeStack, []*projEntry) {
 func (m *Marshal) endMerge(s *callScopeStack) {
 	s.mu.Lock()
 	s.merging--
+	if s.merging == 0 {
+		s.walk = nil
+	}
 	s.mu.Unlock()
 }
 

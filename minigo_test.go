@@ -3711,6 +3711,7 @@ func TestTemplateFuncMap(t *testing.T) {
 	for _, fn := range []string{
 		"Text", "Fail", "HTML", "NilFields", "Builtins",
 		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HiddenFields", "HTMLTyped",
+		"NestedRenderFresh",
 	} {
 		got = append(got, run(t, e, "./testdata/funcmap", fn))
 	}
@@ -3762,6 +3763,7 @@ func TestTemplateFuncMap(t *testing.T) {
 		// own originals (a zero-size *struct{} would share one address)
 		"1 2",
 		"<ul><li>1,2</li><li>3,4</li></ul>",
+		"new",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("FuncMap (-want +got):\n%s", diff)

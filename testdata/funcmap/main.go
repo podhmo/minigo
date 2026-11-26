@@ -353,6 +353,28 @@ func HTMLTyped() string {
 	return sb.String()
 }
 
+// NestedRenderFresh re-renders a map after a callback mutates it. The
+// nested template must marshal the current script map, not the host
+// projection cached by the outer render.
+func NestedRenderFresh() string {
+	data := map[string]any{"v": "old"}
+	t := template.Must(template.New("nested-fresh").Funcs(template.FuncMap{
+		"render": func() string {
+			data["v"] = "new"
+			var inner strings.Builder
+			if err := template.Must(template.New("inner-fresh").Parse(`{{.v}}`)).Execute(&inner, data); err != nil {
+				return "error: " + err.Error()
+			}
+			return inner.String()
+		},
+	}).Parse(`{{render}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 func main() {
 	fmt.Println(Builtins())
 	fmt.Println(Text())
