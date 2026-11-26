@@ -71,11 +71,12 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	plan := planStructProjection(recv, s, vc)
 	out := reflect.New(plan.typ)
 	h.Walk.Register(key, out.Interface())
-	// Keep the receiver itself on the walk too: the weak structOrigs
-	// round-trip is backed by the host call's strong ownership for the
-	// duration of that call.
+	// Keep the receiver itself on the walk for cyclic conversion identity;
+	// the call scope separately owns it for round-trips that outlive one
+	// conversion or merge pass.
 	h.Walk.Register(recv, out.Interface())
 	RecordStructOrig(out.Interface(), recv)
+	h.M.retainProjectionOrig(recv)
 	if h.filling == nil {
 		h.filling = map[runtime.Value]bool{}
 	}

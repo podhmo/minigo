@@ -58,6 +58,11 @@ type callScopeStack struct {
 	scopes []map[uintptr]*projEntry
 	slices []sliceReg
 	used   map[uintptr]bool
+	// originals strongly owns the script values backing struct projections
+	// for the duration of this goroutine's outermost host call. The
+	// process-wide StructOrig registry is weak; this bounded lifetime is
+	// what makes a projection handed back during its owning call round-trip.
+	originals map[runtime.Value]bool
 	// merging is nonzero while a sync/pull merge pass iterates the
 	// scopes. Re-projections a merge drives must not feed back into
 	// the merge machinery: a projection registered mid-merge only
@@ -100,6 +105,23 @@ func (m *Marshal) scopedWalk() *HostMarshal {
 	w := s.walk
 	s.mu.Unlock()
 	return &HostMarshal{M: m, Walk: w, Budget: HostEvalBudget}
+}
+
+// retainProjectionOrig keeps a projected struct's script original alive
+// for the owning host call. Unlike the projection-identity walk, this is
+// not a conversion cache, so retaining it cannot serve stale values.
+func (m *Marshal) retainProjectionOrig(v runtime.Value) {
+	st, ok := m.ownStack()
+	if !ok {
+		return
+	}
+	s := st
+	s.mu.Lock()
+	if s.originals == nil {
+		s.originals = map[runtime.Value]bool{}
+	}
+	s.originals[v] = true
+	s.mu.Unlock()
 }
 
 // pushCallScope opens a projection scope for the duration of a host
