@@ -87,7 +87,7 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 	}
 	h.filling[key] = true
 	defer delete(h.filling, key)
-	fillStructProjection(out.Elem(), plan, recv, s, vc, h)
+	fillStructProjection(out.Elem(), plan, recv, s, vc, h, true)
 	return out.Interface()
 }
 
@@ -112,7 +112,7 @@ func (h *HostMarshal) refreshStructProjection(old any, recv runtime.Value, s *ru
 	key := structProjectionKey{s: s, valueRecv: valueRecv}
 	h.filling[key] = true
 	defer delete(h.filling, key)
-	fillStructProjection(ev, plan, recv, s, vc, h)
+	fillStructProjection(ev, plan, recv, s, vc, h, false)
 	return true
 }
 
@@ -171,45 +171,5 @@ func planStructProjection(recv runtime.Value, s *runtime.Struct, vc runtime.VMCa
 		pnames:    pnames,
 		pitems:    pitems,
 		valueRecv: valueRecv,
-	}
-}
-
-// fillStructProjection writes one projection's exported fields, methods
-// and promoted members. The writable fields are zeroed first so a method
-// whose refresh fails reads as the same dropped entry a fresh projection
-// would have.
-func fillStructProjection(ev reflect.Value, plan structProjectionPlan, recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *HostMarshal) {
-	for i := 0; i < ev.NumField(); i++ {
-		if fv := ev.Field(i); fv.CanSet() {
-			fv.SetZero()
-		}
-	}
-	for j, i := range plan.fidx {
-		if fv := h.M.DeepHost(s.Fields[i], vc, h); fv != nil {
-			ev.Field(j).Set(reflect.ValueOf(fv))
-		}
-	}
-	td := s.Def
-	if td == nil {
-		return
-	}
-	for k, name := range plan.mnames {
-		h.projMethod(ev.Field(len(plan.fidx)+k), td.Methods[name], recv, td.Methods[name].PtrRecv && plan.valueRecv, vc)
-	}
-	for j, name := range plan.pnames {
-		fv := ev.Field(len(plan.fidx) + len(plan.mnames) + j)
-		it := plan.pitems[name]
-		switch {
-		case it.hm:
-			h.projHostMethod(fv, it.hv)
-		case it.hv.IsValid():
-			fv.Set(it.hv)
-		case it.m != nil:
-			h.projMethod(fv, it.m, it.recv, false, vc)
-		default:
-			if hv := h.M.DeepHost(it.fv, vc, h); hv != nil {
-				fv.Set(reflect.ValueOf(hv))
-			}
-		}
 	}
 }
