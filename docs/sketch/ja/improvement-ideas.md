@@ -3,6 +3,7 @@
 コードのオーナーとして「次に何を良くするか」を4つの軸（コード品質 / 機能 / UX / 性能）で洗い出したメモ。
 既に TODO.md や `docs/next/ja/TODO.md`（リアーキテクチャ計画）にある項目は重複させず、参照に留める。
 各アイデアには **根拠（実測・観察）**、**提案**、**コスト感** を付けた。末尾に優先度表がある。
+精査と TODO / open questions への振り分けは [improvement-ideas-review.md](./improvement-ideas-review.md) にまとめた。
 
 前提とする位置付けは `docs/ja/minigo-positioning.md` のとおり ——
 「ビルドのない即時実行」が価値の中心で、実行速度そのものはネイティブに勝てない。
@@ -20,7 +21,7 @@
 | 同ループの alloc | `intBinOp` が 80MB（`runtime.Value = any` による int の interface boxing、`convT64`） |
 | `minigo vet .` に `undefined: undefinedThing` を含むファイル | **exit 0**（実行すると trap） |
 | panic 時のトレースバック | 絶対パス・行のみ（列なし）・Python 風 `File "...", line N, in f()` |
-| `go test .`（root 権限のコンテナ） | `os_err_script_path` が失敗（後述 C4、変更とは無関係の既存問題） |
+| `go test .`（root 権限のコンテナ） | `os_err_script_path` が失敗（後述 C2、変更とは無関係の既存問題） |
 
 ---
 
@@ -47,14 +48,15 @@ universe スコープ（`int`, `string`, `error`, …）は Engine 構築後に�
 - もしくは universe 用 `Env` を「構築後 freeze された mutex なし map」に分ける。他の `Env` も、**書き込みがセッション初期化と REPL 以外にない** なら copy-on-write に寄せられる。
 - 期待値: P1 適用後の残り `Env.Get` 由来 CPU（プロファイル上 RWMutex だけで ~10%）がほぼ消える。
 
-### P3. フレームのオペランドスタックを "最大深さ事前確保 + sp インデックス" に【中】
+### P3. `MaxStack` を連続オペランドスタックの事前確保に使う【中・要再計測】
 
-**根拠**: `frame.push`/`frame.pop` で 19%。append の容量チェックとスライスヘッダ更新が毎命令に乗っている。
+**根拠**: `frame.push`/`frame.pop` で 19%。ただし精査時点の実装は、frame ごとの独立スライスではなく、
+goroutine ごとの連続 arena `v.vals` 上の窓 `vals[base:base+sp]` を既に使っている（P4-3 済み）。
+`sp` インデックスも既存なので、残っているコストは arena の append/re-slice・容量更新・stale view 再切断まわりと考えて再計測が必要。
 
-**提案**: コンパイラが chunk ごとに `MaxStack` を算出（バイトコードの静的なスタック効果から計算可能）し、
-`prepFrame` で `make([]Value, MaxStack)` を一度だけ確保、push/pop は `f.stack[f.sp] = v; f.sp++` にする。
-TODO.md の「shared contiguous value stack for frames」（later/larger）への第一歩としても位置づく ——
-フレーム間共有は後回しにし、まずフレーム内の append を消す。
+**提案**: `bytecode.Verify` は既に `MaxStack` を計算して返すが、現状は検証時に返り値を使っていない。
+これを `Chunk` に保持し、`prepFrame` / 呼び出し側で frame 窓の最大深さぶんを事前に確保・予約できるかを試す。
+「shared contiguous value stack を新規導入する」話ではなく、**導入済みの連続スタックの拡張コストを削る**話として扱う。
 
 ### P4. 整数ループ向けのスーパー命令（superinstruction）【中】
 
@@ -87,7 +89,7 @@ bare `int` の小さな値は Go ランタイムの `staticuint64s`（0..255）�
 
 - 段階1: `runtime.Bytes` 型を追加し、**読み取り専用経路**（`len`, index read, `range`, `string(b)`, host への受け渡し）だけ対応。書き込みが来たら従来の `[]Value` に materialize（copy-on-write）。
 - 段階2: `append`/`copy`/`b[i] = x` をネイティブ化。
-- `.Elems` 直接参照の ~280 箇所は、まず `SliceLike` インターフェイス経由のアクセサに機械的に置換するリファクタを先行させる（ロジック変更ゼロの PR として分離できる）。
+- `.Elems` 直接参照（精査時点で test を除く `.go` ファイル約 313 箇所）は、まず `SliceLike` インターフェイス経由のアクセサに機械的に置換するリファクタを先行させる（ロジック変更ゼロの PR として分離できる）。
 
 案B（GoValue boxing）は例外ケースが増え続けるので取らない。
 
@@ -132,7 +134,8 @@ TODO.md / #1396 の既存項目への具体案。
 ### F1. `minigo check`（または `vet --deep`）—— 「到達したら落ちる」を事前に知る【中】
 
 **根拠**: 「コンパイルは決して失敗しない、未対応は到達時に trap」という設計は正しいが、利用者は
-**自分のスクリプトが最後まで走るか** を実行するまで知れない。`minigo vet` は未登録 stub の検出だけで、
+**自分のスクリプトが最後まで走るか** を実行するまで知れない。`minigo vet` は未登録 stub の検出に加えて
+`os.ReadFile` の performance hint も既に出すが、関数本体を eager compile して `OpTrap` を列挙する検査はなく、
 `undefined: undefinedThing` を含むファイルでも exit 0 を返す。
 
 **提案**: 対象パッケージ（**import 先は含めない**）の全関数を strict lazy compile（`WithStrictLazyCompile` の経路）で eager にコンパイルし、
@@ -145,7 +148,8 @@ TODO.md / #1396 の既存項目への具体案。
 ### F2. `minigo test` —— ビルドなしでテストを回す【中〜大】
 
 **根拠**: 「入力が変わるたびに即実行」は生成スクリプトだけでなくテストにも当てはまる。
-`examples/test-detect` がテスト検出を既に実験している。
+`examples/test-detect` はテスト対象の検出であって実行基盤ではないが、`tools/tmpltests` は stdlib の `*_test.go` を
+minigo 上で走らせる generated driver と最小 `testing` shim を既に持っており、こちらが直接の実証になる。
 
 **提案（最小形）**:
 - `_test.go` を含めてパッケージを読み、`TestXxx(t *testing.T)` を列挙して順に実行。
@@ -163,11 +167,12 @@ TODO.md / #1396 の既存項目への具体案。
 
 Go ファイルに `#!` は書けないが、`gorun` 系で知られる
 ```go
-///usr/bin/env minigo "$0" "$@"; exit
+///usr/bin/env minigo "$0" -- "$@"; exit
 package main
 ```
 のイディオム（1行目が `//` コメントとして Go 的に合法で、シェルからは実行される）を公式にサポート・ドキュメント化する。
-`minigo run file.go` が `os.Args[0]` を素直に設定すれば実装はほぼ不要で、README とテストを足すだけ。
+`--` がない形だと script 引数が minigo 側の positional argument として解釈され、複数引数で `unexpected arguments` になることを確認した。
+`--` 入りなら `os.Args` は `["./script.go" "a" "b"]` のように素直に届くので、実装はほぼ不要で、README とテストを足すだけ。
 「Go で書くシェルスクリプト」の用途が明確になる。
 
 ### F5. `Engine` API の型付きヘルパ【小】
@@ -223,7 +228,7 @@ C3 のエラーコードと組み合わせると `minigo explain` に誘導で�
 
 - `:type <expr>` —— 値を評価せずに（もしくは評価して）型を表示。
 - `:time <stmt>` —— 1 行の実行時間。
-- 括弧が閉じていない入力は継続行として受ける（複数行貼り付け対応）。
+- 括弧が閉じていない入力の継続行（複数行貼り付け対応）は `repl.IncompleteInput` と `.. ` prompt で既に実装済み。
 - 補完は TODO.md の experiment 項目の結論次第。
 
 ### U6. `minigo help` に用例を【小】
@@ -248,7 +253,7 @@ C3 のエラーコードと組み合わせると `minigo explain` に誘導で�
 | 7 | F1 | `minigo check` | 「最後まで走るか」を事前に | 中 |
 | 8 | P5 | ベンチの CI ゲート | 速度回帰の検知 | 小〜中 |
 | 9 | U2/U3 | did-you-mean / 次の一手ヒント | 初見の詰まりを減らす | 小 |
-| 10 | P3 | MaxStack 事前確保 | push/pop 19% の削減 | 中 |
+| 10 | P3 | 連続スタックへの MaxStack 事前確保 | arena 拡張/re-slice 削減（要再計測） | 中 |
 | 11 | F4 | shebang 互換の公式化 | スクリプト用途の明確化 | 小 |
 | 12 | C3 | trap コード | メッセージ改善の自由度 | 中 |
 | 13 | P4 | 整数スーパー命令 | ループの alloc 削減 | 中 |
