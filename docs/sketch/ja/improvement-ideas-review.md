@@ -11,7 +11,7 @@
 
 - 方向性はおおむね妥当。特に **P1（`retypeStore`）** と **C2（root 環境テスト）** は小さく切り出して進めてよい。
 - 初期版にはいくつか古い前提・事実誤認があった。`improvement-ideas.md` 本体はこの PR 内で修正済み。
-- 未決事項の管理場所は既に [`docs/open-questions.md`](../../open-questions.md) として存在した。新規作成ではなく、今回のふんわりした論点をそこへ追加した。
+- 未決事項の管理場所は [`docs/ja/open-questions.md`](../../ja/open-questions.md)。もともと `docs/open-questions.md`（英語）として存在したが、日本語運用に合わせて移動・翻訳し、今回のふんわりした論点をそこへ追加した。
 - TODO.md には「 actionable になったもの」だけを足した。判断待ちのものは open questions、測定待ち・優先度が低いものはこのメモに留める。
 
 ## 独立に確認した事実
@@ -44,7 +44,7 @@
 | P2 builtin typedef cache | **採用（P1 後）** | P1 の TODO 内に follow-up として記載済み。P1 適用後の profile で効果を再確認する |
 | P3 `MaxStack` | **修正して採用候補** | TODO 追加済み。連続スタックは済んでいるため、残コストを再計測してから。実装時は per-frame stack に戻さない |
 | P4 superinstruction | **保留** | もっとも効く箇所が P1/P3 の適用後に変わる可能性が高い。まず再計測。tagged `Value` 自体は既存判断でも見送り気味 |
-| P5 benchmark CI gate | **open question** | ベンチ集合・閾値・CI コストが未決定。[`docs/open-questions.md`](../../open-questions.md) `perf-gate` |
+| P5 benchmark CI gate | **open question** | ベンチ集合・閾値・CI コストが未決定。[`docs/ja/open-questions.md`](../../ja/open-questions.md) `perf-gate` |
 | P6 compact `[]byte` | **既存 open question を更新** | readfile-mem は既に open question。PR の段階導入案を「推奨案」として追記したが決定ではない |
 | C1 budgets ratchet | **既存 TODO** | #1396 に既にある。今回の「上限 + 片方向ラチェット」は有力な具体案だが重複起票しない |
 | C2 root test guard | **採用** | TODO 追加済み（PR 初期版）。root container で clean checkout の `make test` が赤い問題は実害がある |
@@ -64,7 +64,7 @@
 
 ## open questions に追加したもの
 
-既存の [`docs/open-questions.md`](../../open-questions.md) に、今回の未決事項として次を追加した。
+移動・日本語化した [`docs/ja/open-questions.md`](../../ja/open-questions.md) に、今回の未決事項として次を追加した。
 
 - `exit-codes` — panic / trap / `os.Exit(1)` をどう区別するか
 - `check-command` — deep trap 列挙を `minigo check` にするか `vet --deep` にするか

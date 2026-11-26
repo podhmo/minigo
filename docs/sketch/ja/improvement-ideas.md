@@ -84,7 +84,7 @@ bare `int` の小さな値は Go ランタイムの `staticuint64s`（0..255）�
 
 ### P6. `[]byte` のコンパクト表現 —— open question への推奨【大】
 
-`docs/open-questions.md` の readfile-mem 問題（32MB の `os.ReadFile` で ~560MB RSS）について、オーナーとしての推奨は
+`docs/ja/open-questions.md` の readfile-mem 問題（32MB の `os.ReadFile` で ~560MB RSS）について、オーナーとしての推奨は
 **案A（ホスト `[]byte` を backing にしたコンパクトスライス）を段階導入** する方。
 
 - 段階1: `runtime.Bytes` 型を追加し、**読み取り専用経路**（`len`, index read, `range`, `string(b)`, host への受け渡し）だけ対応。書き込みが来たら従来の `[]Value` に materialize（copy-on-write）。
