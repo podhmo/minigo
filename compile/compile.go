@@ -278,12 +278,7 @@ func compileFuncStrict(fn *runtime.Function, strict bool) error {
 	}
 	// implicit return
 	c.emit(bytecode.OpReturn, nresults, 0, fn.Decl.End())
-	c.ch.NLocals = c.fs.nlocals
-	c.ch.Upvals = c.fs.upvals
-	c.ch.Boxed = c.fs.boxedSlice()
-	c.keepSynthImports()
-	spike.NoteChunkClassified(c.ch.Boxed)
-	fn.Chunk = c.ch
+	fn.Chunk = c.finishChunk()
 	return nil
 }
 
@@ -303,11 +298,7 @@ func ExprStrict(pkg *runtime.Package, file *syntax.File, e ast.Expr, strict bool
 	c.fs.pushBlock()
 	c.expr(e)
 	c.emit(bytecode.OpReturn, 1, 0, e.End())
-	c.ch.NLocals = c.fs.nlocals
-	c.ch.Boxed = c.fs.boxedSlice()
-	c.keepSynthImports()
-	spike.NoteChunkClassified(c.ch.Boxed)
-	return c.ch, nil
+	return c.finishChunk(), nil
 }
 
 // ExprScoped is [Expr] with free identifiers resolved against a caller's
@@ -339,9 +330,5 @@ func ExprScopedStrict(pkg *runtime.Package, file *syntax.File, e ast.Expr, local
 	}
 	c.expr(e)
 	c.emit(bytecode.OpReturn, 1, 0, e.End())
-	c.ch.NLocals = c.fs.nlocals
-	c.ch.Boxed = c.fs.boxedSlice()
-	c.keepSynthImports()
-	spike.NoteChunkClassified(c.ch.Boxed)
-	return c.ch, nil
+	return c.finishChunk(), nil
 }

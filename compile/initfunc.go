@@ -32,22 +32,8 @@ func InitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) 
 	c.emit(bytecode.OpConst, c.constIdx(int64(0)), 0, 0)
 	c.emit(bytecode.OpNewLocal, iotaSlot, 0, 0)
 
-	// One representative decl per spec, in source order.
-	var specReps []*index.Decl
-	seen := map[*ast.ValueSpec]bool{}
-	for _, d := range pkg.Index.Decls {
-		if d.Kind != index.ConstDecl && d.Kind != index.VarDecl {
-			continue
-		}
-		vs := d.Spec.(*ast.ValueSpec)
-		if seen[vs] {
-			continue
-		}
-		seen[vs] = true
-		specReps = append(specReps, d)
-	}
 	// Go initializes vars/consts in dependency order, not textual order.
-	for _, d := range orderSpecs(pkg.Index, specReps) {
+	for _, d := range orderSpecs(pkg.Index, valueSpecReps(pkg.Index.Decls, false)) {
 		c.file = d.File // per-file: import aliases and scope lookups
 		if d.Kind == index.ConstDecl {
 			c.emit(bytecode.OpConst, c.constIdx(int64(d.Idx)), 0, d.Pos)
@@ -65,12 +51,26 @@ func InitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) 
 		c.emit(bytecode.OpPop, 0, 0, d.Pos)
 	}
 	c.emit(bytecode.OpReturn, 0, 0, 0)
-	c.ch.NLocals = c.fs.nlocals
-	c.ch.Upvals = c.fs.upvals
-	c.ch.Boxed = c.fs.boxedSlice()
-	c.keepSynthImports()
-	spike.NoteChunkClassified(c.ch.Boxed)
-	return c.ch, nil
+	return c.finishChunk(), nil
+}
+
+// valueSpecReps returns one representative declaration per value spec, in
+// source order. constOnly narrows the representatives to const declarations.
+func valueSpecReps(decls []*index.Decl, constOnly bool) []*index.Decl {
+	var out []*index.Decl
+	seen := map[*ast.ValueSpec]bool{}
+	for _, d := range decls {
+		if d.Kind != index.ConstDecl && (constOnly || d.Kind != index.VarDecl) {
+			continue
+		}
+		vs := d.Spec.(*ast.ValueSpec)
+		if seen[vs] {
+			continue
+		}
+		seen[vs] = true
+		out = append(out, d)
+	}
+	return out
 }
 
 // ConstInitFunc compiles an initializer for the package's constants only,
@@ -86,19 +86,7 @@ func ConstInitFunc(pkg *runtime.Package) (*bytecode.Chunk, error) {
 func ConstInitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, error) {
 	spike.EnterCompile()
 	defer spike.LeaveCompile()
-	var specReps []*index.Decl
-	seen := map[*ast.ValueSpec]bool{}
-	for _, d := range pkg.Index.Decls {
-		if d.Kind != index.ConstDecl {
-			continue
-		}
-		vs := d.Spec.(*ast.ValueSpec)
-		if seen[vs] {
-			continue
-		}
-		seen[vs] = true
-		specReps = append(specReps, d)
-	}
+	specReps := valueSpecReps(pkg.Index.Decls, true)
 	if constRefsVarOrFunc(pkg.Index, specReps) {
 		// such a program needs the full initializer: either the code is
 		// not really constant, or a builtin operand like len/Sizeof still
@@ -125,10 +113,5 @@ func ConstInitFuncStrict(pkg *runtime.Package, strict bool) (*bytecode.Chunk, er
 		c.iotaVal = -1
 	}
 	c.emit(bytecode.OpReturn, 0, 0, 0)
-	c.ch.NLocals = c.fs.nlocals
-	c.ch.Upvals = c.fs.upvals
-	c.ch.Boxed = c.fs.boxedSlice()
-	c.keepSynthImports()
-	spike.NoteChunkClassified(c.ch.Boxed)
-	return c.ch, nil
+	return c.finishChunk(), nil
 }
