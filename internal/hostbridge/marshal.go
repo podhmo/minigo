@@ -579,6 +579,7 @@ func (h *HostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any,
 		switch rt.Kind() {
 		case reflect.Slice:
 			if out, ok := basicSliceFill(rt, x.Elems); ok {
+				h.Walk.Register(x, out)
 				return out, true
 			}
 			out := reflect.MakeSlice(rt, len(x.Elems), len(x.Elems))
@@ -592,6 +593,7 @@ func (h *HostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any,
 					return nil, false
 				}
 			}
+			h.Walk.Register(x, out.Interface())
 			return out.Interface(), true
 		case reflect.Array:
 			if rt.Len() != len(x.Elems) {
@@ -647,6 +649,7 @@ func (h *HostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any,
 			}
 			out.SetMapIndex(kv, ev)
 		}
+		h.Walk.Register(x, out.Interface())
 		return out.Interface(), true
 	}
 	return nil, false
