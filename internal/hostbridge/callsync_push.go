@@ -6,12 +6,11 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// syncProjected merges the script container's changes into the host
-// projection the host keeps reading after the call — template
-// {{range}} sees the callback's writes like gc's shared map would.
-// Host-side writes survive: deletes apply only to keys the merge knew,
-// and a value the script left alone stays untouched. A child container
-// already registered on this goroutine keeps its canonical projection.
+// syncProjected merges script container changes into the host projection
+// the host keeps reading after the call, so template {{range}} sees the
+// callback's writes like gc's shared map would. Host-side writes survive:
+// deletes apply only to keys the merge knew, untouched values stay, and a
+// registered child keeps its canonical projection.
 func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
 	seen := map[*projEntry]bool{e: true}
 	m.syncProjectedSeen(e, vc, seen)
@@ -39,6 +38,7 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 				rv.SetMapIndex(mk, reflect.Value{})
 			}
 		}
+		keyAliases := canonicalKeyAliases(rv)
 		for i := 0; i < s.Len(); i++ {
 			sk, sv := s.At(i)
 			if old, ok := e.snap[projKey(sk)]; ok && sameSlot(sv, old) {
@@ -60,7 +60,7 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 					continue
 				}
 			}
-			dropCanonicalKeyAliases(rv, hk)
+			dropCanonicalKeyAliases(rv, hk, keyAliases[projKey(sk)])
 			rv.SetMapIndex(hk, hv)
 			m.registerProjected(sv, hv.Interface())
 		}
