@@ -12,12 +12,8 @@ package hostbridge
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 	"reflect"
-	"sort"
-	"strconv"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 
 	"github.com/podhmo/minigo/runtime"
@@ -26,11 +22,6 @@ import (
 // PoolType is sync.Pool's reflect type — hostFieldValue keys Pool.New's
 // opaque-result rule on it, and vm's composite literal path does too.
 var PoolType = reflect.TypeFor[sync.Pool]()
-
-var (
-	hostShapes    sync.Map // *runtime.TypeDef -> reflect.Type (nil: no shape)
-	hostShapeSize atomic.Int64
-)
 
 // Marshal carries the VM hooks the host marshal needs. The vm package
 // builds one per process; nil hooks disable the paths that need them.
@@ -135,6 +126,9 @@ type HostMarshal struct {
 	M      *Marshal
 	Walk   *runtime.Walk
 	Budget int
+	// filling marks struct projections currently being built, so a cyclic
+	// reference does not look like a completed projection to refresh.
+	filling map[runtime.Value]bool
 }
 
 // toReflectValue marshals a runtime value to a reflect.Value of the
@@ -170,7 +164,7 @@ func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtim
 		// slices as []any, maps as map[any]any. Pointer-like values stay
 		// verbatim: their address-ness is the point. callReflectFunc
 		// copies a converted slice's elements back after the call.
-		v = m.DeepHost(v, vc, m.NewWalk())
+		v = m.DeepHost(v, vc, m.scopedWalk())
 		if v == nil || v == runtime.NIL {
 			return reflect.Zero(t), nil
 		}
@@ -555,233 +549,6 @@ func (m *Marshal) hostNilOf(td *runtime.TypeDef, vc runtime.VMCaller) any {
 	return nil
 }
 
-// hostSeqFunc adapts a script iter.Seq / iter.Seq2 value to the host
-// func(yield func(any) bool) / func(yield func(any, any) bool) shape: the
-// host's yield receives each element marshaled like any other `any`
-// data, and its false return stops the script producer. A failure inside
-// the seq propagates as a panic, as a callback's would. ok is false for a
-// value not typed as a seq.
-func (m *Marshal) hostSeqFunc(n *runtime.Named, vc runtime.VMCaller) (any, bool) {
-	arity := runtime.IterSeqArity(n.Typ)
-	if arity == 0 {
-		return nil, false
-	}
-	seq := runtime.Value(n)
-	toHost := func(e runtime.Value, c runtime.VMCaller) any {
-		return m.DeepHost(e, c, m.NewWalk())
-	}
-	drive := func(yield func(runtime.VMCaller, []runtime.Value) bool) {
-		// a host panic out of yield (text/template unwinds {{break}}
-		// with one) must reach the host's recover unchanged: stop the
-		// producer and re-raise it once the VM call is out of the way.
-		var hostPanic any
-		panicked := false
-		yb := &runtime.BuiltinFunc{Name: "host yield", Fn: func(c runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			goon := false
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						hostPanic, panicked = r, true
-					}
-				}()
-				goon = yield(c, args)
-			}()
-			return goon && !panicked, nil
-		}}
-		_, err := vc.Call(seq, []runtime.Value{yb})
-		if panicked {
-			panic(hostPanic)
-		}
-		if err != nil {
-			panic(err)
-		}
-	}
-	at := func(args []runtime.Value, i int) runtime.Value {
-		if i < len(args) {
-			return args[i]
-		}
-		return runtime.NIL
-	}
-	// each element crosses at its host type when it has one (a
-	// predeclared basic, so a template sees int, not interface {}),
-	// else as any; the seq itself is the host's real iter.Seq[...] type
-	// when the binary has that instantiation (%T then matches).
-	elemTs := make([]reflect.Type, arity)
-	els := runtime.IterSeqElemTypes(n.Typ)
-	for i := range elemTs {
-		elemTs[i] = anyType
-		if i < len(els) {
-			if rt := runtime.HostReflectType(els[i]); rt != nil {
-				elemTs[i] = rt
-			}
-		}
-	}
-	seqT := runtime.HostIterSeqType(n.Typ)
-	if seqT == nil {
-		yieldT := reflect.FuncOf(elemTs, []reflect.Type{reflect.TypeFor[bool]()}, false)
-		seqT = reflect.FuncOf([]reflect.Type{yieldT}, nil, false)
-	}
-	return reflect.MakeFunc(seqT, func(in []reflect.Value) []reflect.Value {
-		y := in[0]
-		vals := make([]reflect.Value, arity)
-		drive(func(c runtime.VMCaller, args []runtime.Value) bool {
-			for i, et := range elemTs {
-				vals[i] = reflect.Zero(et)
-				if rv := reflect.ValueOf(toHost(at(args, i), c)); rv.IsValid() {
-					if rv.Type().AssignableTo(et) {
-						vals[i] = rv
-					} else if rv.Type().ConvertibleTo(et) {
-						vals[i] = rv.Convert(et)
-					} else if rv.Kind() == reflect.Pointer {
-						// a host struct element arrives as the
-						// allocator's *T while the seq spells T.
-						if ev := rv.Elem(); ev.IsValid() && ev.Type().AssignableTo(et) {
-							vals[i] = ev
-						}
-					}
-				}
-			}
-			return y.Call(vals)[0].Bool()
-		})
-		return nil
-	}).Interface(), true
-}
-
-// basicClass groups reflect kinds whose values convert into each other
-// without changing meaning: the VM computes every integer in int64 and
-// every float in float64, so only the width (or signedness) differs.
-func basicClass(k reflect.Kind) int {
-	switch {
-	case k >= reflect.Int && k <= reflect.Uintptr:
-		return 1
-	case k == reflect.Float32 || k == reflect.Float64:
-		return 2
-	case k == reflect.Complex64 || k == reflect.Complex128:
-		return 3
-	case k == reflect.String:
-		return 4
-	case k == reflect.Bool:
-		return 5
-	}
-	return 0
-}
-
-// convertBasic converts hv, a marshaled scalar, to the basic or host
-// scalar type rt when both sit in the same basic class; ok is false for
-// anything else.
-func convertBasic(hv any, rt reflect.Type) (reflect.Value, bool) {
-	rv := reflect.ValueOf(hv)
-	if !rv.IsValid() {
-		return reflect.Value{}, false
-	}
-	if rv.Type() == rt {
-		return rv, true
-	}
-	if c := basicClass(rv.Kind()); c != 0 && c == basicClass(rt.Kind()) {
-		return rv.Convert(rt), true
-	}
-	return reflect.Value{}, false
-}
-
-// hostShapeOf returns the Go type a script value of type td can cross a
-// host `any` parameter as: a basic type (or a script type defined over
-// one), a bound host type, the empty interface, and slices, arrays and
-// maps built from those. A script type defined over a basic yields that
-// basic (its name and methods have no host equivalent). nil when some
-// part has no host equivalent at all — a script struct, a pointer — and
-// the value then marshals through the generic []any / map[any]any shape.
-func (m *Marshal) hostShapeOf(vc runtime.VMCaller, td *runtime.TypeDef, depth int) reflect.Type {
-	if td == nil || depth > 8 {
-		return nil
-	}
-	if rt := m.HostTypOf(td); rt != nil {
-		return rt
-	}
-	if rt := HostBasicTypes[runtime.BasicNameOf(td)]; rt != nil {
-		return rt
-	}
-	x := td.TypeExpr()
-	switch t := x.(type) {
-	case *ast.InterfaceType:
-		if t.Methods == nil || len(t.Methods.List) == 0 {
-			return anyType
-		}
-		return nil
-	case *ast.Ident:
-		if t.Name == "any" && td.Spec == nil {
-			return anyType
-		}
-	}
-	if td.Name == "any" && td.Spec == nil {
-		return anyType
-	}
-	if m.ElemOf == nil {
-		return nil
-	}
-	switch td.Kind {
-	case runtime.KindSlice:
-		at, ok := x.(*ast.ArrayType)
-		if !ok {
-			return nil
-		}
-		et, err := m.ElemOf(vc, td)
-		if err != nil {
-			return nil
-		}
-		ert := m.hostShapeOf(vc, et, depth+1)
-		if ert == nil {
-			return nil
-		}
-		if at.Len == nil {
-			return reflect.SliceOf(ert)
-		}
-		// the fold's owner is the array's declaring package, not
-		// the element type's — `int` has no package to key on.
-		lit, ok := runtime.ArrayLenExpr(td.Pkg, at).(*ast.BasicLit)
-		if !ok || lit.Kind != token.INT {
-			return nil
-		}
-		n, err := strconv.ParseInt(lit.Value, 0, 64)
-		if err != nil || n < 0 {
-			return nil
-		}
-		return reflect.ArrayOf(int(n), ert)
-	case runtime.KindMap:
-		et, err := m.ElemOf(vc, td)
-		if err != nil {
-			return nil
-		}
-		ert := m.hostShapeOf(vc, et, depth+1)
-		krt := m.hostShapeOf(vc, m.MapKeyOf(vc, td), depth+1)
-		if ert == nil || krt == nil || !krt.Comparable() {
-			return nil
-		}
-		return reflect.MapOf(krt, ert)
-	}
-	return nil
-}
-
-const hostShapeCap = 4096
-
-func (m *Marshal) cachedHostShape(vc runtime.VMCaller, td *runtime.TypeDef) reflect.Type {
-	if td == nil {
-		return nil
-	}
-	if rt, ok := hostShapes.Load(td); ok {
-		t, _ := rt.(reflect.Type)
-		return t
-	}
-	rt := m.hostShapeOf(vc, td, 0)
-	// without a VM the type hooks are out of reach and the answer is a
-	// provisional nil — keep it out of the cache.
-	if m.HasVM(vc) && hostShapeSize.Load() < hostShapeCap {
-		if _, loaded := hostShapes.LoadOrStore(td, rt); !loaded {
-			hostShapeSize.Add(1)
-		}
-	}
-	return rt
-}
-
 // typedContainer marshals a script slice, array or map whose type has a
 // host shape ([hostShapeOf]) into a real Go value of that type —
 // []int, [2]string, map[string]int — so the callee sees the same type gc
@@ -1058,108 +825,6 @@ func (m *Marshal) fillHostStruct(out reflect.Value, s *runtime.Struct, vc runtim
 		reflect.NewAt(fv.Type(), unsafe.Pointer(fv.UnsafeAddr())).Elem().Set(ev)
 	}
 	return nil
-}
-
-// structDataHost marshals a script struct (or a pointer to one) for a
-// host `any` parameter as a *struct{...} fabricated by
-// reflect.StructOf: the type's exported fields plus its exported
-// methods as `any` fields, so a member the type does not offer reports
-// like gc — "can't evaluate field X in type ..." — where a map
-// projection would read the miss as an absent key and print
-// <no value>.
-//
-// A field carries its member deepHost'd; a method matching the
-// template-callable shape (niladic; 1 result, or 2 with error last) is
-// invoked at marshal time and its result stands in — text/template's
-// evalField does not call what it finds, so Go's field-access call is
-// replayed here. The marshal's budget caps these calls; on exhaustion,
-// a pointer-receiver method on a value receiver, and any non-matching
-// shape, the bound function value stays verbatim. A call that fails —
-// panic, or a non-nil error result — leaves the field nil, printing
-// <no value> as the dropped map entry did before. Members promoted
-// through embedded fields join the projection by promotedData — gc
-// resolves them through the interface boundary — and unexported
-// members are absent, matching Go's can't-evaluate and
-// unexported-field errors as a missing field.
-func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *HostMarshal) any {
-	if old, ok := h.Walk.Seen(s); ok {
-		return old
-	}
-	td := s.Def
-	var sfs []reflect.StructField
-	var fidx []int
-	var mnames []string
-	declared := map[string]bool{}
-	if td != nil {
-		for i, name := range td.Fields {
-			if i < len(s.Fields) && ast.IsExported(name) {
-				sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
-				fidx = append(fidx, i)
-				declared[name] = true
-			}
-		}
-		for name := range td.Methods {
-			if ast.IsExported(name) {
-				mnames = append(mnames, name)
-				declared[name] = true
-			}
-		}
-	}
-	sort.Strings(mnames)
-	for _, name := range mnames {
-		sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
-	}
-	// a value receiver excludes pointer receivers from the method set,
-	// exactly as Go does — a *runtime.Struct recv is the struct value,
-	// anything else is a pointer carrying its ref.
-	_, valueRecv := recv.(*runtime.Struct)
-	// members promoted through embedded fields resolve through the
-	// interface boundary in gc — `{{.C.Hidden}}` on an embed-receiving
-	// *T — so they join the projection as direct members.
-	pnames, pitems := promotedData(s, td, vc, !valueRecv, declared)
-	for _, name := range pnames {
-		sfs = append(sfs, reflect.StructField{Name: name, Type: anyType})
-	}
-	if len(sfs) == 0 {
-		// a zero-size struct projects to a shared address (reflect.New
-		// of struct{} returns zerobase), so every empty-exported type
-		// would collide in structOrigs and fold to the newest orig — a
-		// blank field keeps each projection's pointer distinct without
-		// adding a member template field syntax can reach.
-		sfs = append(sfs, reflect.StructField{Name: "_", Type: reflect.TypeFor[int64](), PkgPath: "github.com/podhmo/minigo/vm"})
-	}
-	out := reflect.New(reflect.StructOf(sfs))
-	h.Walk.Register(s, out.Interface())
-	RecordStructOrig(out.Interface(), recv)
-	ev := out.Elem()
-	for j, i := range fidx {
-		if fv := h.M.DeepHost(s.Fields[i], vc, h); fv != nil {
-			ev.Field(j).Set(reflect.ValueOf(fv))
-		}
-	}
-	if td == nil {
-		return out.Interface()
-	}
-	for k, name := range mnames {
-		h.projMethod(ev.Field(len(fidx)+k), td.Methods[name], recv, td.Methods[name].PtrRecv && valueRecv, vc)
-	}
-	for j, name := range pnames {
-		fv := ev.Field(len(fidx) + len(mnames) + j)
-		it := pitems[name]
-		switch {
-		case it.hm:
-			h.projHostMethod(fv, it.hv)
-		case it.hv.IsValid():
-			fv.Set(it.hv)
-		case it.m != nil:
-			h.projMethod(fv, it.m, it.recv, false, vc)
-		default:
-			if hv := h.M.DeepHost(it.fv, vc, h); hv != nil {
-				fv.Set(reflect.ValueOf(hv))
-			}
-		}
-	}
-	return out.Interface()
 }
 
 // nilishHost reports whether v reads as nil to a host — the same cases
