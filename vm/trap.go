@@ -17,6 +17,10 @@ func trapFromConst(pos token.Pos, v any) *runtime.Trap {
 }
 
 func trapCodeForErr(err error) runtime.TrapCode {
+	var trap *runtime.Trap
+	if errors.As(err, &trap) {
+		return trap.StableCode()
+	}
 	var undef *runtime.UndefinedError
 	if errors.As(err, &undef) {
 		return runtime.TrapCodeUndefined

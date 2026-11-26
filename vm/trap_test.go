@@ -30,6 +30,7 @@ func TestTrapCodeForErr(t *testing.T) {
 	}{
 		{"undefined", fmt.Errorf("outer: %w", &runtime.UndefinedError{Reason: "undefined: x"}), runtime.TrapCodeUndefined},
 		{"host conversion", fmt.Errorf("outer: %w", &hostbridge.ConversionError{Err: errors.New("bad value")}), runtime.TrapCodeHostConversion},
+		{"existing trap", fmt.Errorf("outer: %w", &runtime.Trap{Code: runtime.TrapCodeUndefined}), runtime.TrapCodeUndefined},
 		{"generic", errors.New("boom"), runtime.TrapCodeRuntime},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

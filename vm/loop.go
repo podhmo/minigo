@@ -19,6 +19,7 @@
 package vm
 
 import (
+	"fmt"
 	"go/ast"
 
 	"github.com/podhmo/minigo/bytecode"
@@ -958,7 +959,7 @@ func (v *VM) loop(f *frame) {
 			}
 			sv, err := marshalHost.ChanSendValue(v, val, chRV.Type().Elem())
 			if err != nil {
-				f.trap("cannot send on %s: %s", chRV.Type(), err)
+				f.trapErr(fmt.Errorf("cannot send on %s: %w", chRV.Type(), err))
 			}
 			hostbridge.ChanSend(v.chanHooks(f), chRV, sv, w)
 		case bytecode.OpRecv:
@@ -985,7 +986,7 @@ func (v *VM) loop(f *frame) {
 				}
 				sv, err := marshalHost.ChanSendValue(v, val, chRV.Type().Elem())
 				if err != nil {
-					f.trap("cannot send on %s: %s", chRV.Type(), err)
+					f.trapErr(fmt.Errorf("cannot send on %s: %w", chRV.Type(), err))
 				}
 				f.push(&runtime.SelArm{Send: true, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: hostbridge.SelectCaseSend(chRV, sv)})
 			} else {

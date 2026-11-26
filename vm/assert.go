@@ -1067,7 +1067,7 @@ func (v *VM) typedMember(f *frame, td *runtime.TypeDef, name string, recv runtim
 			return &runtime.BoundMethod{Recv: r, Fn: m}
 		}
 	}
-	f.trap("select %s on %s", name, what)
+	f.trapCode(runtime.TrapCodeUndefined, "select %s on %s", name, what)
 	return nil
 }
 
@@ -1177,7 +1177,7 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		}
 	}
 	if isIface {
-		f.trap("interface value has no field %s", name)
+		f.trapCode(runtime.TrapCodeUndefined, "interface value has no field %s", name)
 	}
 	f.trap("select %s on nil %s", name, tdName(td))
 	return nil

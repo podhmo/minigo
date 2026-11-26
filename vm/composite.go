@@ -82,7 +82,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 				case "Path", "Name", "Dir", "State", "Standard":
 					hint = fmt.Sprintf("use inspect.%s(pkg)", name)
 				}
-				f.trap("%s (inspect-layer package metadata — %s)", err, hint)
+				f.trapErr(fmt.Errorf("%w (inspect-layer package metadata — %s)", err, hint))
 			}
 			f.trapErr(err)
 		}
@@ -233,7 +233,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 					return v.methodExprThunk(b, name)
 				}
 			}
-			f.trap("type %s has no method %s", tdName(b), name)
+			f.trapCode(runtime.TrapCodeUndefined, "type %s has no method %s", tdName(b), name)
 		}
 		if m, ok := b.Methods[name]; ok && selVisible(selPkg(f), b.Pkg, name) {
 			if m.PtrRecv {
@@ -266,7 +266,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		if len(b.EmbedSpecs) > 0 || b.Kind == runtime.KindInterface {
 			return v.methodExprThunk(b, name)
 		}
-		f.trap("type %s has no method %s", b.Name, name)
+		f.trapCode(runtime.TrapCodeUndefined, "type %s has no method %s", b.Name, name)
 	case runtime.Nil:
 		// selecting a member on a nil interface value is a nil-pointer
 		// dereference in Go — a script panic, not a trap.
@@ -298,9 +298,9 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		if mv, ok := v.hostMember(f, b.V, name, site); ok {
 			return mv
 		}
-		f.trap("no member %s on host value %T", name, b.V)
+		f.trapCode(runtime.TrapCodeUndefined, "no member %s on host value %T", name, b.V)
 	default:
-		f.trap("select %s on %T", name, base)
+		f.trapCode(runtime.TrapCodeUndefined, "select %s on %T", name, base)
 	}
 	return nil
 }
@@ -493,7 +493,7 @@ func (v *VM) methodExprThunk(td *runtime.TypeDef, name string) runtime.Value {
 			}
 			m, ok := vm.Member(args[0], name)
 			if !ok {
-				return nil, fmt.Errorf("type %s has no method %s", tdName(td), name)
+				return nil, &runtime.UndefinedError{Reason: fmt.Sprintf("type %s has no method %s", tdName(td), name)}
 			}
 			return vm.Call(m, args[1:])
 		},
@@ -992,7 +992,7 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 		if mv, ok := v.hostMember(f, gv.V, name); ok {
 			return mv, nil
 		}
-		f.trap("no member %s on host value %T", name, gv.V)
+		f.trapCode(runtime.TrapCodeUndefined, "no member %s on host value %T", name, gv.V)
 	}
 	if td != nil && td.HostScalar != nil {
 		// a bound host scalar (time.Duration) stores the raw host
@@ -1117,7 +1117,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 							v.setField(f, pr.host, name, val)
 							return
 						}
-						f.trap("%s has no field %s", b.Def.Name, name)
+						f.trapCode(runtime.TrapCodeUndefined, "%s has no field %s", b.Def.Name, name)
 					}
 					st, fi := v.fieldSlotAtPath(f, b, idx, name)
 					if st == nil {
@@ -1139,7 +1139,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 						return
 					}
 				}
-				f.trap("%s has no field %s", b.Def.Name, name)
+				f.trapCode(runtime.TrapCodeUndefined, "%s has no field %s", b.Def.Name, name)
 			}
 		}
 		if pr, ok := v.promotedMember(f, b, name, true); ok {
@@ -1150,7 +1150,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			if pr.st == nil {
 				// a promoted method/interface member is not
 				// assignable — `s.M = x` has no field in Go either.
-				f.trap("%s has no field %s", b.Def.Name, name)
+				f.trapCode(runtime.TrapCodeUndefined, "%s has no field %s", b.Def.Name, name)
 			}
 			var ft *runtime.TypeDef
 			if fts := v.fieldTypedefs(pr.st.Def); pr.idx < len(fts) {
@@ -1162,7 +1162,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			}
 			return
 		}
-		f.trap("%s has no field %s", b.Def.Name, name)
+		f.trapCode(runtime.TrapCodeUndefined, "%s has no field %s", b.Def.Name, name)
 	case *runtime.GoValue:
 		// host struct behind a pointer: `cmd.Dir = "sub"` writes through
 		// reflection so intrinsics like os/exec stay wired to scripts.
@@ -1189,7 +1189,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		}
 		fv := rv.FieldByName(name)
 		if !fv.IsValid() {
-			f.trap("host value %T has no field %s", b.V, name)
+			f.trapCode(runtime.TrapCodeUndefined, "host value %T has no field %s", b.V, name)
 		}
 		// Go lets a package write its own unexported fields; interpreted
 		// stdlib code runs in that package, so ServeMux stamping r.pat on
@@ -1203,7 +1203,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		}
 		nv, err := marshalHost.HostFieldValue(val, rv.Type(), name, fv.Type(), v)
 		if err != nil {
-			f.trap("set field %s: %s", name, err)
+			f.trapErr(fmt.Errorf("set field %s: %w", name, err))
 		}
 		if fv.CanSet() {
 			fv.Set(nv)
@@ -2936,7 +2936,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 				}
 				found := v.setLitField(f, s, etd, fts, name, raw[i*2+1])
 				if !found {
-					f.trap("%s has no field %s", tdName(td), name)
+					f.trapCode(runtime.TrapCodeUndefined, "%s has no field %s", tdName(td), name)
 				}
 			}
 		} else {

@@ -33,6 +33,12 @@ type TrapSpec struct {
 	Reason string
 }
 
+// DisasmConst renders the constant in bytecode disassembly without
+// coupling bytecode back to runtime.
+func (s TrapSpec) DisasmConst() string {
+	return fmt.Sprintf("trap %s %q", s.Code, s.Reason)
+}
+
 // UndefinedError marks a resolution failure as [TrapCodeUndefined] when
 // it becomes a trap. It keeps that classification across `%w` wrapping.
 type UndefinedError struct{ Reason string }

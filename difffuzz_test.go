@@ -87,12 +87,13 @@ func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// want.err holds the expected error text; an absent runErr
-		// or a non-matching one both fail below.
+		// want.err holds expected error text; want.trapcode implies
+		// an error even when the text stays unpinned.
 		wantErrText, err := os.ReadFile(filepath.Join(dir, "want.err"))
-		expectErr := err == nil
+		hasWantErr := err == nil
 		wantTrapCode, err := os.ReadFile(filepath.Join(dir, "want.trapcode"))
 		expectTrapCode := err == nil
+		expectErr := hasWantErr || expectTrapCode
 		_, statErr := os.Stat(filepath.Join(dir, pendingFile))
 		pending := statErr == nil
 		// COMPILE_TIME_FACT (M0-7) labels cases whose expected
@@ -181,7 +182,7 @@ func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
 			diff = cmp.Diff(string(wantStderr), res.stderr)
 		}
 		errMatch := expectErr && res.runErr != nil &&
-			strings.Contains(res.runErr.Error(), strings.TrimSpace(string(wantErrText)))
+			(!hasWantErr || strings.Contains(res.runErr.Error(), strings.TrimSpace(string(wantErrText))))
 		trapCodeMatch := true
 		gotTrapCode := ""
 		if expectTrapCode {
@@ -189,7 +190,7 @@ func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
 			var trap *miniruntime.Trap
 			if errors.As(res.runErr, &trap) {
 				gotTrapCode = string(trap.StableCode())
-				trapCodeMatch = gotTrapCode == strings.TrimSpace(string(wantTrapCode))
+				trapCodeMatch = cmp.Diff(strings.TrimSpace(string(wantTrapCode)), gotTrapCode) == ""
 			}
 		}
 		matched := diff == "" && (expectErr == (res.runErr != nil)) && (!expectErr || errMatch) && trapCodeMatch
@@ -199,6 +200,8 @@ func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
 			t.Errorf("%s now matches go: delete %s/%s to pin the fix", dir, dir, pendingFile)
 		case pending:
 			t.Skipf("known divergence (see %s/%s)", dir, pendingFile)
+		case expectErr && res.runErr == nil && expectTrapCode:
+			t.Errorf("expected trap code %q, but the run succeeded", strings.TrimSpace(string(wantTrapCode)))
 		case expectErr && res.runErr == nil:
 			t.Errorf("expected error containing %q, but the run succeeded", strings.TrimSpace(string(wantErrText)))
 		case expectErr && !errMatch:

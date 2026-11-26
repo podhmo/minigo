@@ -233,7 +233,7 @@ func (v *VM) initHostLiteral(f *frame, td *runtime.TypeDef, hv any, raw []runtim
 		}
 		fv := rv.FieldByName(name)
 		if !fv.IsValid() {
-			f.trap("%s has no field %s", td.Name, name)
+			f.trapCode(runtime.TrapCodeUndefined, "%s has no field %s", td.Name, name)
 		}
 		if !fv.CanSet() {
 			f.trap("cannot set unexported field %s of host type %s", name, td.Name)
