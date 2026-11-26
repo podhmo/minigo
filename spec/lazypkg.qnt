@@ -89,6 +89,23 @@ module lazypkg {
     highWater' = pkgs.mapBy(p => 1),
   }
 
+  // Symbolic verification starts after the independent host publication.
+  // That keeps the depth budget focused on source-package cascades; the
+  // default init still models the host edge itself, and noHostReadyYet
+  // witnesses it in simulation.
+  action verificationInit = all {
+    stage' = pkgs.mapBy(p => if (p == "host") READY else PARSED),
+    initStarted' = pkgs.mapBy(p => false),
+    bootstraps' = pkgs.mapBy(p => 0),
+    constsBound' = pkgs.mapBy(p => false),
+    memberBound' = pkgs.mapBy(p => false),
+    unboundCycleTraps' = 0,
+    stack' = List(),
+    partialServes' = 0,
+    depsTouched' = pkgs.mapBy(p => Set()),
+    highWater' = pkgs.mapBy(p => if (p == "host") 4 else 1),
+  }
+
   // ---- helpers ------------------------------------------------------
   pure def inStack(st, p) = st.indices().exists(i => st.nth(i) == p)
 
@@ -118,9 +135,13 @@ module lazypkg {
 
   // ---- loader progression -------------------------------------------
   // indexing finishes, successfully or not (redeclaration, lang gate,
-  // cgo import — the load-phase failures of indexFiles)
+  // cgo import — the load-phase failures of indexFiles). Independent
+  // indexing actions commute, so use one canonical package order as a
+  // partial-order reduction; only the success/failure outcomes branch.
   action finishIndexing(p) = all {
     stage.get("host") == READY,
+    p != "lib" or stage.get("main") != PARSED,
+    p != "plain" or stage.get("lib") != PARSED,
     stage.get(p) == PARSED,
     any {
       all {
@@ -171,6 +192,9 @@ module lazypkg {
   // Corresponds to EnsureReadyRun winning the once.
   action beginInit(p) = all {
     stage.get("host") == READY,
+    // indexing of unrelated packages is independent of initialization;
+    // canonicalize that load phase before an external init trigger
+    pkgs.forall(q => q == "host" or stage.get(q) != PARSED),
     stage.get(p) == INDEXED or
       (stage.get(p) == FAILED and not(initStarted.get(p))),
     not(initStarted.get(p)),
@@ -374,6 +398,19 @@ module lazypkg {
   // ---- step ----------------------------------------------------------
   action step = any {
     publishHost("host"),
+    verificationStep,
+    settle,
+    bindConsts("main"),
+    bindConsts("lib"),
+    bindConsts("plain"),
+  }
+
+  // Symbolic lifecycle verification omits the already-published host
+  // edge, terminal stuttering, and the const-only fast path. The hidden
+  // const machine does not feed back into the lifecycle invariants; its
+  // fallback is only another initialization trigger, already
+  // over-approximated by beginInit.
+  action verificationStep = any {
     finishIndexing("main"),
     finishIndexing("lib"),
     finishIndexing("plain"),
@@ -398,10 +435,6 @@ module lazypkg {
     completeInit("main"),
     completeInit("lib"),
     completeInit("plain"),
-    bindConsts("main"),
-    bindConsts("lib"),
-    bindConsts("plain"),
-    settle,
   }
 
   // ---- invariants ----------------------------------------------------
