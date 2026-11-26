@@ -50,10 +50,19 @@ package main
 ```
 
 The first line is a Go comment, while a shell that falls back to
-interpreting the file executes minigo with the script path. The `--` is
-part of the contract: arguments after it become the script's `os.Args[1:]`
-(and `os.Args[0]` is the script path). Without `--`, those arguments are
-parsed as minigo's own positional arguments.
+interpreting the file executes minigo with the script path. Make the file
+executable and keep `minigo` on `PATH`:
+
+```sh
+chmod +x script.go
+./script.go a b
+```
+
+The `--` is part of the contract: arguments after it become the script's
+`os.Args[1:]` (and `os.Args[0]` is the script path). Without `--`, those
+arguments are parsed as minigo's own positional arguments and flags —
+for example, `./script.go --help` prints minigo's help instead of running
+the script.
 
 ## REPL
 
