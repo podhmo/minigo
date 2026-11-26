@@ -36,7 +36,6 @@ import (
 	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/resolve"
 	"github.com/podhmo/minigo/runtime"
-	"github.com/podhmo/minigo/testdata/funcmap/identity"
 )
 
 // constScalar unwraps a global cell / UConst / Named wrap down to a
@@ -3708,7 +3707,10 @@ func TestHostNilMap(t *testing.T) {
 // `go run ./testdata/funcmap`.
 func TestTemplateFuncMap(t *testing.T) {
 	e := newEngine(t)
-	e.Bind("github.com/podhmo/minigo/testdata/funcmap/identity", map[string]runtime.Value{"Same": &runtime.GoValue{V: identity.Same}})
+	e.Bind("github.com/podhmo/minigo/testdata/funcmap/identity", map[string]runtime.Value{"Same": &runtime.GoValue{V: func(a, b any) bool {
+		av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+		return av.IsValid() && bv.IsValid() && av.Type() == bv.Type() && av.Pointer() == bv.Pointer()
+	}}})
 	var got []any
 	for _, fn := range []string{
 		"Text", "Fail", "HTML", "NilFields", "Builtins",
