@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestRunREPLMultiLine(t *testing.T) {
@@ -96,6 +98,35 @@ func TestRunREPLLoad(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q\n---\n%s", want, got)
 		}
+	}
+}
+
+// The shebang-compatible prologue is a shell contract, but the CLI side
+// it depends on is simple: with `--`, script arguments reach os.Args
+// unchanged after the script path.
+func TestRunShebangScriptArgs(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "args.txt")
+	script := filepath.Join(dir, "script.go")
+	src := "///usr/bin/env minigo \"$0\" -- \"$@\"; exit\n" +
+		"package main\n\n" +
+		"import (\n\t\"os\"\n\t\"strings\"\n)\n\n" +
+		"func main() {\n" +
+		"\t_ = os.WriteFile(" + strconv.Quote(out) + ", []byte(strings.Join(os.Args, \"\\n\")), 0o644)\n" +
+		"}\n"
+	if err := os.WriteFile(script, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{script, "--", "a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	gotBytes, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{script, "a", "b"}, "\n")
+	if diff := cmp.Diff(want, string(gotBytes)); diff != "" {
+		t.Errorf("script os.Args (-want +got):\n%s", diff)
 	}
 }
 

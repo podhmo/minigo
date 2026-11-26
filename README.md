@@ -39,6 +39,22 @@ design, `TODO.md` for current coverage and remaining gaps, and
 `examples/task-run` for an embedding example and `examples/convert-define`
 for a DSL tool built on special forms.
 
+## Executable scripts
+
+A single-file script can use the shell-compatible prologue known from
+`gorun`-style launchers:
+
+```go
+///usr/bin/env minigo "$0" -- "$@"; exit
+package main
+```
+
+The first line is a Go comment, while a shell that falls back to
+interpreting the file executes minigo with the script path. The `--` is
+part of the contract: arguments after it become the script's `os.Args[1:]`
+(and `os.Args[0]` is the script path). Without `--`, those arguments are
+parsed as minigo's own positional arguments.
+
 ## REPL
 
 `minigo repl` is an interactive session over a scratch `<repl>` package.
