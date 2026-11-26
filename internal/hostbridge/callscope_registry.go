@@ -59,6 +59,21 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	}
 }
 
+// withScopeStack runs fn under this goroutine's projection-registry lock
+// and returns fn's result, or T's zero value when this goroutine has no
+// active host call. Centralizing the lookup avoids repeating the locking
+// shape at every registry query.
+func withScopeStack[T any](m *Marshal, fn func(*callScopeStack) T) T {
+	var zero T
+	st, ok := m.ownStack()
+	if !ok {
+		return zero
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return fn(st)
+}
+
 // projectedForScript returns the canonical merge state already registered
 // for a script container on this goroutine, preferring the innermost
 // scope. During a merge this identity lookup is what keeps a child
@@ -66,21 +81,16 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 // install an unregistered copy into its parent.
 func (m *Marshal) projectedForScript(v runtime.Value) *projEntry {
 	u := runtime.Unwrap(v)
-	st, ok := m.ownStack()
-	if !ok {
-		return nil
-	}
-	s := st
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := len(s.scopes) - 1; i >= 0; i-- {
-		for _, e := range s.scopes[i] {
-			if e.sv == v || e.sv == u {
-				return e
+	return withScopeStack(m, func(s *callScopeStack) *projEntry {
+		for i := len(s.scopes) - 1; i >= 0; i-- {
+			for _, e := range s.scopes[i] {
+				if e.sv == v || e.sv == u {
+					return e
+				}
 			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 // projectedReflectValue adapts the canonical host projection of a script
@@ -112,42 +122,37 @@ func (m *Marshal) projectedVal(rv reflect.Value) *projEntry {
 		return nil
 	}
 	p = rv.Pointer()
-	st, ok := m.ownStack()
-	if !ok {
-		return nil
-	}
-	s := st
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := len(s.scopes) - 1; i >= 0; i-- {
-		if e, ok := s.scopes[i][p]; ok {
-			// a sub-slice projection shares its parent's leading
-			// address — `{{f (slice . 0 1)}}` — but the script value it
-			// stands for must have the projection's length, else the
-			// callback would see the range it was not given.
-			if ss, ok := e.sv.(*runtime.Slice); ok && rv.Len() != len(ss.Elems) {
+	return withScopeStack(m, func(s *callScopeStack) *projEntry {
+		for i := len(s.scopes) - 1; i >= 0; i-- {
+			if e, ok := s.scopes[i][p]; ok {
+				// a sub-slice projection shares its parent's leading
+				// address — `{{f (slice . 0 1)}}` — but the script value it
+				// stands for must have the projection's length, else the
+				// callback would see the range it was not given.
+				if ss, ok := e.sv.(*runtime.Slice); ok && rv.Len() != len(ss.Elems) {
+					continue
+				}
+				s.used[p] = true
+				return e
+			}
+		}
+		if rv.Kind() != reflect.Slice {
+			return nil
+		}
+		// a windowed sub-slice projection resolves by range: its address is
+		// base + idx*elemSize of a registered parent's backing. The view
+		// shares the parent's Elems, so element writes reach it.
+		for _, r := range s.slices {
+			if r.elemSize == 0 || p < r.base || (p-r.base)%r.elemSize != 0 {
 				continue
 			}
-			s.used[p] = true
-			return e
+			idx := int((p - r.base) / r.elemSize)
+			if idx < 0 || idx+rv.Len() > r.n {
+				continue
+			}
+			s.used[r.base] = true
+			return &projEntry{sv: &runtime.Slice{Elems: r.v.Elems[idx : idx+rv.Len()], Typ: r.v.Typ}, rv: rv}
 		}
-	}
-	if rv.Kind() != reflect.Slice {
 		return nil
-	}
-	// a windowed sub-slice projection resolves by range: its address is
-	// base + idx*elemSize of a registered parent's backing. The view
-	// shares the parent's Elems, so element writes reach it.
-	for _, r := range s.slices {
-		if r.elemSize == 0 || p < r.base || (p-r.base)%r.elemSize != 0 {
-			continue
-		}
-		idx := int((p - r.base) / r.elemSize)
-		if idx < 0 || idx+rv.Len() > r.n {
-			continue
-		}
-		s.used[r.base] = true
-		return &projEntry{sv: &runtime.Slice{Elems: r.v.Elems[idx : idx+rv.Len()], Typ: r.v.Typ}, rv: rv}
-	}
-	return nil
+	})
 }
