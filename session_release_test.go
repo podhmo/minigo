@@ -7,6 +7,7 @@ import (
 	"time"
 	"weak"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -27,8 +28,12 @@ func loadTemplateSession(t *testing.T) weak.Pointer[runtime.Package] {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := v.(string); !ok || got != "ok!" {
-		t.Fatalf("F = %#v, want ok!", v)
+	got, ok := v.(string)
+	if !ok {
+		t.Fatalf("F = %#v, want string", v)
+	}
+	if diff := cmp.Diff("ok!", got); diff != "" {
+		t.Fatalf("F (-want +got):\n%s", diff)
 	}
 	return weak.Make(pkg)
 }
