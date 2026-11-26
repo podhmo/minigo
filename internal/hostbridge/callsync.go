@@ -50,7 +50,7 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 			if _, tracked := e.snap[projKey(dk)]; !tracked {
 				continue // script-added since the merge — keep
 			}
-			hk, err := m.ToReflect(dk, krt, vc)
+			hk, err := m.projectionMapKey(dk, krt, vc)
 			if err != nil || !rv.MapIndex(hk).IsValid() {
 				s.Delete(dk) // a key the merge knew and the host dropped
 			}
@@ -91,7 +91,7 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 				snap[projKey(dk)] = dv
 				continue
 			}
-			if hk, err := m.ToReflect(dk, krt, vc); err == nil && rv.MapIndex(hk).IsValid() {
+			if hk, err := m.projectionMapKey(dk, krt, vc); err == nil && rv.MapIndex(hk).IsValid() {
 				snap[projKey(dk)] = dv
 			}
 		}

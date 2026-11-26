@@ -45,21 +45,9 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 			if old, ok := e.snap[projKey(sk)]; ok && sameSlot(sv, old) {
 				continue // script left this entry alone — keep the host's
 			}
-			var hk reflect.Value
-			if krt.Kind() == reflect.Interface {
-				// interface keys use the same canonical form as the initial
-				// conversion: a script int must remain the int64 key already
-				// present, not DeepHost's host-int form.
-				hk = reflect.New(krt).Elem()
-				if uk := runtime.UnwrapKey(sk); uk != nil {
-					hk.Set(reflect.ValueOf(uk))
-				}
-			} else {
-				var err error
-				hk, err = m.ToReflect(sk, krt, vc)
-				if err != nil {
-					continue
-				}
+			hk, err := m.projectionMapKey(sk, krt, vc)
+			if err != nil {
+				continue
 			}
 			hv, reused := m.projectedReflectValue(sv, ert)
 			if reused {
