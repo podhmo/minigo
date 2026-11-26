@@ -73,7 +73,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/opaque.go":              146,
 	"internal/hostbridge/valueof.go":             573,
 	"internal/hostbridge/structorig.go":          96,
-	"internal/hostbridge/structorig_weak.go":     66,
+	"internal/hostbridge/structorig_weak.go":     65,
 	"internal/hostbridge/native.go":              128,
 	"internal/hostbridge/adapt.go":               267,
 	"internal/hostbridge/iface.go":               635,
