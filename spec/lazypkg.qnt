@@ -58,6 +58,12 @@ module lazypkg {
   var bootstraps: str -> int
   // constOnce fast path: constants bound without full initialization
   var constsBound: str -> bool
+  // the one abstract member cell whose cyclic read the model tracks:
+  // bound cells serve partial state; an unbound cell traps the reader
+  var memberBound: str -> bool
+  // counts cross-package cyclic reads of a not-yet-bound member — the
+  // loud-trap fix for the sync.Once re-entry deadlock
+  var unboundCycleTraps: int
   // explicit cascade frames, innermost frame first
   var stack: List[str]
   // counts partial serves of any mid-init package — cyclic reentry
@@ -75,6 +81,8 @@ module lazypkg {
     initStarted' = pkgs.mapBy(p => false),
     bootstraps' = pkgs.mapBy(p => 0),
     constsBound' = pkgs.mapBy(p => false),
+    memberBound' = pkgs.mapBy(p => false),
+    unboundCycleTraps' = 0,
     stack' = List(),
     partialServes' = 0,
     depsTouched' = pkgs.mapBy(p => Set()),
@@ -126,6 +134,8 @@ module lazypkg {
     initStarted' = initStarted,
     bootstraps' = bootstraps,
     constsBound' = constsBound,
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
     stack' = stack,
     partialServes' = partialServes,
     depsTouched' = depsTouched,
@@ -148,6 +158,27 @@ module lazypkg {
     bootstraps' = bootstraps.set(p, bootstraps.get(p) + 1),
     stack' = List(p).concat(stack),
     constsBound' = constsBound,
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
+    partialServes' = partialServes,
+    depsTouched' = depsTouched,
+  }
+
+  // An abstract member cell binds while the innermost initializer is
+  // making progress. Ancestor frames cannot bind while a nested package
+  // initializes — their init is suspended inside the dependency touch.
+  action bindMember(p) = all {
+    stack.length() > 0,
+    p == stack.head(),
+    not(memberBound.get(p)),
+    memberBound' = memberBound.set(p, true),
+    unboundCycleTraps' = unboundCycleTraps,
+    stage' = stage,
+    highWater' = highWater,
+    initStarted' = initStarted,
+    bootstraps' = bootstraps,
+    constsBound' = constsBound,
+    stack' = stack,
     partialServes' = partialServes,
     depsTouched' = depsTouched,
   }
@@ -173,13 +204,34 @@ module lazypkg {
       // semantics but proves nothing about cyclic initialization
       all {
         inStack(stack, q),
+        memberBound.get(q),
         partialServes' = if (q == p) partialServes else partialServes + 1,
+        unboundCycleTraps' = unboundCycleTraps,
+        memberBound' = memberBound,
         stage' = stage,
         highWater' = highWater,
         initStarted' = initStarted,
         bootstraps' = bootstraps,
         constsBound' = constsBound,
         stack' = stack,
+      },
+      // the same cyclic touch against a cell the initializer has not
+      // bound yet cannot serve even a partial value: it traps the active
+      // initializer instead of re-entering initOnce. p fails and its
+      // frame pops; the error then propagates through the cascade as an
+      // ordinary dependency failure.
+      all {
+        inStack(stack, q),
+        not(memberBound.get(q)),
+        unboundCycleTraps' = if (q == p) unboundCycleTraps else unboundCycleTraps + 1,
+        partialServes' = partialServes,
+        memberBound' = memberBound,
+        stage' = stage.set(p, FAILED),
+        highWater' = bump(highWater, p, 5),
+        initStarted' = initStarted,
+        bootstraps' = bootstraps,
+        constsBound' = constsBound,
+        stack' = stack.tail(),
       },
       // recurse into q
       all {
@@ -192,6 +244,8 @@ module lazypkg {
         bootstraps' = bootstraps.set(q, bootstraps.get(q) + 1),
         stack' = List(q).concat(stack),
         constsBound' = constsBound,
+        memberBound' = memberBound,
+        unboundCycleTraps' = unboundCycleTraps,
         partialServes' = partialServes,
       },
     },
@@ -209,6 +263,8 @@ module lazypkg {
     initStarted' = initStarted,
     bootstraps' = bootstraps,
     constsBound' = constsBound,
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
     partialServes' = partialServes,
     depsTouched' = depsTouched,
     stack' = stack.tail(),
@@ -257,6 +313,8 @@ module lazypkg {
         stack' = List(p).concat(stack),
       },
     },
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
     partialServes' = partialServes,
     depsTouched' = depsTouched,
   }
@@ -274,6 +332,8 @@ module lazypkg {
     initStarted' = initStarted,
     bootstraps' = bootstraps,
     constsBound' = constsBound,
+    memberBound' = memberBound,
+    unboundCycleTraps' = unboundCycleTraps,
     stack' = stack,
     partialServes' = partialServes,
     depsTouched' = depsTouched,
@@ -287,6 +347,9 @@ module lazypkg {
     beginInit("main"),
     beginInit("lib"),
     beginInit("plain"),
+    bindMember("main"),
+    bindMember("lib"),
+    bindMember("plain"),
     // all pairs: the stackDeps union makes any package touchable from
     // any frame mid-cascade, including the frame's own package (a
     // callback reading the very package whose init is in progress)
@@ -338,6 +401,11 @@ module lazypkg {
   // violation proves the model can exhibit Go's cyclic partial-read
   // behavior.
   val noPartialServeYet = partialServes == 0
+
+  // INV-W2 (witness, not an invariant): a cross-package unbound-member
+  // cyclic read is reachable too — a violation trace of noUnboundCycleYet
+  // exhibits the loud-trap path that replaced the sync.Once self-deadlock.
+  val noUnboundCycleYet = unboundCycleTraps == 0
 
   // everything at once, for a single --invariant run
   val allInvariants =

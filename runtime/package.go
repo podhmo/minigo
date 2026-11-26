@@ -272,8 +272,10 @@ type PackageInstance struct {
 
 	// initOnce runs the initializer at most once and caches its failure
 	// — including panics, which re-panic after being recorded so the
-	// once does not leave the package stuck Initializing.
-	initOnce execution.Init
+	// once does not leave the package stuck Initializing. initOwner is
+	// the goroutine running that once, for cycle re-entry detection.
+	initOnce  execution.Init
+	initOwner atomic.Int64
 	// Bootstrap builds and runs the package initializer (var/const decls +
 	// init() funcs). Injected by the engine; called exactly once. The run
 	// argument executes the __init__ function — supplied by the triggering
@@ -394,6 +396,7 @@ func (p *Package) EnsureReadyRun(run func(*Function) error) error {
 		if p.State() == Ready {
 			return nil
 		}
+		p.initOwner.Store(execution.GoroutineID())
 		p.SetState(Initializing)
 		spike.NoteInitDuringCompile()
 		if err := p.runBootstrap(run); err != nil {
@@ -523,6 +526,9 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 				}
 			}
 		}
+	}
+	if p.State() == Initializing && p.initOwner.Load() == execution.GoroutineID() {
+		return nil, fmt.Errorf("initialization cycle: %s.%s is not bound yet", p.Name, name)
 	}
 	if err := p.EnsureReadyRun(run); err != nil {
 		return nil, err
