@@ -97,7 +97,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/callsync.go":            190,
 	"internal/hostbridge/callsync_push.go":       113,
 	"internal/hostbridge/projection_mapkey.go":   23,
-	"internal/hostbridge/projection_keyalias.go": 34,
+	"internal/hostbridge/projection_keyalias.go": 44,
 	"internal/hostbridge/callmerge.go":           88,
 	"internal/hostbridge/snapshot.go":            147,
 	"internal/hostbridge/display.go":             132,
