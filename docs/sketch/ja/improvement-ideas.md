@@ -1,5 +1,8 @@
 # minigo 改善アイデア集 —— オーナー視点での棚卸し（2026-11）
 
+- status: `triaged` — 精査と振り分けは済んでいる。新規作業はこの文書から直接起こさず、TODO.md または `docs/ja/open-questions.md` 側を見る。
+- triage record: [improvement-ideas-review.md](./improvement-ideas-review.md)
+
 コードのオーナーとして「次に何を良くするか」を4つの軸（コード品質 / 機能 / UX / 性能）で洗い出したメモ。
 既に TODO.md や `docs/next/ja/TODO.md`（リアーキテクチャ計画）にある項目は重複させず、参照に留める。
 各アイデアには **根拠（実測・観察）**、**提案**、**コスト感** を付けた。末尾に優先度表がある。
