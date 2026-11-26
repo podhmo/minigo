@@ -481,6 +481,10 @@ func (m *Marshal) DeepHost(v runtime.Value, vc runtime.VMCaller, h *HostMarshal)
 	case *runtime.Struct:
 		return structDataHost(x, x, vc, h)
 	case *runtime.Slice, *runtime.Map:
+		if old, ok := h.Walk.Seen(v); ok {
+			m.refreshProjectedContainer(v, old, vc)
+			return old
+		}
 		if sv, ok := v.(*runtime.Slice); ok && sv.Host.IsValid() && sv.Host.Len() == len(sv.Elems) {
 			// an unboxed host slice crosses back as its own backing —
 			// `buf.Bytes()` in a FuncMap arg shares the buffer, so the
@@ -554,12 +558,8 @@ func (m *Marshal) hostNilOf(td *runtime.TypeDef, vc runtime.VMCaller) any {
 // []int, [2]string, map[string]int — so the callee sees the same type gc
 // would pass. ok is false when there is no shape or an element does not
 // fit it; the caller then falls back to the generic []any / map[any]any.
-// A container that can hold itself (an `any` element) registers with
-// the walk before its elements marshal, so a cycle folds back to it.
+// An `any`-element container registers before marshaling, so cycles fold back.
 func (h *HostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any, bool) {
-	if old, ok := h.Walk.Seen(v); ok {
-		return old, true
-	}
 	var td *runtime.TypeDef
 	switch x := v.(type) {
 	case *runtime.Slice:

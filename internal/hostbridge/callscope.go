@@ -36,10 +36,11 @@ type sliceReg struct {
 // write (key added, value changed, key deleted) from a host-side one —
 // without them every pull or sync would clobber the other side.
 type projEntry struct {
-	sv   runtime.Value
-	rv   reflect.Value
-	snap map[string]runtime.Value // script key repr -> value at last merge
-	host map[string]bool          // host key repr -> seen at last merge
+	sv    runtime.Value
+	rv    reflect.Value
+	epoch uint64
+	snap  map[string]runtime.Value // script key repr -> value at last merge
+	host  map[string]bool          // host key repr -> seen at last merge
 }
 
 type callScopeStack struct {

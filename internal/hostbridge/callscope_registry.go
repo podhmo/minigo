@@ -44,7 +44,7 @@ func (m *Marshal) registerProjected(v runtime.Value, out any) {
 	s := st
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.merging > 0 {
+	if e.epoch = s.scriptEpoch; s.merging > 0 {
 		// a merge re-projects containers to fresh host values; tracking
 		// each fresh projection would grow the merge set every pass —
 		// the next callback would then merge an ever-larger list
