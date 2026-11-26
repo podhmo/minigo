@@ -162,7 +162,7 @@ func (v *VM) materialize(f *frame, x runtime.Value) runtime.Value {
 	}
 	r, err := materializeDefault(u)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	return r
 }
@@ -225,7 +225,7 @@ func (v *VM) matBuiltinArgs(args []runtime.Value, target any, keepConst bool) ([
 				if td := hostConstParamTD(u, pt); td != nil {
 					mv, err = v.materializeConstErr(u, td)
 					if err != nil {
-						return nil, fmt.Errorf("arg %d: %w", i, err)
+						return nil, &hostbridge.ConversionError{Err: fmt.Errorf("arg %d: %w", i, err)}
 					}
 					if out == nil {
 						out = make([]runtime.Value, len(args))
@@ -440,7 +440,7 @@ func boundNamedArgErr(v *VM, pt hostbridge.Type, n *runtime.Named) error {
 	if u, ok := constPayload(n); ok {
 		what = "constant " + u.V.String()
 	}
-	return fmt.Errorf("cannot use %s of type %s as %s value", what, spelledTyp(td), pt.Name())
+	return &hostbridge.ConversionError{Err: fmt.Errorf("cannot use %s of type %s as %s value", what, spelledTyp(td), pt.Name())}
 }
 
 // boundHostArgErr reports the assignability failure for an arg whose
@@ -460,7 +460,7 @@ func boundHostArgErr(v *VM, pt hostbridge.Type, rt hostbridge.Type) error {
 	if _, ambig := boundBasicParamName(rt); ambig {
 		return nil
 	}
-	return fmt.Errorf("cannot use value of type %s as %s value", rt.String(), pt.Name())
+	return &hostbridge.ConversionError{Err: fmt.Errorf("cannot use value of type %s as %s value", rt.String(), pt.Name())}
 }
 
 // boundArgHostType reports the concrete host type a bound arg carries:
@@ -533,7 +533,7 @@ func (v *VM) materializeConst(f *frame, u *runtime.UConst, td *runtime.TypeDef) 
 	}
 	r, err := v.materializeConstErr(u, td)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	if td != nil && immutableScalar(r) {
 		u.SetMemo(td, r)
@@ -1273,7 +1273,7 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 			// (`type A B; type B int8` rejects too).
 			if numericBasicName(basicNameOf(v.peelNamed(nb.Typ))) {
 				if _, err := v.materializeConstErr(u, nb.Typ); err != nil {
-					f.trap("%s", err)
+					f.trapErr(err)
 				}
 			}
 		}
@@ -1291,7 +1291,7 @@ func (v *VM) adaptConst(f *frame, u *runtime.UConst, other runtime.Value) runtim
 		// `1.5 + intvar` truncates, `(1+2i) + v` can't convert, so gc
 		// fails the program rather than promote the const's domain.
 		if _, err := v.materializeConstErr(u, td); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 	}
 	return v.materialize(f, u)

@@ -53,7 +53,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		}
 		mv, err := v.memberOf(p, name)
 		if err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		if c, isCell := mv.(*runtime.Cell); isCell {
 			mv = c.Elem
@@ -84,7 +84,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 				}
 				f.trap("%s (inspect-layer package metadata — %s)", err, hint)
 			}
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		if c, isCell := mv.(*runtime.Cell); isCell {
 			mv = c.Elem
@@ -603,7 +603,7 @@ func (v *VM) promotedValue(f *frame, name string, pr *promoted) runtime.Value {
 	}
 	m := pr.m
 	if err := m.EnsureCompiled(); err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	r := pr.recv
 	if m.PtrRecv {
@@ -916,7 +916,7 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 	}
 	if m, ok := td.Methods[name]; ok && selVisible(sp, td.Pkg, name) {
 		if err := m.EnsureCompiled(); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		r := recv
 		if m.PtrRecv {
@@ -983,7 +983,7 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 					return hostbridge.GoSlotValueOf(fv), nil
 				}
 				if pmd < 0 {
-					f.trap("%s has no field or method %s", tdName(n.Typ), name)
+					f.trapCode(runtime.TrapCodeUndefined, "%s has no field or method %s", tdName(n.Typ), name)
 				}
 				// a shallower promoted method wins over a deeper field —
 				// it falls through to hostMember.
@@ -1040,7 +1040,7 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 						}
 						// methods and interface members do not
 						// inherit — the trap below reports.
-						f.trap("%s has no field or method %s", tdName(n.Typ), name)
+						f.trapCode(runtime.TrapCodeUndefined, "%s has no field or method %s", tdName(n.Typ), name)
 					}
 					return v.fieldAtPath(f, s, idx, name), &selRes{kind: selPath, path: idx}
 				}
@@ -1049,7 +1049,7 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 						return v.selectMember(f, pr.host, name), nil
 					}
 				}
-				f.trap("%s has no field or method %s", tdName(n.Typ), name)
+				f.trapCode(runtime.TrapCodeUndefined, "%s has no field or method %s", tdName(n.Typ), name)
 				return nil, nil
 			}
 		}
@@ -1064,7 +1064,7 @@ func (v *VM) namedMemberRes(f *frame, n *runtime.Named, name string, recv runtim
 			// interface specs — fall through to the no-member trap.
 		}
 	}
-	f.trap("%s has no field or method %s", tdName(n.Typ), name)
+	f.trapCode(runtime.TrapCodeUndefined, "%s has no field or method %s", tdName(n.Typ), name)
 	return nil, nil
 }
 
@@ -1238,7 +1238,7 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 			// what this write stored — go/scanner's init sets
 			// scannerhooks.StringEnd, which go/parser (Go 1.26) reads.
 			if err := p.EnsureReadyRun(v.runInit); err != nil {
-				f.trap("%s", err)
+				f.trapErr(err)
 			}
 		}
 		if existing, ok := p.Globals.Get(name); ok {
@@ -2885,7 +2885,7 @@ func (v *VM) compositeOf(f *frame, td *runtime.TypeDef, n int, kv bool, raw []ru
 			et = v.localElemTypedef(f, td)
 			if et == nil {
 				if err != nil {
-					f.trap("%s", err)
+					f.trapErr(err)
 				}
 				f.trap("cannot resolve element type of %s", tdName(td))
 			}

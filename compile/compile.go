@@ -148,10 +148,6 @@ func (c *compiler) emit3(op bytecode.Op, a, b, cc int, pos token.Pos) int {
 
 func (c *compiler) patchA(i, target int) { c.ch.Code[i].A = int32(target) }
 
-func (c *compiler) trap(pos token.Pos, format string, args ...any) int {
-	return c.emit(bytecode.OpTrap, c.constIdx(fmt.Sprintf(format, args...)), 0, pos)
-}
-
 func (c *compiler) constIdx(v any) int {
 	c.ch.Consts = append(c.ch.Consts, v)
 	return len(c.ch.Consts) - 1

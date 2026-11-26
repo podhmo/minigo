@@ -393,7 +393,7 @@ func (v *VM) driveFuncIter(f *frame, it *runtime.Iterator, nvars, top, end int) 
 		},
 	}
 	if _, err := v.call(it.Fn, []runtime.Value{yield}, nil, nil); err != nil {
-		panic(&runtime.Trap{Pos: f.pos(), Reason: err.Error(), Err: err})
+		panic(trapErr(f.pos(), err))
 	}
 	returned = true
 }

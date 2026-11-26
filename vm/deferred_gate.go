@@ -57,7 +57,7 @@ func (v *VM) typGate(f *frame, siteA, siteB *bytecode.CallSite, mask int) {
 			td, err = v.deferredType(f, site)
 		}
 		if err != nil {
-			panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
+			panic(trapErr(site.Pos, err))
 		}
 		return td, untyped
 	}

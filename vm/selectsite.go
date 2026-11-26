@@ -96,7 +96,7 @@ func (v *VM) applySelectSlot(f *frame, s *runtime.Struct, name string, recv runt
 	case selMethod:
 		m := res.m
 		if err := m.EnsureCompiled(); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		r := recv
 		if m.PtrRecv {
@@ -144,7 +144,7 @@ func (v *VM) structMemberRes(f *frame, s *runtime.Struct, name string, recv runt
 	}
 	if m, ok := def.Methods[name]; ok && selVisible(sp, def.Pkg, name) {
 		if err := m.EnsureCompiled(); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		r := recv
 		if m.PtrRecv {
@@ -190,14 +190,14 @@ func (v *VM) structMemberRes(f *frame, s *runtime.Struct, name string, recv runt
 			if pr, ok := v.promotedMemberEx(f, s, name, true, false, -1); ok {
 				return v.promotedValue(f, name, pr), nil
 			}
-			f.trap("%s has no field or method %s", def.Name, name)
+			f.trapCode(runtime.TrapCodeUndefined, "%s has no field or method %s", def.Name, name)
 			return nil, nil
 		}
 	}
 	if pr, ok := v.promotedMember(f, s, name, true); ok {
 		return v.promotedValue(f, name, pr), nil
 	}
-	f.trap("%s has no field or method %s", def.Name, name)
+	f.trapCode(runtime.TrapCodeUndefined, "%s has no field or method %s", def.Name, name)
 	return nil, nil
 }
 
@@ -229,7 +229,7 @@ func (v *VM) applyNamedSlot(f *frame, n *runtime.Named, name string, recv runtim
 	case selNamedMethod:
 		m := res.m
 		if err := m.EnsureCompiled(); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		r := recv
 		if m.PtrRecv {

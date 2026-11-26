@@ -252,7 +252,7 @@ func (c *compiler) expr(e ast.Expr) {
 		}
 		c.emit(bytecode.OpInstantiate, len(x.Indices), 0, x.Lbrack)
 	case *ast.Ellipsis:
-		c.trap(x.Pos(), "bare ellipsis is not supported")
+		c.trapCode(x.Pos(), runtime.TrapCodeUnsupported, "bare ellipsis is not supported")
 	case *ast.KeyValueExpr:
 		c.trap(x.Pos(), "key:value outside composite literal")
 	case *ast.InterfaceType, *ast.StructType, *ast.FuncType,
@@ -261,7 +261,7 @@ func (c *compiler) expr(e ast.Expr) {
 		// (anonymous-interface method expression) compiles the typedef.
 		c.typeExpr(x)
 	default:
-		c.trap(e.Pos(), "unsupported expression %T", e)
+		c.trapCode(e.Pos(), runtime.TrapCodeUnsupported, "unsupported expression %T", e)
 	}
 }
 
@@ -297,7 +297,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 			// &(expr) recurses on the unwrapped operand.
 			c.unary(&ast.UnaryExpr{OpPos: x.OpPos, Op: x.Op, X: t.X})
 		default:
-			c.trap(x.Pos(), "address-of %T is not supported", x.X)
+			c.trapCode(x.Pos(), runtime.TrapCodeUnsupported, "address-of %T is not supported", x.X)
 		}
 	case token.ADD:
 		if c.foldUnaryConst(x) {
@@ -327,7 +327,7 @@ func (c *compiler) unary(x *ast.UnaryExpr) {
 		c.expr(x.X)
 		c.emit(bytecode.OpRecv, 0, 0, x.Pos())
 	default:
-		c.trap(x.Pos(), "unsupported unary %s", x.Op)
+		c.trapCode(x.Pos(), runtime.TrapCodeUnsupported, "unsupported unary %s", x.Op)
 	}
 }
 
@@ -360,7 +360,7 @@ func (c *compiler) binary(x *ast.BinaryExpr) {
 		}
 		op, ok := binOpOf(x.Op)
 		if !ok {
-			c.trap(x.Pos(), "unsupported binary %s", x.Op)
+			c.trapCode(x.Pos(), runtime.TrapCodeUnsupported, "unsupported binary %s", x.Op)
 			return
 		}
 		// statically distinct named operands are a compile error in gc —
@@ -567,7 +567,7 @@ func (c *compiler) typeExpr(e ast.Expr) {
 		c.emit(bytecode.OpConst, c.constIdx(&runtime.TypeDef{Kind: runtime.KindChan, Anon: t, Pkg: c.pkg, File: file, Binds: c.binds, LocalTypes: localTypes}), 0, e.Pos())
 		c.emitLenFolds(t)
 	default:
-		c.trap(e.Pos(), "unsupported type expression %T", e)
+		c.trapCode(e.Pos(), runtime.TrapCodeUnsupported, "unsupported type expression %T", e)
 	}
 	// Inside an instantiated generic function the enclosing type args
 	// are part of every local type's identity and of how embedded local
@@ -613,7 +613,7 @@ func (c *compiler) checkTypeExprMembers(e ast.Expr) {
 			return
 		}
 		if c.selMember(ref, t.Sel.Name).Kind == semantics.Missing {
-			c.trap(t.Pos(), "undefined: %s.%s", id.Name, t.Sel.Name)
+			c.trapCode(t.Pos(), runtime.TrapCodeUndefined, "undefined: %s.%s", id.Name, t.Sel.Name)
 		}
 	case *ast.StarExpr:
 		c.checkTypeExprMembers(t.X)

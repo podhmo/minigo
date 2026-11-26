@@ -216,7 +216,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 			c.emit(bytecode.OpBinary, int(op), 0, st.Pos())
 			c.emit(bytecode.OpSetRefs, 1, 0, st.Pos())
 		default:
-			c.trap(st.Pos(), "++/-- on %T is not supported", st.X)
+			c.trapCode(st.Pos(), runtime.TrapCodeUnsupported, "++/-- on %T is not supported", st.X)
 		}
 	case *ast.IfStmt:
 		c.ifStmt(st)
@@ -248,7 +248,7 @@ func (c *compiler) stmt(s ast.Stmt) {
 	case *ast.CaseClause, *ast.CommClause:
 		c.trap(st.Pos(), "case clause outside switch")
 	default:
-		c.trap(s.Pos(), "unsupported statement %T", s)
+		c.trapCode(s.Pos(), runtime.TrapCodeUnsupported, "unsupported statement %T", s)
 	}
 }
 
@@ -811,7 +811,7 @@ func (c *compiler) selectStmt(st *ast.SelectStmt) {
 		default:
 			recv, lhs, define := selectRecv(clause.Comm)
 			if recv == nil {
-				c.trap(clause.Comm.Pos(), "unsupported select case %T", clause.Comm)
+				c.trapCode(clause.Comm.Pos(), runtime.TrapCodeUnsupported, "unsupported select case %T", clause.Comm)
 				continue
 			}
 			sc.chanSlot = c.fs.declare(c.fresh("$sel"), token.NoPos)
