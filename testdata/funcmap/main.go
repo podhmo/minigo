@@ -447,6 +447,68 @@ func CallbackReturnsFresh() string {
 	return sb.String()
 }
 
+// CallbackNestedStructFresh covers a struct first reached through the
+// render data map. The callback-time merge walks that map in a separate
+// conversion walk; the returned struct must still refresh the render
+// walk's own projection instead of trusting the merge copy's freshness.
+func CallbackNestedStructFresh() string {
+	data := &MutablePage{Name: "old"}
+	root := map[string]any{"page": data}
+	t := template.Must(template.New("callback-nested-fresh").Funcs(template.FuncMap{
+		"current": func() any { data.Name = "new"; return data },
+	}).Parse(`{{with current}}{{.Name}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, root); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type EffectPage struct {
+	Name  string
+	Calls int
+}
+
+// Label has a receiver-side effect so refresh must not eagerly run it a
+// second time when only the projection's data fields are rewritten.
+func (p *EffectPage) Label() string { p.Calls++; return "x" }
+
+// CallbackRefreshMethodsOnce mutates render data in a callback and then
+// reads both a method result and a field from the returned struct.
+func CallbackRefreshMethodsOnce() string {
+	data := &EffectPage{Name: "old"}
+	t := template.Must(template.New("callback-methods-once").Funcs(template.FuncMap{
+		"current": func() any { data.Name = "new"; return data },
+	}).Parse(`{{with current}}{{.Label}}|{{.Name}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return fmt.Sprintf("%s/%d", sb.String(), data.Calls)
+}
+
+type MethodMapPage struct{ M map[string]any }
+
+func (p *MethodMapPage) First() any { return p.M }
+func (p *MethodMapPage) Mutate() string {
+	p.M["x"] = "new"
+	return ""
+}
+func (p *MethodMapPage) Second() any { return p.M }
+
+// MethodMapStaysFresh reuses one map projection across method results.
+// Mutate runs between First and Second in the projection's deterministic
+// method order; the second result must not be the pre-mutation copy.
+func MethodMapStaysFresh() string {
+	data := &MethodMapPage{M: map[string]any{"x": "old"}}
+	t := template.Must(template.New("method-map-fresh").Parse(`{{$first := .First}}{{$mutated := .Mutate}}{{index .Second "x"}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
 type RenderPage struct{ Name string }
 
 // Render re-renders its receiver. The nested template reads only a field,
