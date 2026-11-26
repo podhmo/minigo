@@ -522,7 +522,7 @@ func (v *VM) typeMatches(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 			et = v.localElemTypedef(f, td)
 			if et == nil {
 				if err != nil {
-					f.trap("%s", err)
+					f.trapErr(err)
 				}
 				f.trap("cannot resolve element type of %s", tdName(td))
 			}
@@ -698,7 +698,7 @@ func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.Ty
 func (v *VM) satisfiesIface(f *frame, td *runtime.TypeDef, x runtime.Value) bool {
 	ok, err := v.ifaceSatisfied(td, x)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	return ok
 }
@@ -1005,11 +1005,11 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef, x runtime.Value) 
 		}
 		reqs, err := v.H.IfaceReqs(td)
 		if err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		have, err := v.H.TypeMethods(dyn)
 		if err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		for m := range reqs {
 			if !have[m] {
@@ -1019,12 +1019,12 @@ func (v *VM) typeMatchesTD(f *frame, td, dyn *runtime.TypeDef, x runtime.Value) 
 		if v.H.IfaceSigs != nil && v.H.TypeMethodFuncs != nil {
 			reqFns, err := v.H.IfaceSigs(td)
 			if err != nil {
-				f.trap("%s", err)
+				f.trapErr(err)
 			}
 			if len(reqFns) > 0 {
 				dynFns, err := v.H.TypeMethodFuncs(dyn)
 				if err != nil {
-					f.trap("%s", err)
+					f.trapErr(err)
 				}
 				return v.memberSigsMatch(reqFns, dynFns, x)
 			}
@@ -1053,7 +1053,7 @@ func (v *VM) typedMember(f *frame, td *runtime.TypeDef, name string, recv runtim
 	if td != nil {
 		if m, ok := td.Methods[name]; ok && selVisible(selPkg(f), td.Pkg, name) {
 			if err := m.EnsureCompiled(); err != nil {
-				f.trap("%s", err)
+				f.trapErr(err)
 			}
 			r := recv
 			if m.PtrRecv {
@@ -1067,7 +1067,7 @@ func (v *VM) typedMember(f *frame, td *runtime.TypeDef, name string, recv runtim
 			return &runtime.BoundMethod{Recv: r, Fn: m}
 		}
 	}
-	f.trap("select %s on %s", name, what)
+	f.trapCode(runtime.TrapCodeUndefined, "select %s on %s", name, what)
 	return nil
 }
 
@@ -1177,9 +1177,9 @@ func (v *VM) memberOfType(f *frame, td *runtime.TypeDef, name string, recv runti
 		}
 	}
 	if isIface {
-		f.trap("interface value has no field %s", name)
+		f.trapCode(runtime.TrapCodeUndefined, "interface value has no field %s", name)
 	}
-	f.trap("select %s on nil %s", name, tdName(td))
+	f.trapCode(runtime.TrapCodeUndefined, "select %s on nil %s", name, tdName(td))
 	return nil
 }
 

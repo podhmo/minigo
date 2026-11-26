@@ -626,6 +626,11 @@ func overwriteArrayElems(dst, src *runtime.Slice) {
 	}
 }
 
+func (v *VM) strictMember(base runtime.Value, name string) (runtime.Value, bool) {
+	fr := &frame{fn: &runtime.Function{Name: "<member>"}, v: v, base: len(v.vals)}
+	return v.selectMember(fr, base, name), true
+}
+
 // Member implements [runtime.VMCaller].
 func (v *VM) Member(base runtime.Value, name string) (m runtime.Value, ok bool) {
 	// selectMember over a dummy frame, reporting failure instead of
@@ -730,7 +735,7 @@ func (v *VM) Copy(x runtime.Value) runtime.Value {
 func (v *VM) resolveGlobal(f *frame, name string) runtime.Value {
 	mv, err := v.resolveGlobalE(f, name)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	return mv
 }
@@ -756,7 +761,7 @@ func (v *VM) resolveGlobalSite(f *frame, name string, site *bytecode.GlobalSite)
 	gen := env.Gen()
 	val, cell, cacheable, err := v.resolveGlobalKind(f, name)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	if cacheable {
 		site.Cache.Store(&globalSlot{env: env, gen: gen, cell: cell, val: val})
@@ -869,7 +874,7 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 		if imported != nil {
 			mv, err := v.memberOf(imported, name)
 			if err != nil {
-				return nil, nil, false, fmt.Errorf("dot import %s: %s", imported.Path, err)
+				return nil, nil, false, fmt.Errorf("dot import %s: %w", imported.Path, err)
 			}
 			if c, isCell := mv.(*runtime.Cell); isCell {
 				return c.Elem, nil, false, nil
@@ -895,7 +900,7 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 		}
 		return bv, nil, cacheable, nil
 	}
-	return nil, nil, false, fmt.Errorf("undefined: %s", name)
+	return nil, nil, false, &runtime.UndefinedError{Reason: fmt.Sprintf("undefined: %s", name)}
 }
 
 // importGlobalCell resolves &pkg.name to the package global's storage
@@ -911,7 +916,7 @@ func (v *VM) importGlobalCell(f *frame, b *runtime.ImportRef, name string) *runt
 	}
 	mv, err := v.memberOf(p, name)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	c, _ := mv.(*runtime.Cell)
 	return c

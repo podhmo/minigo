@@ -532,7 +532,7 @@ func (v *VM) loop(f *frame) {
 				}
 			}
 			if err != nil {
-				f.trap("%s", err)
+				f.trapErr(err)
 			}
 			if et == nil {
 				f.trap("cannot resolve element type of %s", tdName(td))
@@ -622,7 +622,7 @@ func (v *VM) loop(f *frame) {
 				v.profCheck()
 			}
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(ins.Pos, err))
 			}
 			f.push(res)
 		case bytecode.OpBox:
@@ -660,7 +660,7 @@ func (v *VM) loop(f *frame) {
 				v.profCheck() // a long host call lands on its call line
 			}
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(ins.Pos, err))
 			}
 			f.push(r)
 		case bytecode.OpDefer:
@@ -699,13 +699,13 @@ func (v *VM) loop(f *frame) {
 				var err error
 				ch, err = v.H.CompileExpr(f.fn.Pkg, frag.File, frag.Expr)
 				if err != nil {
-					panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+					panic(trapErr(ins.Pos, err))
 				}
 				frag.Cache.Store(ch)
 			}
 			r, err := v.call(&runtime.Function{Pkg: f.fn.Pkg, File: frag.File, Name: "<eval>", Chunk: ch}, nil, nil, nil)
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(ins.Pos, err))
 			}
 			f.push(r)
 		case bytecode.OpDeferredTyp:
@@ -717,7 +717,7 @@ func (v *VM) loop(f *frame) {
 			// Failed both trap at the instruction's Pos.
 			td, err := v.deferredLitTyp(f, f.ch.CallSites[ins.A])
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(ins.Pos, err))
 			}
 			f.push(td)
 		case bytecode.OpDeferredValueTyp:
@@ -726,7 +726,7 @@ func (v *VM) loop(f *frame) {
 			// operand's type without evaluating it.
 			td, _, err := v.deferredValueTyp(f, f.ch.CallSites[ins.A])
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(ins.Pos, err))
 			}
 			f.push(td)
 		case bytecode.OpJumpIfTypedef:
@@ -752,7 +752,7 @@ func (v *VM) loop(f *frame) {
 			// constant → jump to the non-constant variant.
 			cnst, err := v.deferredConst(f, f.ch.CallSites[ins.B])
 			if err != nil {
-				panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(ins.Pos, err))
 			}
 			if !cnst {
 				f.ip = int(ins.A)
@@ -909,7 +909,7 @@ func (v *VM) loop(f *frame) {
 						v.profCheck()
 					}
 					if err != nil {
-						panic(&runtime.Trap{Pos: ins.Pos, Reason: err.Error(), Err: err})
+						panic(trapErr(ins.Pos, err))
 					}
 					f.setSp(n - 2)
 					f.push(r)
@@ -959,7 +959,7 @@ func (v *VM) loop(f *frame) {
 			}
 			sv, err := marshalHost.ChanSendValue(v, val, chRV.Type().Elem())
 			if err != nil {
-				f.trap("cannot send on %s: %s", chRV.Type(), err)
+				f.trapErr(fmt.Errorf("cannot send on %s: %w", chRV.Type(), err))
 			}
 			hostbridge.ChanSend(v.chanHooks(f), chRV, sv, w)
 		case bytecode.OpRecv:
@@ -986,7 +986,7 @@ func (v *VM) loop(f *frame) {
 				}
 				sv, err := marshalHost.ChanSendValue(v, val, chRV.Type().Elem())
 				if err != nil {
-					f.trap("cannot send on %s: %s", chRV.Type(), err)
+					f.trapErr(fmt.Errorf("cannot send on %s: %w", chRV.Type(), err))
 				}
 				f.push(&runtime.SelArm{Send: true, Wakeable: w.Misc, WakeChan: w.ChanPtr(), Case: hostbridge.SelectCaseSend(chRV, sv)})
 			} else {
@@ -1065,7 +1065,7 @@ func (v *VM) loop(f *frame) {
 		case bytecode.OpPanic:
 			panic(&runtime.Panic{Value: f.pop(), VC: v})
 		case bytecode.OpTrap:
-			panic(&runtime.Trap{Pos: ins.Pos, Reason: fmt.Sprint(consts[ins.A])})
+			panic(trapFromConst(ins.Pos, consts[ins.A]))
 		case bytecode.OpReturn:
 			n := int(ins.A)
 			switch {

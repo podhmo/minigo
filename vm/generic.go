@@ -248,7 +248,7 @@ func (v *VM) instantiateDispatch(f *frame, base runtime.Value, targs []runtime.V
 		bindArgs(binds, g.TParams, targs)
 		ctx := &runtime.TypeDef{Pkg: g.Pkg, File: g.File, Binds: binds}
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 		td := v.specializeType(f, g, targs)
 		if ok {
@@ -448,7 +448,7 @@ func (v *VM) instantiateFuncUncached(f *frame, g *runtime.Function, targs []runt
 	// still-unbound params are inferred (and checked) at the call
 	if complete {
 		if err := v.checkTArgs(ctx, g.TParams, g.TConstraints, binds); err != nil {
-			f.trap("%s", err)
+			f.trapErr(err)
 		}
 	}
 	return &runtime.Function{

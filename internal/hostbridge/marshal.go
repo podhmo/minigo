@@ -144,7 +144,7 @@ type HostMarshal struct {
 // wrappers unwrap, slices and maps convert element-wise, scalars assign or
 // convert.
 func (m *Marshal) ToReflect(v runtime.Value, t reflect.Type, vc runtime.VMCaller) (reflect.Value, error) {
-	return m.toReflectValueDepth(v, t, vc, 0)
+	return conversionResult(m.toReflectValueDepth(v, t, vc, 0))
 }
 
 func (m *Marshal) toReflectValueDepth(v runtime.Value, t reflect.Type, vc runtime.VMCaller, depth int) (reflect.Value, error) {

@@ -448,7 +448,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 				if r, ok := constBinary(op, ca, cb); ok {
 					if ru, isConst := r.(*runtime.UConst); isConst {
 						if _, err := v.materializeConstErr(ru, n.Typ); err != nil {
-							f.trap("%s", err)
+							f.trapErr(err)
 						}
 						return runtime.Tag(n.Typ, ru)
 					}
@@ -593,7 +593,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 		if r, ok := constBinary(op, constInKind(ca, tn), constInKind(cb, tn)); ok {
 			if ru, isConst := r.(*runtime.UConst); isConst {
 				if _, err := v.materializeConstErr(ru, tag); err != nil {
-					f.trap("%s", err)
+					f.trapErr(err)
 				}
 				// gc rounds every typed float/complex op to the type —
 				// the tag keeps the constant domain at that precision.
@@ -792,7 +792,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	if ai, ok := a.(int64); ok {
 		bi, ok := b.(int64)
 		if !ok {
-			f.trap("unsupported types: %T %s %T", a, op, b)
+			f.trapCode(runtime.TrapCodeUnsupported, "unsupported types: %T %s %T", a, op, b)
 		}
 		if ubox {
 			res, isInt := uintBinOp(f, op, uint64(ai), uint64(bi))
@@ -826,7 +826,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 	if ab, ok := a.(bool); ok {
 		bb, ok := b.(bool)
 		if !ok {
-			f.trap("unsupported types: %T %s %T", a, op, b)
+			f.trapCode(runtime.TrapCodeUnsupported, "unsupported types: %T %s %T", a, op, b)
 		}
 		switch op {
 		case bytecode.BinLAnd:
@@ -835,7 +835,7 @@ func (v *VM) binaryOpFlags(f *frame, op bytecode.BinOp, a, b runtime.Value, flag
 			return ab || bb
 		}
 	}
-	f.trap("unsupported types: %T %s %T", a, op, b)
+	f.trapCode(runtime.TrapCodeUnsupported, "unsupported types: %T %s %T", a, op, b)
 	return nil
 }
 
@@ -938,7 +938,7 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int)
 		count, countOK = shiftCount(b)
 	}
 	if !countOK {
-		f.trap("unsupported shift count %T", b)
+		f.trapCode(runtime.TrapCodeUnsupported, "unsupported shift count %T", b)
 	}
 	if uc, isU := a.(*runtime.UConst); isU && !countConst && flags&bytecode.ShiftTypedLeft != 0 && !uc.Wrap {
 		// a typed left operand (`int(1) << n`) can arrive as a bare
@@ -1044,7 +1044,7 @@ func (v *VM) shiftOp(f *frame, op bytecode.BinOp, a, b runtime.Value, flags int)
 			return &runtime.GoValue{V: r}
 		}
 	}
-	f.trap("unsupported types: %T %s %T", a, op, b)
+	f.trapCode(runtime.TrapCodeUnsupported, "unsupported types: %T %s %T", a, op, b)
 	return nil
 }
 

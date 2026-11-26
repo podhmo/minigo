@@ -77,6 +77,10 @@ func (c processCaller) Spawn(fn runtime.Value, args []runtime.Value) *runtime.Ta
 
 // Host interface/error proxies probe methods before invoking them. These two
 // metadata operations may therefore happen on a retained caller off-owner.
+func (c processCaller) strictMember(value runtime.Value, name string) (runtime.Value, bool) {
+	return c.callbackVM().strictMember(value, name)
+}
+
 func (c processCaller) Member(value runtime.Value, name string) (runtime.Value, bool) {
 	return c.callbackVM().Member(value, name)
 }

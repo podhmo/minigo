@@ -19,7 +19,6 @@
 package vm
 
 import (
-	"fmt"
 	"go/token"
 	"sync"
 
@@ -430,7 +429,7 @@ func (f *frame) pos() token.Pos {
 }
 
 func (f *frame) trap(format string, args ...any) {
-	panic(&runtime.Trap{Pos: f.pos(), Reason: fmt.Sprintf(format, args...)})
+	f.trapCode(runtime.TrapCodeRuntime, format, args...)
 }
 
 func (v *VM) framesPop() { v.frames = v.frames[:len(v.frames)-1] }

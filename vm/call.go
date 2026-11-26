@@ -280,7 +280,7 @@ func (v *VM) resolveArgHints(cf *frame, hints []bytecode.ArgHint) []*runtime.Typ
 			site := cf.ch.CallSites[h.A]
 			td, err := v.deferredType(cf, site)
 			if err != nil {
-				panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(site.Pos, err))
 			}
 			// the operand path ran OpLocalType after every compiled
 			// type expression — a resolved local decl needs the same
@@ -293,7 +293,7 @@ func (v *VM) resolveArgHints(cf *frame, hints []bytecode.ArgHint) []*runtime.Typ
 			site := cf.ch.CallSites[h.A]
 			td, _, err := v.deferredValueTyp(cf, site)
 			if err != nil {
-				panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
+				panic(trapErr(site.Pos, err))
 			}
 			statics[i] = td
 		}

@@ -38,7 +38,7 @@ func (v *VM) deferredElem(f *frame, td *runtime.TypeDef) *runtime.TypeDef {
 func (v *VM) litKeyExprKey(f *frame, site *bytecode.CallSite) bool {
 	td, err := v.deferredLitTyp(f, site)
 	if err != nil {
-		panic(&runtime.Trap{Pos: site.Pos, Reason: err.Error(), Err: err})
+		panic(trapErr(site.Pos, err))
 	}
 	for td != nil {
 		td = v.peelNamed(td)

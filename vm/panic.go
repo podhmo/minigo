@@ -444,7 +444,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 		if fn := linknameDecl(callee); fn != nil && v.H.Linkname != nil {
 			tv, ok, err := v.H.Linkname(v, fn)
 			if err != nil {
-				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+				panic(trapErr(d.pos, err))
 			}
 			if ok && !seen[fn] {
 				if seen == nil {
@@ -469,18 +469,18 @@ func (v *VM) invokeDeferred(d deferredCall) {
 				var err error
 				if args, err = v.matBuiltinArgs(args, c.Target, c.KeepConstArgs); err != nil {
 					err = fmt.Errorf("%s %w", c.Name, err)
-					panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+					panic(trapErr(d.pos, err))
 				}
 			}
 			if _, err := c.Fn(bindCaller(v), args); err != nil {
-				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+				panic(trapErr(d.pos, err))
 			}
 			return
 		case *runtime.TypeDef:
 			v.pushDeferredSentinel(c.Name)
 			defer v.framesPop()
 			if _, err := v.convert(c, firstArg(d.args)); err != nil {
-				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+				panic(trapErr(d.pos, err))
 			}
 			return
 		case *runtime.Named:
@@ -497,7 +497,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 			v.pushDeferredSentinel(fv.Type().String())
 			defer v.framesPop()
 			if _, err := callReflectFunc(fv.Type().String(), fv, v, expandSpread(d.args)); err != nil {
-				panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+				panic(trapErr(d.pos, err))
 			}
 			return
 		default:
@@ -518,7 +518,7 @@ func (v *VM) invokeDeferred(d deferredCall) {
 	}
 	fr, err := v.prepFrameSeen(nil, callee, d.args, -1, nil, d.typs.statics, d.typs.spreadTd, nil, seen)
 	if err != nil {
-		panic(&runtime.Trap{Pos: d.pos, Reason: err.Error(), Err: err})
+		panic(trapErr(d.pos, err))
 	}
 	v.exec(fr)
 	freeFrame(fr)

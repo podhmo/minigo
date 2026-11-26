@@ -976,7 +976,7 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 	// signature. `var h func(int) int = Id` instantiates Id[int].
 	xv, err := v.inferForFuncTarget(x, td)
 	if err != nil {
-		f.trap("%s", err)
+		f.trapErr(err)
 	}
 	return v.coerceConcrete(f, xv, td)
 }

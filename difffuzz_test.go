@@ -3,6 +3,7 @@ package minigo_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo"
+	miniruntime "github.com/podhmo/minigo/runtime"
 )
 
 // runCaseTimeout bounds one regression run: a case that regresses into a
@@ -69,7 +71,9 @@ func TestStrictLazyConformance(t *testing.T) {
 // runDiffCase runs one difffuzz dir and applies the verdict contract:
 // stdout against want.stdout, stderr against want.stderr when present,
 // an error containing want.err's text when present, and the pending
-// marker's must-still-diverge protocol. A REQUIRES_NON_ROOT marker skips
+// marker's must-still-diverge protocol. want.trapcode optionally pins the
+// runtime.Trap code independently of the human-readable error text. A
+// REQUIRES_NON_ROOT marker skips
 // cases whose oracle depends on filesystem permission errors when running
 // as root. extra prepends engine options (e.g. WithStrictLazyCompile).
 func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
@@ -83,10 +87,13 @@ func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// want.err holds the expected error text; an absent runErr
-		// or a non-matching one both fail below.
+		// want.err holds expected error text; want.trapcode implies
+		// an error even when the text stays unpinned.
 		wantErrText, err := os.ReadFile(filepath.Join(dir, "want.err"))
-		expectErr := err == nil
+		hasWantErr := err == nil
+		wantTrapCode, err := os.ReadFile(filepath.Join(dir, "want.trapcode"))
+		expectTrapCode := err == nil
+		expectErr := hasWantErr || expectTrapCode
 		_, statErr := os.Stat(filepath.Join(dir, pendingFile))
 		pending := statErr == nil
 		// COMPILE_TIME_FACT (M0-7) labels cases whose expected
@@ -175,18 +182,32 @@ func runDiffCase(t *testing.T, dir, pendingFile string, extra []minigo.Option) {
 			diff = cmp.Diff(string(wantStderr), res.stderr)
 		}
 		errMatch := expectErr && res.runErr != nil &&
-			strings.Contains(res.runErr.Error(), strings.TrimSpace(string(wantErrText)))
-		matched := diff == "" && (expectErr == (res.runErr != nil)) && (!expectErr || errMatch)
+			(!hasWantErr || strings.Contains(res.runErr.Error(), strings.TrimSpace(string(wantErrText))))
+		trapCodeMatch := true
+		gotTrapCode := ""
+		if expectTrapCode {
+			trapCodeMatch = false
+			var trap *miniruntime.Trap
+			if errors.As(res.runErr, &trap) {
+				gotTrapCode = string(trap.StableCode())
+				trapCodeMatch = cmp.Diff(strings.TrimSpace(string(wantTrapCode)), gotTrapCode) == ""
+			}
+		}
+		matched := diff == "" && (expectErr == (res.runErr != nil)) && (!expectErr || errMatch) && trapCodeMatch
 
 		switch {
 		case pending && matched:
 			t.Errorf("%s now matches go: delete %s/%s to pin the fix", dir, dir, pendingFile)
 		case pending:
 			t.Skipf("known divergence (see %s/%s)", dir, pendingFile)
+		case expectErr && res.runErr == nil && expectTrapCode:
+			t.Errorf("expected trap code %q, but the run succeeded", strings.TrimSpace(string(wantTrapCode)))
 		case expectErr && res.runErr == nil:
 			t.Errorf("expected error containing %q, but the run succeeded", strings.TrimSpace(string(wantErrText)))
 		case expectErr && !errMatch:
 			t.Errorf("run error differs from %s/want.err (-want +got):\n%s", dir, cmp.Diff(strings.TrimSpace(string(wantErrText)), res.runErr.Error()))
+		case expectTrapCode && !trapCodeMatch:
+			t.Errorf("trap code differs from %s/want.trapcode (-want +got):\n%s", dir, cmp.Diff(strings.TrimSpace(string(wantTrapCode)), gotTrapCode))
 		case diff != "":
 			t.Errorf("output differs from go (-go +minigo):\n%s", diff)
 		case matched:

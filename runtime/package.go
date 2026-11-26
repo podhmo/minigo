@@ -458,7 +458,7 @@ func (p *Package) MemberV(name string, materialize func(*Package, *index.Decl) (
 			return materialize(p, d)
 		}
 	}
-	return nil, fmt.Errorf("undefined: %s.%s", p.Name, name)
+	return nil, &UndefinedError{Reason: fmt.Sprintf("undefined: %s.%s", p.Name, name)}
 }
 
 // instChunk is one cached instantiation. It keeps the binds alive, so

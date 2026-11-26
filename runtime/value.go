@@ -3536,33 +3536,6 @@ func panicScalar(v Value) any {
 	return v
 }
 
-// Trap is a failure the script cannot recover(), unlike a [Panic]: an
-// unsupported construct, an invalid operation, or an error returned by a
-// [BuiltinFunc] or [SpecialFunc]. Deferred calls run as it unwinds, but
-// recover() in them returns nil and the Trap continues. It unwinds to the
-// host as the error of [github.com/podhmo/minigo.Engine.Call]; Err,
-// reachable with errors.As, is the host error it was raised from.
-type Trap struct {
-	Pos    token.Pos
-	Reason string
-	Frames []string // "func at file:line" entries collected while unwinding
-	// Err is the host error the trap was raised from (a special-form
-	// handler, builtin or host call that returned an error), or nil for
-	// a trap the VM raised itself. Reason is its text; keeping the value
-	// lets hosts errors.As their own typed errors through the trap.
-	Err error
-}
-
-// Unwrap exposes the host error a trap was raised from.
-func (t *Trap) Unwrap() error { return t.Err }
-
-func (t *Trap) Error() string {
-	if len(t.Frames) == 0 {
-		return fmt.Sprintf("runtime trap: %s", t.Reason)
-	}
-	return fmt.Sprintf("runtime trap: %s\nTraceback (most recent call first):\n%s", t.Reason, renderFrames(t.Frames))
-}
-
 // StructFieldTags returns the unquoted tag of each field of st that has
 // one, keyed by field name (an embedded field by its type name), or nil
 // when no field has a tag. It is the form [TypeDef.FTags] holds.

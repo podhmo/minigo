@@ -344,12 +344,12 @@ func (c *compiler) assign(st *ast.AssignStmt) {
 		}
 		op, ok := binOpOf(st.Tok)
 		if !ok {
-			c.trap(st.Pos(), "unsupported assign op %s", st.Tok)
+			c.trapCode(st.Pos(), runtime.TrapCodeUnsupported, "unsupported assign op %s", st.Tok)
 			return
 		}
 		target := ast.Unparen(st.Lhs[0])
 		if !storageShape(target, false) {
-			c.trap(st.Pos(), "compound assignment on %T is not supported", target)
+			c.trapCode(st.Pos(), runtime.TrapCodeUnsupported, "compound assignment on %T is not supported", target)
 			return
 		}
 		// `x op= y` reads x's value when the RHS evaluates, not at
@@ -735,7 +735,7 @@ func (c *compiler) refTarget(lhs ast.Expr, pin, publish bool) {
 			c.expr(t.X)
 		}
 	default:
-		c.trap(lhs.Pos(), "unsupported assignment target %T", lhs)
+		c.trapCode(lhs.Pos(), runtime.TrapCodeUnsupported, "unsupported assignment target %T", lhs)
 	}
 }
 
@@ -947,6 +947,6 @@ func (c *compiler) storeTarget(lhs ast.Expr, isDefine bool) {
 		c.emit(bytecode.OpSwap, 0, 0, t.Pos())
 		c.emit(bytecode.OpSetInd, 0, 0, t.Pos())
 	default:
-		c.trap(lhs.Pos(), "unsupported assignment target %T", lhs)
+		c.trapCode(lhs.Pos(), runtime.TrapCodeUnsupported, "unsupported assignment target %T", lhs)
 	}
 }
