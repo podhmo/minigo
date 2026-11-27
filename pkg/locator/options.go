@@ -21,13 +21,3 @@ func WithGoModuleResolver() Option {
 		l.UseGoModuleResolver = true
 	}
 }
-
-// WithGOROOT uses goRoot instead of the toolchain's `go env GOROOT`
-// answer. A scratch or symlink-farm GOROOT lets an in-process caller run
-// against patched standard-library sources without changing the process
-// environment. The module cache lookup is independent and unchanged.
-func WithGOROOT(goRoot string) Option {
-	return func(l *Locator) {
-		l.goRoot = goRoot
-	}
-}

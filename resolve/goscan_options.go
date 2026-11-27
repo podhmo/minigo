@@ -35,5 +35,5 @@ func NewGoScanResolver(startDir string, cfg BuildConfig, opts ...GoScanOption) (
 	if err != nil {
 		return nil, fmt.Errorf("creating locator at %s: %w", startDir, err)
 	}
-	return &GoScanResolver{loc: l, cfg: cfg}, nil
+	return &GoScanResolver{loc: l, cfg: cfg, goRoot: scanOpts.goRoot}, nil
 }

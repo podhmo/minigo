@@ -31,7 +31,7 @@ flags (accepted before or after dir):
   -h, --help        show this help
 
 Not supported in this version (reported loudly): external
-'package foo_test' files, BenchmarkXxx, FuzzXxx, examples with an
+'package foo_test' files, FuzzXxx, examples with an
 // Output: comment, TestMain, t.Parallel scheduling, t.Setenv, t.Chdir.
 `
 }

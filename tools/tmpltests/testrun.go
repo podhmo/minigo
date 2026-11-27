@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,20 +13,9 @@ import (
 // invocation. The scratch GOROOT is passed as resolver state rather than
 // through the process environment, and each test gets an isolated engine
 // session so package-level mutation cannot change a later test's oracle.
-func runTestRun(pkgDir, gr, srcList, only string, timeout time.Duration) error {
-	ents, err := os.ReadDir(pkgDir)
-	if err != nil {
+func runTestRun(pkgDir, gr, srcList, only string, timeout time.Duration, report string) error {
+	if err := renameSrcTests(pkgDir); err != nil {
 		return err
-	}
-	for _, e := range ents {
-		name := e.Name()
-		if !strings.HasSuffix(name, "_srctest.go") {
-			continue
-		}
-		to := strings.TrimSuffix(name, "_srctest.go") + "_test.go"
-		if err := os.Rename(filepath.Join(pkgDir, name), filepath.Join(pkgDir, to)); err != nil {
-			return err
-		}
 	}
 	modes := map[string]minigo.PackageMode{}
 	for _, path := range strings.Split(srcList, ",") {
@@ -36,16 +23,25 @@ func runTestRun(pkgDir, gr, srcList, only string, timeout time.Duration) error {
 			modes[path] = minigo.ModeSource
 		}
 	}
+	out, reportFile, err := testRunOutput(report)
+	if err != nil {
+		return err
+	}
 	err = testrun.Run(context.Background(), testrun.Options{
-		Dir:     pkgDir,
-		Out:     os.Stdout,
-		Verbose: true,
-		Run:     only,
-		Timeout: timeout,
-		Isolate: true,
-		Modes:   modes,
-		GOROOT:  gr,
+		Dir:         pkgDir,
+		Out:         out,
+		Verbose:     true,
+		Run:         only,
+		TestTimeout: timeout,
+		Isolate:     true,
+		Modes:       modes,
+		GOROOT:      gr,
 	})
+	if reportFile != nil {
+		if cerr := reportFile.Close(); err == nil {
+			err = cerr
+		}
+	}
 	if err == testrun.ErrFailed {
 		// tmpltests is a conformance report harness: like the process
 		// runner, non-passing upstream tests are data in the report rather

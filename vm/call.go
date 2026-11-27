@@ -438,7 +438,7 @@ func (v *VM) callBuiltin(c *runtime.BuiltinFunc, args []runtime.Value) (runtime.
 		}
 		panic(r)
 	}()
-	if c.Pkg != nil {
+	if runtime.BuiltinOwner(c) != nil {
 		// a package-bound host call sees materialized constants —
 		// interpreter builtins (Pkg nil) get UConst so their own
 		// constant arms keep working (append's element-type

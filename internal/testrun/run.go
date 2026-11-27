@@ -20,13 +20,16 @@ type Options struct {
 	Dir string // package directory; a filesystem path, not an import path
 	Out io.Writer
 
-	Verbose  bool   // -v: stream === RUN / --- / log lines like go test -v
-	Short    bool   // -short: bound to testing.Short()
-	Run      string // -run: "/" separated unanchored regexps
-	Count    int    // -count: run the whole suite this many times (<=0 runs it once)
-	Timeout  time.Duration
-	FailFast bool // -failfast: stop scheduling after the first failing test
-	Isolate  bool // fork an isolated engine session for each test
+	Verbose bool   // -v: stream === RUN / --- / log lines like go test -v
+	Short   bool   // -short: bound to testing.Short()
+	Run     string // -run: "/" separated unanchored regexps
+	Count   int    // -count: run the whole suite this many times (<=0 runs it once)
+	Timeout time.Duration
+	// TestTimeout bounds each top-level test invocation. It is a library
+	// harness control, not go test's suite-wide -timeout semantics.
+	TestTimeout time.Duration
+	FailFast    bool // -failfast: stop scheduling after the first failing test
+	Isolate     bool // fork an isolated engine session for each test
 
 	// Modes/Tags carry `minigo run`'s --src/--deny/--tags plumbing:
 	// Modes is minigo.WithPackageModes, Tags the build tag list.
@@ -74,34 +77,9 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 
-	// The build config is --tags plus the --tagged gate tag; the run
-	// set gate compares file lists under the two configs.
-	cfg := resolve.BuildConfig{Tags: o.Tags}
-	buildCfg := cfg
-	if o.Tagged != "" {
-		buildCfg.Tags = append(append([]string{}, cfg.Tags...), o.Tagged)
-	}
-	scan, err := scanTests(abs, buildCfg)
+	scan, gated, buildCfg, err := scanForRun(abs, o.Tags, o.Tagged)
 	if err != nil {
 		return err
-	}
-	var gated map[string]bool
-	if o.Tagged != "" {
-		plain, err := scanTests(abs, cfg)
-		if err != nil {
-			return err
-		}
-		inPlain := map[string]bool{}
-		for _, f := range plain.all {
-			inPlain[f] = true
-		}
-		gated = map[string]bool{}
-		for _, f := range scan.all {
-			if !inPlain[f] {
-				// keyed like syntax.File.Name: slash-normalized
-				gated[filepath.ToSlash(f)] = true
-			}
-		}
 	}
 
 	// The suite state the facade reads (-short, -v, ctx, deadline).
@@ -246,10 +224,18 @@ loop:
 			if suite.Verbose {
 				rep.emitLine("=== RUN   " + ti.Name)
 			}
+			testCtx := ctx
+			var cancelTest context.CancelFunc
+			if o.TestTimeout > 0 {
+				testCtx, cancelTest = context.WithTimeout(ctx, o.TestTimeout)
+			}
+			if cancelTest != nil {
+				defer cancelTest()
+			}
 			runEngine, runPkg, runTestingPkg := e, pkg, testingPkg
 			if o.Isolate {
 				var err error
-				runEngine, runPkg, runTestingPkg, err = isolatedSession(ctx, e, suite, abs)
+				runEngine, runPkg, runTestingPkg, err = isolatedSession(testCtx, e, suite, abs)
 				if err != nil {
 					t.SetVerdict(mtesting.Trap, err.Error())
 					rep.testDone(t)
@@ -257,7 +243,7 @@ loop:
 					continue
 				}
 			}
-			cerr := callTest(ctx, runEngine, runPkg, ti.Name, t)
+			cerr := callTest(testCtx, runEngine, runPkg, ti.Name, t)
 			t.CancelContext()
 			if runPkg.State() == runtime.Failed {
 				// init failed: the remaining tests would all die the
@@ -271,7 +257,7 @@ loop:
 			classifyCall(t, cerr)
 			// t.Cleanup script funcs need a live process: run them in a
 			// second Engine.Call against the bound __cleanup member.
-			cleanupErr := runTopCleanups(ctx, runEngine, runTestingPkg, t)
+			cleanupErr := runTopCleanups(testCtx, runEngine, runTestingPkg, t)
 			// A cleanup failure after a dead test keeps the body's
 			// PANIC/TRAP — folding its stopError into the flags would
 			// downgrade the verdict. Otherwise re-evaluate the flags even
@@ -279,6 +265,9 @@ loop:
 			// must change a PASS body into FAIL.
 			if t.Verdict() != mtesting.Panic && t.Verdict() != mtesting.Trap {
 				classifyCall(t, cleanupErr)
+			}
+			if cancelTest != nil {
+				cancelTest()
 			}
 			t.Finish()
 			rep.testDone(t)

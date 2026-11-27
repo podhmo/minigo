@@ -58,19 +58,26 @@ func TestStrictLazyConformance(t *testing.T) {
 	runDiffCases(t, dirs, "STRICT_PENDING", []minigo.Option{minigo.WithStrictLazyCompile()})
 }
 
-// runDiffCases schedules one corpus set. Cases that do not capture the
-// process-wide stderr writer can run in parallel; want.stderr cases stay
-// serial because the capture swaps os.Stderr.
+// runDiffCases schedules one corpus set. Cases stay serial when they
+// capture the process-wide stderr writer or mutate the host environment.
 func runDiffCases(t *testing.T, dirs []string, pendingFile string, extra []minigo.Option) {
 	for _, f := range dirs {
 		dir := filepath.Dir(f)
 		t.Run(filepath.Base(dir), func(t *testing.T) {
-			if _, err := os.Stat(filepath.Join(dir, "want.stderr")); err != nil {
+			if diffCaseParallelizable(dir) {
 				t.Parallel()
 			}
 			runDiffCase(t, dir, pendingFile, extra)
 		})
 	}
+}
+
+func diffCaseParallelizable(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "want.stderr")); err == nil {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "main.go"))
+	return err != nil || !bytes.Contains(b, []byte("os.Setenv("))
 }
 
 // runDiffCase runs one difffuzz dir and applies the verdict contract:

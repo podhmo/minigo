@@ -1126,10 +1126,8 @@ func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) ([]str
 	var tdKeys []string
 	for _, k := range p.Globals.Names() {
 		v, _ := p.Globals.Get(k)
-		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
-			// a BuiltinFunc bound under several paths keeps its first
-			// owner; a re-Bind re-points at the new live package
-			bf.Pkg = p
+		if bf, ok := v.(*runtime.BuiltinFunc); ok {
+			runtime.AdoptBuiltinOwner(bf, p)
 		}
 		if td, ok := v.(*runtime.TypeDef); ok {
 			if td.Pkg == nil {

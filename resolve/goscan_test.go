@@ -72,4 +72,7 @@ func TestGoScanResolverWithGOROOT(t *testing.T) {
 	if diff := cmp.Diff(fmtDir, meta.Dir); diff != "" {
 		t.Errorf("fmt dir mismatch (-want +got):\n%s", diff)
 	}
+	if diff := cmp.Diff(true, meta.Standard); diff != "" {
+		t.Errorf("standard mismatch (-want +got):\n%s", diff)
+	}
 }

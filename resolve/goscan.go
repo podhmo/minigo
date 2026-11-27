@@ -18,17 +18,10 @@ import (
 // module cache, without running the go command.
 type GoScanResolver struct {
 	// Backed by go-scan's locator (pkg/locator).
-	loc *locator.Locator
-	cfg BuildConfig
+	loc    *locator.Locator
+	cfg    BuildConfig
+	goRoot string
 }
-
-// RootDir returns the directory of the anchoring go.mod, or startDir when
-// there is none.
-func (r *GoScanResolver) RootDir() string { return r.loc.RootDir() }
-
-// ModulePath returns the anchoring module's path, or "" when there is no
-// go.mod.
-func (r *GoScanResolver) ModulePath() string { return r.loc.ModulePath() }
 
 // Requires returns a copy of the go.mod require directives, keyed by
 // module path.
@@ -46,7 +39,7 @@ func (r *GoScanResolver) Locate(ctx context.Context, fromDir, importPath string)
 	if err := r.cfg.CheckDir(dir); err != nil {
 		return nil, err
 	}
-	return ReadPackageFiles(dir, importPath, r.cfg)
+	return r.markStandard(ReadPackageFiles(dir, importPath, r.cfg))
 }
 
 // LocateDir implements [Resolver] for a directory rather than an import
@@ -83,7 +76,7 @@ func (r *GoScanResolver) LocateDir(ctx context.Context, dir string) (*PackageMet
 		return nil, err
 	}
 	meta.ModulePath = r.loc.ModulePath()
-	return meta, nil
+	return r.markStandard(meta, nil)
 }
 
 // locateFile makes a one-file package out of a .go file, like `go run

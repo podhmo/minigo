@@ -1125,8 +1125,8 @@ func (h Hooks) ownerOf(v runtime.Value) (*runtime.Package, error) {
 	case *runtime.Struct:
 		return x.Def.Pkg, nil
 	case *runtime.BuiltinFunc:
-		if x.Pkg != nil {
-			return x.Pkg, nil
+		if owner := runtime.BuiltinOwner(x); owner != nil {
+			return owner, nil
 		}
 		if x.Method != nil {
 			return h.hostMethodPkg(x.Method), nil
