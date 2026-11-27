@@ -3,6 +3,7 @@ package hostbridge
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/runtime"
@@ -29,29 +30,46 @@ func TestSyncProjectedInterfaceKeysKeepIntegerTypes(t *testing.T) {
 	}
 }
 
-func TestPullProjectedKeepsHostInt64Key(t *testing.T) {
-	sm := runtime.NewMap(nil, true)
-	hm := map[any]string{int64(1): "host"}
-	e := &projEntry{
-		sv:   sm,
-		rv:   reflect.ValueOf(hm),
-		snap: map[string]runtime.Value{},
-		host: map[string]bool{},
+func TestPullProjectedKeepsHostKeyTypes(t *testing.T) {
+	typedInt64 := runtime.Tag(runtime.BasicTypedef("int64"), int64(1))
+	tests := []struct {
+		name       string
+		hostKey    any
+		scriptKey  runtime.Value
+		rejectBare bool
+	}{
+		{name: "int64", hostKey: int64(1), scriptKey: typedInt64, rejectBare: true},
+		{name: "named int64", hostKey: time.Second, scriptKey: time.Second},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sm := runtime.NewMap(nil, true)
+			hm := map[any]string{tc.hostKey: "host"}
+			e := &projEntry{
+				sv:   sm,
+				rv:   reflect.ValueOf(hm),
+				snap: map[string]runtime.Value{},
+				host: map[string]bool{},
+			}
 
-	m := &Marshal{}
-	m.pullProjected(e, nil, map[runtime.Value]bool{})
+			m := &Marshal{}
+			m.pullProjected(e, nil, map[runtime.Value]bool{})
 
-	typed := runtime.Tag(runtime.BasicTypedef("int64"), int64(1))
-	if got, ok := sm.Get(typed); !ok || got != "host" {
-		t.Fatalf("script int64 entry = %v, %v; want host, true", got, ok)
-	}
-	if _, ok := sm.Get(int64(1)); ok {
-		t.Fatal("host int64 key collapsed to script int")
-	}
-	m.syncProjected(e, nil)
-	if diff := cmp.Diff(map[any]string{int64(1): "host"}, hm); diff != "" {
-		t.Fatalf("host map mismatch (-want +got):\n%s", diff)
+			if got, ok := sm.Get(tc.scriptKey); !ok {
+				t.Fatal("script key entry missing")
+			} else if diff := cmp.Diff("host", got); diff != "" {
+				t.Fatalf("script value mismatch (-want +got):\n%s", diff)
+			}
+			if tc.rejectBare {
+				if _, ok := sm.Get(int64(1)); ok {
+					t.Fatal("host int64 key collapsed to script int")
+				}
+			}
+			m.syncProjected(e, nil)
+			if diff := cmp.Diff(map[any]string{tc.hostKey: "host"}, hm); diff != "" {
+				t.Fatalf("host map mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 

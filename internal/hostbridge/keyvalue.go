@@ -12,13 +12,12 @@ import (
 // there is the host's sized integer type, not a script int payload.
 func goSlotKeyValueOf(rv reflect.Value) runtime.Value {
 	if rv.Kind() == reflect.Interface && !rv.IsNil() {
-		e := rv.Elem()
-		switch e.Kind() {
-		case reflect.Int64:
-			return runtime.Tag(sizedIntTyp(reflect.Int64), e.Int())
-		case reflect.Uint64:
-			if u := e.Uint(); u <= math.MaxInt64 {
-				return runtime.Tag(sizedIntTyp(reflect.Uint64), int64(u))
+		switch x := rv.Elem().Interface().(type) {
+		case int64:
+			return runtime.Tag(sizedIntTyp(reflect.Int64), x)
+		case uint64:
+			if x <= math.MaxInt64 {
+				return runtime.Tag(sizedIntTyp(reflect.Uint64), int64(x))
 			}
 		}
 	}
