@@ -27,6 +27,21 @@ func TestSelfBoundEngineNewSession(t *testing.T) {
 	}
 }
 
+// TestSelfBoundEngineCallKeepsScriptRecorder pins Engine.Call's args as
+// pass-through values: marshaling the script recorder into a data
+// projection must not invoke Result early, or the first empty snapshot
+// would hide the handler's later status and headers.
+func TestSelfBoundEngineCallKeepsScriptRecorder(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedRecorder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("404|yes|x", got); diff != "" {
+		t.Fatalf("NestedRecorder() mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestSelfBoundEngineInheritsHostPolicy(t *testing.T) {
 	e := NewEngine(".", WithHostPolicy(func(path, sym string) bool {
 		return !(path == "os" && sym == "Getenv")

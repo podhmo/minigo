@@ -23,6 +23,7 @@ import (
 	"go/ast"
 	"go/constant"
 	"go/token"
+	"path/filepath"
 	"time"
 	"unsafe"
 
@@ -1200,6 +1201,14 @@ func (v *VM) setField(f *frame, base runtime.Value, name string, val runtime.Val
 		ownPkg := fv.CanAddr() && sf.PkgPath != "" && sf.PkgPath == framePkgPath(f)
 		if !fv.CanSet() && !ownPkg {
 			f.trap("host value %T has no settable field %s", b.V, name)
+		}
+		// exec.Cmd.Dir follows the script's virtual cwd: Go resolves a
+		// relative Dir in the process cwd, and minigo's process-cwd
+		// equivalent is the engine cwd rather than the host process's.
+		if name == "Dir" && rv.Type().PkgPath() == "os/exec" && rv.Type().Name() == "Cmd" && v.H.CwdAbs != nil {
+			if dir, ok := runtime.Unwrap(v.materialize(f, val)).(string); ok && dir != "" && !filepath.IsAbs(dir) {
+				val = v.H.CwdAbs(dir)
+			}
 		}
 		nv, err := marshalHost.HostFieldValue(val, rv.Type(), name, fv.Type(), v)
 		if err != nil {

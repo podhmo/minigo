@@ -441,6 +441,7 @@ func (e *Engine) newVM() *vm.VM {
 		HostTwin:         e.hostTwin,
 		Linkname:         e.linknameTarget,
 		HostErr:          hostbridge.HostErrOf,
+		CwdAbs:           e.cwdAbs,
 	}}
 }
 

@@ -967,7 +967,16 @@ func (v *VM) popArgsBuf(f *frame, argc int, mode int, pos token.Pos, args []runt
 		// boundary — `const s = "ab"; append(b, s...)` spreads like
 		// the literal, so materialize before the string check.
 		last = v.materialize(f, last)
-		if str, ok := last.(string); ok {
+		str, isString := last.(string)
+		if !isString {
+			// a bound named string (html/template.HTML) keeps its raw host
+			// scalar as the Named payload; Go's string spread assignability
+			// covers it too.
+			if rv := hostbridge.RVOf(last); rv.IsValid() && rv.Kind() == hostbridge.KindString {
+				str, isString = rv.String(), true
+			}
+		}
+		if isString {
 			// append([]byte, s...) spreads the string's bytes — the
 			// only legal string spread in Go. Carry it as the Spread
 			// marker (like a slice spread) so a Forwards callee such as
