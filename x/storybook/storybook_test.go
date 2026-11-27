@@ -118,6 +118,7 @@ func notStory() {}
 func TestRenderGeneratedFixture(t *testing.T) {
 	dir := storyPackage(t, `import (
 	"fmt"
+	"html/template"
 	"github.com/podhmo/minigo/x/storybook/fixture"
 )
 
@@ -129,11 +130,12 @@ type View struct {
 	Tags []string
 	Inner *Inner
 	Scores map[string]int
+	Badge template.HTML
 }
 
 func StoryGenerated() {
 	v := fixture.Minimal[View]()
-	fmt.Printf("%s/%d/%d/%t/%t/%d/%d", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"])
+	fmt.Printf("%s/%d/%d/%t/%t/%d/%d/%s", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"], v.Badge)
 }
 
 func StoryGeneratedLong() {
@@ -146,7 +148,7 @@ func StoryGeneratedLong() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("x/1/1/true/true/1/1", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("x/1/1/true/true/1/1/x", string(page.Body)); diff != "" {
 		t.Fatalf("generated fixture output (-want +got):\n%s", diff)
 	}
 	page, err = b.Render(t.Context(), "StoryGeneratedLong")

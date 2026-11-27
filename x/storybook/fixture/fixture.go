@@ -104,27 +104,27 @@ func buildValue(t reflect.Type, m mode, depth int) reflect.Value {
 	case reflect.Bool:
 		return reflect.ValueOf(true).Convert(t)
 	case reflect.Int:
-		return intValue(t, m, math.MaxInt)
+		return integerValue(t, m, math.MaxInt, 0)
 	case reflect.Int8:
-		return intValue(t, m, math.MaxInt8)
+		return integerValue(t, m, math.MaxInt8, 0)
 	case reflect.Int16:
-		return intValue(t, m, math.MaxInt16)
+		return integerValue(t, m, math.MaxInt16, 0)
 	case reflect.Int32:
-		return intValue(t, m, math.MaxInt32)
+		return integerValue(t, m, math.MaxInt32, 0)
 	case reflect.Int64:
-		return intValue(t, m, math.MaxInt64)
+		return integerValue(t, m, math.MaxInt64, 0)
 	case reflect.Uint:
-		return uintValue(t, m, math.MaxUint)
+		return integerValue(t, m, 0, math.MaxUint)
 	case reflect.Uint8:
-		return uintValue(t, m, math.MaxUint8)
+		return integerValue(t, m, 0, math.MaxUint8)
 	case reflect.Uint16:
-		return uintValue(t, m, math.MaxUint16)
+		return integerValue(t, m, 0, math.MaxUint16)
 	case reflect.Uint32:
-		return uintValue(t, m, math.MaxUint32)
+		return integerValue(t, m, 0, math.MaxUint32)
 	case reflect.Uint64:
-		return uintValue(t, m, math.MaxUint64)
+		return integerValue(t, m, 0, math.MaxUint64)
 	case reflect.Uintptr:
-		return uintValue(t, m, math.MaxUint)
+		return integerValue(t, m, 0, math.MaxUint)
 	case reflect.Float32:
 		return floatValue(t, m, math.MaxFloat32)
 	case reflect.Float64:
@@ -143,23 +143,21 @@ func countFor(t reflect.Type, m mode) int {
 	return 1
 }
 
-func intValue(t reflect.Type, m mode, max int64) reflect.Value {
+func integerValue(t reflect.Type, m mode, maxInt int64, maxUint uint64) reflect.Value {
+	out := reflect.New(t).Elem()
+	if t.Kind() >= reflect.Uint && t.Kind() <= reflect.Uintptr {
+		v := uint64(1)
+		if m == modeMaximal {
+			v = maxUint
+		}
+		out.SetUint(v)
+		return out
+	}
 	v := int64(1)
 	if m == modeMaximal {
-		v = max
+		v = maxInt
 	}
-	out := reflect.New(t).Elem()
 	out.SetInt(v)
-	return out
-}
-
-func uintValue(t reflect.Type, m mode, max uint64) reflect.Value {
-	v := uint64(1)
-	if m == modeMaximal {
-		v = max
-	}
-	out := reflect.New(t).Elem()
-	out.SetUint(v)
 	return out
 }
 
