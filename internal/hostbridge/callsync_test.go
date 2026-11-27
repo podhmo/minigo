@@ -29,6 +29,32 @@ func TestSyncProjectedInterfaceKeysKeepIntegerTypes(t *testing.T) {
 	}
 }
 
+func TestPullProjectedKeepsHostInt64Key(t *testing.T) {
+	sm := runtime.NewMap(nil, true)
+	hm := map[any]string{int64(1): "host"}
+	e := &projEntry{
+		sv:   sm,
+		rv:   reflect.ValueOf(hm),
+		snap: map[string]runtime.Value{},
+		host: map[string]bool{},
+	}
+
+	m := &Marshal{}
+	m.pullProjected(e, nil, map[runtime.Value]bool{})
+
+	typed := runtime.Tag(runtime.BasicTypedef("int64"), int64(1))
+	if got, ok := sm.Get(typed); !ok || got != "host" {
+		t.Fatalf("script int64 entry = %v, %v; want host, true", got, ok)
+	}
+	if _, ok := sm.Get(int64(1)); ok {
+		t.Fatal("host int64 key collapsed to script int")
+	}
+	m.syncProjected(e, nil)
+	if diff := cmp.Diff(map[any]string{int64(1): "host"}, hm); diff != "" {
+		t.Fatalf("host map mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestProjectionSnapshotsKeepIntegerKeyTypes(t *testing.T) {
 	sm := runtime.NewMap(nil, true)
 	sm.Insert(int64(1), "one")
