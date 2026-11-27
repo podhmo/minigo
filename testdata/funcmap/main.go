@@ -542,8 +542,8 @@ func (p *IntKeyPage) Mutate() any {
 
 // IntKeyMapStaysCanonical lets the host add one interface-keyed int
 // entry, then reads the shared map's host length. Both merge directions
-// must use one canonical key form; an int64/int mismatch would duplicate
-// the key in the host projection even though the script has one entry.
+// must use the host int form; an int64/int mismatch would duplicate the
+// key in the host projection even though the script has one entry.
 func IntKeyMapStaysCanonical() string {
 	data := &IntKeyPage{M: map[any]string{}}
 	fm := template.FuncMap{"noop": func(m map[any]string) string { return "" }, "hostlen": identity.Len}

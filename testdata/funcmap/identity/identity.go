@@ -22,6 +22,6 @@ func Same(a, b any) bool {
 // AddIntKey writes through the host spelling of a script integer key.
 func AddIntKey(x any) { x.(map[any]string)[int(1)] = "host" }
 
-// Len reports the host projection's length, including key spellings the
-// script side canonicalizes away.
+// Len reports the host projection's length, including duplicate key
+// spellings the script side cannot represent.
 func Len(m map[any]string) int { return len(m) }
