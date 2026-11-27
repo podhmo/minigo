@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -65,9 +64,9 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	if st, err := os.Stat(abs); err != nil {
-		return fmt.Errorf("minigo test: %w", err)
+		return fmt.Errorf("%w", err)
 	} else if !st.IsDir() {
-		return fmt.Errorf("minigo test: %s is not a directory", o.Dir)
+		return fmt.Errorf("%s is not a directory", o.Dir)
 	}
 
 	match, err := compileRun(o.Run)
@@ -84,13 +83,13 @@ func Run(ctx context.Context, o Options) error {
 	}
 	scan, err := scanTests(abs, buildCfg)
 	if err != nil {
-		return fmt.Errorf("minigo test: %w", err)
+		return err
 	}
 	var gated map[string]bool
 	if o.Tagged != "" {
 		plain, err := scanTests(abs, cfg)
 		if err != nil {
-			return fmt.Errorf("minigo test: %w", err)
+			return err
 		}
 		inPlain := map[string]bool{}
 		for _, f := range plain.all {
@@ -136,6 +135,10 @@ func Run(ctx context.Context, o Options) error {
 		rep.note("%s: external test package (package *_test) is not supported", relPath(abs, f))
 		failed = true
 	}
+	for _, f := range scan.cgoSkipped {
+		rep.note("%s: imports \"C\" — cgo is not supported, file skipped", relPath(abs, f))
+		failed = true
+	}
 
 	opts := []minigo.Option{
 		minigo.WithOutput(out),
@@ -152,16 +155,29 @@ func Run(ctx context.Context, o Options) error {
 	// LocateDir's file list for this directory only.
 	inner, err := resolve.NewGoScanResolver(abs, buildCfg)
 	if err != nil {
-		return fmt.Errorf("minigo test: %w", err)
+		return err
 	}
-	e.WithResolver(&variantResolver{inner: inner, dir: abs, testFiles: scan.internal})
+	vr := &variantResolver{inner: inner, dir: abs, testFiles: scan.internal, pkgName: scan.pkgName}
+	e.WithResolver(vr)
 	e.Bind("testing", mtesting.Symbols(suite))
 	e.Bind("flag", mtesting.FlagSymbols(suite))
+
+	// Locate before building: the meta carries the import path for the
+	// trailer, and a locate failure is "[setup failed]" where a build
+	// failure is "[build failed]" (go test's wording).
+	importPath := pathOfDir(abs)
+	if meta, err := vr.LocateDir(ctx, abs); err != nil {
+		rep.note("%v", err)
+		rep.buildFailed(importPath, time.Since(start), "setup failed")
+		return ErrFailed
+	} else {
+		importPath = meta.ImportPath
+	}
 
 	pkg, err := e.Package(ctx, abs)
 	if err != nil {
 		rep.note("%v", err)
-		rep.buildFailed(pathOfDir(abs), time.Since(start))
+		rep.buildFailed(importPath, time.Since(start), "build failed")
 		return ErrFailed
 	}
 
@@ -190,7 +206,7 @@ func Run(ctx context.Context, o Options) error {
 
 	testingPkg, err := e.Package(ctx, "testing")
 	if err != nil {
-		return fmt.Errorf("minigo test: %w", err)
+		return err
 	}
 
 	failfast := false
@@ -232,7 +248,10 @@ loop:
 			// second Engine.Call against the bound __cleanups member.
 			if len(t.Cleanups()) > 0 {
 				cerr := callCleanups(ctx, e, testingPkg, t)
-				if cerr != nil {
+				// A cleanup failure after a dead test keeps the body's
+				// PANIC/TRAP — folding its stopError into the flags
+				// would downgrade the verdict.
+				if cerr != nil && t.Verdict() != mtesting.Panic && t.Verdict() != mtesting.Trap {
 					classifyCall(t, cerr)
 				}
 			}
@@ -335,7 +354,7 @@ func compileRun(run string) ([]*regexp.Regexp, error) {
 	for _, pat := range splitSlash(run) {
 		re, err := regexp.Compile(pat)
 		if err != nil {
-			return nil, fmt.Errorf("minigo test: invalid -run %q: %w", run, err)
+			return nil, fmt.Errorf("invalid -run %q: %w", run, err)
 		}
 		out = append(out, re)
 	}
@@ -382,31 +401,4 @@ func relPath(dir, file string) string {
 		return filepath.ToSlash(rel)
 	}
 	return filepath.ToSlash(file)
-}
-
-// variantResolver splices the internal *_test.go files into the entry
-// directory's LocateDir result — the test-variant build — while every
-// other resolution passes through untouched.
-type variantResolver struct {
-	inner     resolve.Resolver
-	dir       string // absolute
-	testFiles []string
-}
-
-func (r *variantResolver) Locate(ctx context.Context, fromDir, importPath string) (*resolve.PackageMeta, error) {
-	return r.inner.Locate(ctx, fromDir, importPath)
-}
-
-func (r *variantResolver) LocateDir(ctx context.Context, dir string) (*resolve.PackageMeta, error) {
-	meta, err := r.inner.LocateDir(ctx, dir)
-	if err != nil {
-		return nil, err
-	}
-	if meta.Dir == r.dir && len(r.testFiles) > 0 {
-		cp := *meta
-		cp.GoFiles = append(append([]string{}, meta.GoFiles...), r.testFiles...)
-		sort.Strings(cp.GoFiles)
-		return &cp, nil
-	}
-	return meta, nil
 }

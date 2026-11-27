@@ -78,13 +78,24 @@ func runTest(ctx context.Context, args []string) error {
 			}
 			return false
 		}
+		// bools answer "-x", "-x=true" and "-x=false".
+		isBool := func(dst *bool, names ...string) bool {
+			for _, n := range names {
+				switch a {
+				case n, n + "=true":
+					*dst = true
+					return true
+				case n + "=false":
+					*dst = false
+					return true
+				}
+			}
+			return false
+		}
 		switch {
-		case is("-v", "--v", "-verbose", "--verbose", "-v=true", "-test.v", "-test.v=true"):
-			o.Verbose = true
-		case is("-short", "--short", "-test.short", "-test.short=true"):
-			o.Short = true
-		case is("-failfast", "--failfast", "-test.failfast", "-test.failfast=true"):
-			o.FailFast = true
+		case isBool(&o.Verbose, "-v", "--v", "-verbose", "--verbose", "-test.v", "-test.verbose"):
+		case isBool(&o.Short, "-short", "--short", "-test.short"):
+		case isBool(&o.FailFast, "-failfast", "--failfast", "-test.failfast"):
 		case is("-run", "--run", "-test.run"):
 			i++
 			if err := need(a, i); err != nil {

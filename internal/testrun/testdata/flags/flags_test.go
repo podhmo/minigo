@@ -31,3 +31,13 @@ func TestShort(t *testing.T) {
 	}
 	t.Log("ran long")
 }
+
+func TestDeadline(t *testing.T) {
+	d, ok := t.Deadline()
+	if ok {
+		t.Error("Deadline() ok = true without -timeout")
+	}
+	if !d.IsZero() {
+		t.Error("Deadline() returned a non-zero time without -timeout")
+	}
+}

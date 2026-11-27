@@ -193,12 +193,52 @@ func TestUnsupported(t *testing.T) {
 	for _, want := range []string{
 		"benchmark: BenchmarkV is not supported",
 		"fuzz target: FuzzV is not supported",
+		"example: ExampleV is not supported",
 		"TestBadShape has a signature minigo test does not run",
+		"TestTwoParams has a signature minigo test does not run",
 		"--- PASS: TestFine",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestExampleOutputFatal(t *testing.T) {
+	got, err := run(t, "testdata/exampleout", func(o *testrun.Options) { o.Verbose = true })
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	if !strings.Contains(got, "example: ExampleP is not supported") {
+		t.Errorf("output missing example report:\n%s", got)
+	}
+	if strings.Contains(got, "=== RUN") {
+		t.Errorf("tests ran despite a fatal output example:\n%s", got)
+	}
+}
+
+func TestTestOnlyDir(t *testing.T) {
+	got, err := run(t, "testdata/testonly", func(o *testrun.Options) { o.Verbose = true })
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, got)
+	}
+	for _, want := range []string{
+		"--- PASS: TestAlone",
+		"ok  \tgithub.com/podhmo/minigo/internal/testrun/testdata/testonly",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCgoSkipped(t *testing.T) {
+	got, err := run(t, "testdata/cgotest", func(o *testrun.Options) { o.Verbose = true })
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	if !strings.Contains(got, `imports "C"`) {
+		t.Errorf("output missing cgo-skip report:\n%s", got)
 	}
 }
 

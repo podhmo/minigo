@@ -108,10 +108,11 @@ func (r *report) finish(importPath string, failed bool, elapsed time.Duration) {
 }
 
 // buildFailed reports a package that never built/initialized —
-// the go test "FAIL pkg [build failed]" shape.
-func (r *report) buildFailed(importPath string, elapsed time.Duration) {
+// the go test "FAIL pkg [build failed]" shape; kind is
+// "setup failed" for locate errors, "build failed" for compile ones.
+func (r *report) buildFailed(importPath string, elapsed time.Duration, kind string) {
 	fmt.Fprintln(r.w, "FAIL")
-	fmt.Fprintf(r.w, "FAIL\t%s\t%s [setup failed]\n", importPath, fmtDur(elapsed))
+	fmt.Fprintf(r.w, "FAIL\t%s\t%s [%s]\n", importPath, fmtDur(elapsed), kind)
 }
 
 func fmtDur(d time.Duration) string {

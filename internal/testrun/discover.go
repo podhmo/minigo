@@ -95,7 +95,7 @@ func discoverTests(pkg *runtime.Package, testFiles map[string]bool, dir string) 
 			// under go test — skipping it silently diverges, so it is
 			// fatal. Without Output: it never runs anyway (warning only).
 			out.Unsupported = append(out.Unsupported, unsupportedDecl{
-				Name: name, Pos: pos, What: "example", Fatal: hasOutputComment(d.Func)})
+				Name: name, Pos: pos, What: "example", Fatal: hasOutputComment(d)})
 		}
 	}
 	return out
@@ -136,6 +136,10 @@ func isTestFunc(fn *ast.FuncDecl, file *syntax.File, member string) bool {
 		return false
 	}
 	fld := fn.Type.Params.List[0]
+	if len(fld.Names) > 1 {
+		// `func TestX(t, u *testing.T)` is one field but two parameters.
+		return false
+	}
 	star, ok := fld.Type.(*ast.StarExpr)
 	if !ok {
 		return false
@@ -170,15 +174,24 @@ func importPathOf(file *syntax.File, local string) string {
 	return ""
 }
 
-// hasOutputComment reports whether the function's doc comment contains
-// the "// Output:" marker that makes an Example runnable.
-func hasOutputComment(fn *ast.FuncDecl) bool {
-	if fn.Doc == nil {
+// hasOutputComment reports whether the example function's body carries
+// the "// Output:" (or "// Unordered output:") marker that makes an
+// Example runnable — the marker comment lives inside the body, just
+// before the closing brace.
+func hasOutputComment(d *index.Decl) bool {
+	body := d.Func.Body
+	if body == nil {
 		return false
 	}
-	for _, c := range fn.Doc.List {
-		if strings.Contains(c.Text, "Output:") {
-			return true
+	for _, cg := range d.File.AST.Comments {
+		if cg.Pos() < body.Lbrace || cg.End() > body.Rbrace {
+			continue
+		}
+		for _, c := range cg.List {
+			mark := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+			if strings.HasPrefix(mark, "Output:") || strings.HasPrefix(mark, "Unordered output:") {
+				return true
+			}
 		}
 	}
 	return false

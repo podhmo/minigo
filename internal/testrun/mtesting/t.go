@@ -559,7 +559,9 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 	case "Deadline":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 			if t.suite.Deadline.IsZero() {
-				return &runtime.Tuple{Elems: []runtime.Value{runtime.NIL, false}}, nil
+				// A boxed zero Time — scripts can still call
+				// d.IsZero() like they would on a real time.Time.
+				return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: time.Time{}}, false}}, nil
 			}
 			return &runtime.Tuple{Elems: []runtime.Value{&runtime.GoValue{V: t.suite.Deadline}, true}}, nil
 		}, true

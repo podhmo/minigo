@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,14 @@ type scanFiles struct {
 	// rejected are files MatchFile could not read or parse — go build
 	// fails on them, so they are problems, not skipped.
 	rejected []string
+	// cgoSkipped are test files importing "C" — dropped like the
+	// non-test walk drops cgo files, but reported so no test vanishes
+	// silently.
+	cgoSkipped []string
+	// pkgName is the package clause used for the internal/external
+	// split (the non-test files' clause, or the _test-stripped clause
+	// of a test-only directory).
+	pkgName string
 	// all is every matched *_test.go path (internal ∪ external ∪ other):
 	// the --tagged gate compares file sets, not classifications.
 	all []string
@@ -60,7 +69,7 @@ func scanTests(dir string, cfg resolve.BuildConfig) (*scanFiles, error) {
 	if cfg.GOARCH != "" {
 		bctx.GOARCH = cfg.GOARCH
 	}
-	bctx.BuildTags = append(bctx.BuildTags, cfg.Tags...)
+	bctx.BuildTags = append(slices.Clone(bctx.BuildTags), cfg.Tags...)
 
 	// the package clause the non-test files declare — test files split
 	// on <name> vs <name>_test. If no non-test file exists (a test-only
@@ -91,6 +100,7 @@ func scanTests(dir string, cfg resolve.BuildConfig) (*scanFiles, error) {
 			continue
 		}
 		if importsC(f) {
+			out.cgoSkipped = append(out.cgoSkipped, abs)
 			continue
 		}
 		files = append(files, scannedFile{abs: abs, clause: f.Name.Name})
@@ -112,11 +122,13 @@ func scanTests(dir string, cfg resolve.BuildConfig) (*scanFiles, error) {
 			out.other = append(out.other, f.abs)
 		}
 	}
+	out.pkgName = pkgName
 	sort.Strings(out.internal)
 	sort.Strings(out.external)
 	sort.Strings(out.other)
 	sort.Strings(out.all)
 	sort.Strings(out.rejected)
+	sort.Strings(out.cgoSkipped)
 	return out, nil
 }
 

@@ -14,3 +14,10 @@ func BenchmarkV(b *testing.B) {}
 
 // FuzzV likewise.
 func FuzzV(f *testing.F) {}
+
+// ExampleV is reported unsupported but not fatal: without an
+// // Output: comment go test would never run it either.
+func ExampleV() {}
+
+// TestTwoParams declares two parameters in one field — malformed.
+func TestTwoParams(t, u *testing.T) {}
