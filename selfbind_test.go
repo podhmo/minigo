@@ -67,8 +67,25 @@ func TestSelfBoundEngineInheritsModeDeny(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("denied", got); diff != "" {
-		t.Fatalf("NestedModeDeny() mismatch (-want +got):\n%s", diff)
+	gotText, ok := got.(string)
+	if !ok {
+		t.Fatalf("NestedModeDeny() = %v (%T), want string", got, got)
+	}
+	if !strings.Contains(gotText, `import of "strings" denied by package policy`) {
+		t.Fatalf("NestedModeDeny() = %q, want strings package denial", gotText)
+	}
+}
+
+func TestSelfBoundEngineModeDenyPositiveControls(t *testing.T) {
+	e := NewEngine(".")
+	for _, fn := range []string{"NestedModeDeny", "NestedResetPackageModes"} {
+		got, err := e.Run(context.Background(), "./testdata/selfbind", fn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if diff := cmp.Diff("allowed", got); diff != "" {
+			t.Errorf("%s() mismatch (-want +got):\n%s", fn, diff)
+		}
 	}
 }
 
@@ -78,8 +95,12 @@ func TestSelfBoundEngineModeDenySurvivesPostConstructionOption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("denied", got); diff != "" {
-		t.Fatalf("NestedResetPackageModes() mismatch (-want +got):\n%s", diff)
+	gotText, ok := got.(string)
+	if !ok {
+		t.Fatalf("NestedResetPackageModes() = %v (%T), want string", got, got)
+	}
+	if !strings.Contains(gotText, `import of "strings" denied by package policy`) {
+		t.Fatalf("NestedResetPackageModes() = %q, want strings package denial", gotText)
 	}
 }
 

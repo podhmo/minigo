@@ -42,7 +42,7 @@ func NestedModeDeny() string {
 	e := minigo.NewEngine(".")
 	_, err := e.Run(context.Background(), "./testdata/selfbinddeny", "UseStrings")
 	if err != nil {
-		return "denied"
+		return fmt.Sprint(err)
 	}
 	return "allowed"
 }
@@ -62,7 +62,7 @@ func NestedResetPackageModes() string {
 	minigo.WithPackageModes(map[string]minigo.PackageMode{"strings": minigo.ModeAuto})(e)
 	_, err := e.Run(context.Background(), "./testdata/selfbinddeny", "UseStrings")
 	if err != nil {
-		return "denied"
+		return fmt.Sprint(err)
 	}
 	return "allowed"
 }
