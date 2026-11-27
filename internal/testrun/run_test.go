@@ -41,7 +41,23 @@ func TestTimeoutLoopDoesNotStopIsolatedSuite(t *testing.T) {
 	if !errors.Is(err, testrun.ErrFailed) {
 		t.Fatalf("Run err = %v, want ErrFailed", err)
 	}
-	for _, want := range []string{"--- TRAP: TestLoop", "test timed out", "--- PASS: TestAfter"} {
+	for _, want := range []string{"--- TRAP: TestLoop", "--- TRAP: TestSleep", "test timed out", "--- PASS: TestAfter"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestTimeoutInitDoesNotStopIsolatedSuite(t *testing.T) {
+	got, err := run(t, "testdata/timeoutinit", func(o *testrun.Options) {
+		o.Verbose = true
+		o.Isolate = true
+		o.TestTimeout = 20 * time.Millisecond
+	})
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	for _, want := range []string{"--- TRAP: TestA", "--- TRAP: TestB"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
 		}

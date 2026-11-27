@@ -52,7 +52,7 @@ func Install(bind stdlib.Bind, h stdlib.Helpers) {
 	bind("time", map[string]runtime.Value{
 		// *stdtime.ParseError: errors.As / type asserts on Parse's error.
 		"ParseError": stdlib.HostType("time.ParseError", func() any { return &stdtime.ParseError{} }),
-		"Sleep":      h.Fn("time.Sleep", func(a []any) (any, error) { stdtime.Sleep(durOf(a[0])); return nil, nil }, stdtime.Sleep),
+		"Sleep":      h.Fnvc("time.Sleep", func(vc runtime.VMCaller, a []any) (any, error) { vm.ParkedSleep(vc, durOf(a[0])); return nil, nil }, stdtime.Sleep),
 		"After": h.Fnvc("time.After", func(vc runtime.VMCaller, a []any) (any, error) {
 			// a proxy feed like NewTimer's: once the fire is delivered the
 			// channel is dead, and a second receive must count as asleep
