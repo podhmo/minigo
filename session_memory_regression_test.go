@@ -15,6 +15,7 @@ import (
 const sessionMemoryRegressionScript = `package main
 
 import (
+	"errors"
 	"probe"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ import (
 )
 
 type Item struct{ N int }
+
+var errInvalid = errors.New("invalid")
 
 var childCalls int
 
@@ -31,8 +34,6 @@ func (c *Child) Label() string { childCalls++; return "x" }
 
 type EffectParent struct{ N int }
 
-func (p *EffectParent) Child() *Child { return &Child{} }
-
 type Stream struct {
 	N      int
 	Values chan int
@@ -40,7 +41,16 @@ type Stream struct {
 
 func (s *Stream) Read() int { return <-s.Values }
 
+func (p *EffectParent) Child() *Child { return &Child{} }
+
 func (p *Item) Label() int { return p.N }
+
+func (p *Item) Status() (int, error) {
+	if p.N == 8 {
+		return 0, errInvalid
+	}
+	return p.N, nil
+}
 
 func Save() {
 	probe.Store(&Item{N: 7})
@@ -102,6 +112,22 @@ func RenderChildEffect() string {
 	}
 	return out.String() + "/" + strconv.Itoa(childCalls)
 }
+
+func RenderError() string {
+	item := &Item{N: 7}
+	t := template.Must(template.New("item-error").Funcs(template.FuncMap{
+		"update": func() any {
+			item.N = 8
+			return item
+		},
+	}).Parse("{{with update}}{{.Status}}{{end}}"))
+
+	var out strings.Builder
+	if err := t.Execute(&out, item); err != nil {
+		return err.Error()
+	}
+	return out.String()
+}
 `
 
 func runSessionMemoryRegression(t *testing.T) map[string]any {
@@ -132,7 +158,7 @@ func runSessionMemoryRegression(t *testing.T) map[string]any {
 	}
 
 	out := map[string]any{}
-	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderChildEffect"} {
+	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderError", "RenderChildEffect"} {
 		value, err := engine.Call(ctx, pkg, name)
 		if err != nil {
 			t.Fatal(err)
@@ -156,10 +182,10 @@ func TestCallbackReturnedStructMethodsRefresh(t *testing.T) {
 	}
 }
 
-func TestCallbackReturnedReceiveMethodsAreNotRepeated(t *testing.T) {
-	got := runSessionMemoryRegression(t)["RenderReceive"]
-	if diff := cmp.Diff("1", got); diff != "" {
-		t.Fatalf("RenderReceive (-want +got):\n%s", diff)
+func TestCallbackReturnedStructMethodErrorsClearStaleResults(t *testing.T) {
+	got := runSessionMemoryRegression(t)["RenderError"]
+	if diff := cmp.Diff("<no value>", got); diff != "" {
+		t.Fatalf("RenderError (-want +got):\n%s", diff)
 	}
 }
 
@@ -167,5 +193,12 @@ func TestCallbackReturnedCompositeMethodsDoNotDuplicateChildEffects(t *testing.T
 	got := runSessionMemoryRegression(t)["RenderChildEffect"]
 	if diff := cmp.Diff("x/1", got); diff != "" {
 		t.Fatalf("RenderChildEffect (-want +got):\n%s", diff)
+	}
+}
+
+func TestCallbackReturnedReceiveMethodsAreNotRepeated(t *testing.T) {
+	got := runSessionMemoryRegression(t)["RenderReceive"]
+	if diff := cmp.Diff("1", got); diff != "" {
+		t.Fatalf("RenderReceive (-want +got):\n%s", diff)
 	}
 }

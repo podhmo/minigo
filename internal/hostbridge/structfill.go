@@ -44,9 +44,9 @@ func fillStructProjection(ev reflect.Value, plan structProjectionPlan, recv runt
 	}
 	for k, name := range plan.mnames {
 		m := td.Methods[name]
-		if methods || refreshableMethod(m) {
-			h.projMethod(ev.Field(len(plan.fidx)+k), m, recv, m.PtrRecv && plan.valueRecv, vc)
-		}
+		fillMethodSlot(ev.Field(len(plan.fidx)+k), methods, m, func(fv reflect.Value) {
+			h.projMethod(fv, m, recv, m.PtrRecv && plan.valueRecv, vc)
+		})
 	}
 	for j, name := range plan.pnames {
 		fv := ev.Field(len(plan.fidx) + len(plan.mnames) + j)
@@ -59,9 +59,9 @@ func fillStructProjection(ev reflect.Value, plan structProjectionPlan, recv runt
 		case it.hv.IsValid():
 			fv.Set(it.hv)
 		case it.m != nil:
-			if methods || refreshableMethod(it.m) {
+			fillMethodSlot(fv, methods, it.m, func(fv reflect.Value) {
 				h.projMethod(fv, it.m, it.recv, false, vc)
-			}
+			})
 		default:
 			if hv := h.M.DeepHost(it.fv, vc, h); hv != nil {
 				fv.Set(reflect.ValueOf(hv))
