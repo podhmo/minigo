@@ -132,3 +132,5 @@ The example suites need `log`, which source-resolves and formats via
 
 - `link_test.go` — drives the Go toolchain itself (`internal/testenv`,
   `os/exec`); meaningless here.
+
+Internal `TestXxx` suites use the in-process `minigo test` runner by default (`-runner=auto`), with a scratch GOROOT passed through resolver configuration and one isolated interpreter session per test. `-runner=process` keeps the original process-per-test harness; external example suites still use it because external test packages and examples are outside `minigo test` v1 scope.

@@ -43,28 +43,6 @@ type Locator struct {
 	requires            map[string]string // module path -> version
 }
 
-// Option is a functional option for configuring the Locator.
-type Option func(*Locator)
-
-// WithOverlay provides in-memory file content for go.mod.
-func WithOverlay(overlay Overlay) Option {
-	return func(l *Locator) {
-		if l.overlay == nil {
-			l.overlay = make(Overlay)
-		}
-		for k, v := range overlay {
-			l.overlay[k] = v
-		}
-	}
-}
-
-// WithGoModuleResolver enables resolving packages from GOROOT and the module cache.
-func WithGoModuleResolver() Option {
-	return func(l *Locator) {
-		l.UseGoModuleResolver = true
-	}
-}
-
 // New creates a new Locator by searching for a go.mod file.
 // It starts searching from startPath and moves up the directory tree.
 func New(startPath string, options ...Option) (*Locator, error) {
@@ -131,11 +109,13 @@ func New(startPath string, options ...Option) (*Locator, error) {
 	}
 
 	if l.UseGoModuleResolver {
-		goRoot, err := getGoRootOnce()
-		if err != nil {
-			return nil, fmt.Errorf("could not determine GOROOT: %w", err)
+		if l.goRoot == "" {
+			goRoot, err := getGoRootOnce()
+			if err != nil {
+				return nil, fmt.Errorf("could not determine GOROOT: %w", err)
+			}
+			l.goRoot = goRoot
 		}
-		l.goRoot = goRoot
 		cache, err := getGoModCacheOnce()
 		if err != nil {
 			return nil, fmt.Errorf("could not determine go mod cache location: %w", err)

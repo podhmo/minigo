@@ -43,6 +43,9 @@ func TestDiffRegressions(t *testing.T) {
 	for _, f := range dirs {
 		dir := filepath.Dir(f)
 		t.Run(filepath.Base(dir), func(t *testing.T) {
+			if _, err := os.Stat(filepath.Join(dir, "want.stderr")); err != nil {
+				t.Parallel()
+			}
 			runDiffCase(t, dir, "PENDING", nil)
 		})
 	}
@@ -63,6 +66,9 @@ func TestStrictLazyConformance(t *testing.T) {
 	for _, f := range dirs {
 		dir := filepath.Dir(f)
 		t.Run(filepath.Base(dir), func(t *testing.T) {
+			if _, err := os.Stat(filepath.Join(dir, "want.stderr")); err != nil {
+				t.Parallel()
+			}
 			runDiffCase(t, dir, "STRICT_PENDING", []minigo.Option{minigo.WithStrictLazyCompile()})
 		})
 	}

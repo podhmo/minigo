@@ -103,7 +103,7 @@ var Rules = map[string][]string{
 	"x/storybook":                   {".", "resolve"},
 	"syntax":                        {},
 	"tools/difffuzz":                {},
-	"tools/tmpltests":               {},
+	"tools/tmpltests":               {".", "internal/testrun"},
 	"vm":                            {"bytecode", "index", "internal/hostbridge", "internal/process", "internal/spike", "runtime", "syntax"},
 }
 

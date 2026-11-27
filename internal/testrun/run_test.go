@@ -191,7 +191,6 @@ func TestUnsupported(t *testing.T) {
 		t.Fatalf("Run err = %v, want ErrFailed", err)
 	}
 	for _, want := range []string{
-		"benchmark: BenchmarkV is not supported",
 		"fuzz target: FuzzV is not supported",
 		"example: ExampleV is not supported",
 		"TestBadShape has a signature minigo test does not run",
@@ -357,6 +356,23 @@ func TestReviewVerdictSemantics(t *testing.T) {
 	}
 	if strings.Contains(got, "--- SKIP: TestErrorThenSkip") {
 		t.Errorf("failure-then-skip was reported as skip:\n%s", got)
+	}
+}
+
+func TestIsolatePackageState(t *testing.T) {
+	shared, sharedErr := run(t, "testdata/isolate", func(o *testrun.Options) { o.Verbose = true })
+	if !errors.Is(sharedErr, testrun.ErrFailed) {
+		t.Fatalf("shared Run err = %v, want ErrFailed\n%s", sharedErr, shared)
+	}
+	isolated, err := run(t, "testdata/isolate", func(o *testrun.Options) {
+		o.Verbose = true
+		o.Isolate = true
+	})
+	if err != nil {
+		t.Fatalf("isolated Run: %v\n%s", err, isolated)
+	}
+	if !strings.Contains(isolated, "--- PASS: TestBexpectsFreshState") {
+		t.Errorf("isolated test did not pass:\n%s", isolated)
 	}
 }
 

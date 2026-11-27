@@ -22,17 +22,6 @@ type GoScanResolver struct {
 	cfg BuildConfig
 }
 
-// NewGoScanResolver creates a resolver for the module whose go.mod is
-// nearest at or above startDir. Without such a go.mod it anchors at
-// startDir and still resolves GOROOT and module-cache packages.
-func NewGoScanResolver(startDir string, cfg BuildConfig) (*GoScanResolver, error) {
-	l, err := locator.New(startDir, locator.WithGoModuleResolver())
-	if err != nil {
-		return nil, fmt.Errorf("creating locator at %s: %w", startDir, err)
-	}
-	return &GoScanResolver{loc: l, cfg: cfg}, nil
-}
-
 // RootDir returns the directory of the anchoring go.mod, or startDir when
 // there is none.
 func (r *GoScanResolver) RootDir() string { return r.loc.RootDir() }
