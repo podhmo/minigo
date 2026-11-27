@@ -59,14 +59,14 @@ func nonChannelTypeExpr(m *runtime.Function, x ast.Expr, seen map[string]bool) b
 
 // rangeKnownNonChannel recognizes the common receiver-field shape
 // `range p.Items` when the field is statically a slice, array, or map.
-func rangeKnownNonChannel(m *runtime.Function, x ast.Expr) bool {
+func rangeKnownNonChannel(m *runtime.Function, x ast.Expr, exclude ...*ast.RangeStmt) bool {
 	sel, ok := unparen(x).(*ast.SelectorExpr)
 	if !ok {
 		return false
 	}
 	recv, ok := sel.X.(*ast.Ident)
 	name := receiverName(m)
-	if !ok || recv.Name != name || receiverShadowed(m, name) {
+	if !ok || recv.Name != name || receiverShadowed(m, name, exclude[0]) {
 		return false
 	}
 	typ, ok := receiverFieldType(m, sel.Sel.Name)

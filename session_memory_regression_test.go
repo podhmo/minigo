@@ -43,7 +43,7 @@ type ItemList struct {
 }
 
 func (p *ItemList) Empty() bool {
-	for range p.Values {
+	for _, p := range p.Values {
 		return false
 	}
 	return true

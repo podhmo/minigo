@@ -10,7 +10,7 @@ import (
 // receiverShadowed reports whether an inner declaration can make the
 // receiver spelling resolve to something else. It is conservative across
 // scopes because hostbridge deliberately avoids a type-checking pass.
-func receiverShadowed(m *runtime.Function, name string) bool {
+func receiverShadowed(m *runtime.Function, name string, exclude *ast.RangeStmt) bool {
 	if name == "" || m == nil || m.Decl == nil || m.Decl.Body == nil {
 		return true
 	}
@@ -35,7 +35,7 @@ func receiverShadowed(m *runtime.Function, name string) bool {
 		case *ast.TypeSpec:
 			shadowed = shadowed || has(x.Name.Name)
 		case *ast.RangeStmt:
-			if x.Tok == token.DEFINE {
+			if x != exclude && x.Tok == token.DEFINE {
 				for _, e := range []ast.Expr{x.Key, x.Value} {
 					if id, ok := e.(*ast.Ident); ok {
 						shadowed = shadowed || has(id.Name)
