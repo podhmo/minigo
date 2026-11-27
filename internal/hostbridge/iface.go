@@ -12,6 +12,7 @@ package hostbridge
 
 import (
 	"fmt"
+	"go/parser"
 	"io"
 	"io/fs"
 	"time"
@@ -32,6 +33,14 @@ import (
 // ReadFrom — host code probes those opportunistically (io.Copy asserts
 // them on its io.Reader/io.Writer args), so they only appear on the
 // scriptIfaceW* variants adaptIface picks when the script declares them.
+var writeStringIfaceExpr = func() ast.Expr {
+	x, err := parser.ParseExpr("interface{ WriteString(string) (int, error) }")
+	if err != nil {
+		panic(err)
+	}
+	return x
+}()
+
 type scriptIface struct {
 	vc   runtime.MemberCaller
 	recv runtime.Value
@@ -93,13 +102,18 @@ func (s *scriptIface) Close() error {
 func (s *scriptIface) WriteString(str string) (int, error) {
 	vc := s.m.AnchorMember(s.vc)
 	hasWriteString := false
-	if set, _ := vc.MethodSetOf(s.recv); set != nil {
-		// MethodSetOf is static: a method promoted through a nil embedded
-		// pointer is still present and must panic when invoked, rather
-		// than being mistaken for a write-only implementation.
-		hasWriteString = set["WriteString"]
-	} else if _, ok := vc.Member(s.recv, "WriteString"); ok {
-		hasWriteString = true
+	if full, ok := vc.(runtime.VMCaller); ok {
+		// Name-only method probes cannot tell io.StringWriter from a
+		// different method that happens to be called WriteString. Convert
+		// through the script interface type itself so signature identity
+		// decides whether the fast path exists; a nil embedded provider
+		// still satisfies the static interface and must fail on invocation.
+		if from := full.TypeOf(s.recv); from != nil {
+			if td, err := full.ResolveType(from, writeStringIfaceExpr); err == nil {
+				_, err = full.Convert(td, s.recv)
+				hasWriteString = err == nil
+			}
+		}
 	}
 	if !hasWriteString {
 		// The proxy's static io surface includes WriteString. When the

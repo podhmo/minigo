@@ -125,6 +125,28 @@ type embeddedWriteStringWriter struct{ *writeStringInner }
 
 func (embeddedWriteStringWriter) Write(p []byte) (int, error) { return len(p), nil }
 
+type wrongWriteString interface{ WriteString() }
+
+type embeddedWrongWriteStringWriter struct {
+	wrongWriteString
+	n *int
+}
+
+func (w embeddedWrongWriteStringWriter) Write(p []byte) (int, error) {
+	*w.n += len(p)
+	return len(p), nil
+}
+
+func NestedWrongSignatureWriteString() string {
+	n := 0
+	e := minigo.NewEngine(".")
+	minigo.WithOutput(embeddedWrongWriteStringWriter{n: &n})(e)
+	if _, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteString"); err != nil {
+		return fmt.Sprint(err)
+	}
+	return fmt.Sprint(n)
+}
+
 func NestedNilEmbeddedWriteString() string {
 	e := minigo.NewEngine(".")
 	minigo.WithOutput(embeddedWriteStringWriter{})(e)

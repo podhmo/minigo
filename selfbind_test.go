@@ -105,6 +105,17 @@ func TestSelfBoundScriptHostPolicySurvivesNestedEngineReuse(t *testing.T) {
 	}
 }
 
+func TestSelfBoundWrongSignatureWriteStringFallsBack(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedWrongSignatureWriteString")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("9", got); diff != "" {
+		t.Fatalf("NestedWrongSignatureWriteString() mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestSelfBoundNilEmbeddedWriteStringDoesNotFallBack(t *testing.T) {
 	e := NewEngine(".")
 	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedNilEmbeddedWriteString")
