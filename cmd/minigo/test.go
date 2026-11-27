@@ -19,7 +19,7 @@ flags (accepted before or after dir):
   -run pat          run only tests whose name matches the unanchored
                     regexp; "/" separates levels (like go test -run)
   -count n          run the suite n times (default 1)
-  -timeout d        fail the suite after a duration like 30s or 10m
+  -timeout d        fail after a duration like 30s; timeout abandons unstarted cleanups too (including TempDir removal)
   -short            bound to testing.Short()
   -failfast         stop scheduling tests after the first failure
   --tagged tag      also select files needing this build tag, and run

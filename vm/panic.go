@@ -208,7 +208,7 @@ func (v *VM) unwind(f *frame, r any) {
 			}
 		}()
 	}
-	v.rethrowDeferredTrap(f)
+	v.rethrowDeferredTrap(f, saved)
 	if r != nil {
 		if p != nil || (v.inflight != saved && v.inflight != nil) {
 			// the drain left a panic to propagate — either the original

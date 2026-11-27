@@ -69,3 +69,20 @@ func TestCleanupSkipDoesNotHidePanic(t *testing.T) {
 		t.SkipNow()
 	})
 }
+
+func helperRecoverThenSkip(t *testing.T) {
+	defer t.Log("helper cleanup")
+	defer func() {
+		recover()
+		t.SkipNow()
+	}()
+	panic("inner")
+}
+
+func TestRestoredOuterPanicDoesNotCancelSkip(t *testing.T) {
+	defer func() {
+		helperRecoverThenSkip(t)
+		t.Error("unexpected continuation")
+	}()
+	panic("outer")
+}

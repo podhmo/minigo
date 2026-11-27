@@ -346,6 +346,8 @@ func TestReviewVerdictSemantics(t *testing.T) {
 		"--- PANIC: TestCleanupPanicDrains",
 		"--- PANIC: TestDeferSkipDoesNotHidePanic",
 		"--- PANIC: TestCleanupSkipDoesNotHidePanic",
+		"--- SKIP: TestRestoredOuterPanicDoesNotCancelSkip",
+		"helper cleanup",
 		"inner cleanup ran",
 		"outer cleanup ran",
 	} {

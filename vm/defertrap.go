@@ -14,9 +14,9 @@ func (f *frame) holdDeferredTrap(tr *runtime.Trap, inflight *runtime.Panic) {
 	}
 }
 
-// rethrowDeferredTrap restores Goexit-like control flow after the defer
-// drain. A later unrecovered panic takes precedence over the stop.
-func (v *VM) rethrowDeferredTrap(f *frame) {
+// rethrowDeferredTrap restores Goexit-like control flow after the drain.
+// saved is this frame's outer panic, not a new post-stop panic.
+func (v *VM) rethrowDeferredTrap(f *frame, saved *runtime.Panic) {
 	if f.deferredTrap == nil {
 		return
 	}
@@ -24,7 +24,7 @@ func (v *VM) rethrowDeferredTrap(f *frame) {
 	inflightAtStop := f.deferredTrapInflight
 	f.deferredTrap = nil
 	f.deferredTrapInflight = nil
-	if v.inflight == nil || v.inflight == inflightAtStop {
+	if v.inflight == nil || v.inflight == inflightAtStop || v.inflight == saved {
 		v.failProc(tr)
 		panic(tr)
 	}
