@@ -10,10 +10,9 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// callAsync runs fn in a goroutine so the -timeout deadline can
-// abandon a hung Engine.Call — the leaked goroutine keeps running;
-// the suite is failed and the process unwinds (documented
-// divergence: go's panic instead).
+// callAsync runs fn in a goroutine so the deadline can stop waiting.
+// After expiry it still waits for the killed interpreter to finish
+// unwinding, so deferred work cannot overlap the next test.
 func callAsync(ctx context.Context, fn func() error) error {
 	ch := make(chan error, 1)
 	go func() { ch <- fn() }()
@@ -21,6 +20,7 @@ func callAsync(ctx context.Context, fn func() error) error {
 	case err := <-ch:
 		return err
 	case <-ctx.Done():
+		<-ch
 		return fmt.Errorf("test timed out: %w", ctx.Err())
 	}
 }

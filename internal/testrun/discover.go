@@ -75,10 +75,10 @@ func discoverTests(pkg *runtime.Package, testFiles map[string]bool, dir string) 
 					Why: "want func TestXxx(t *testing.T)"})
 			}
 		case isTestName(name, "Benchmark"):
-			if isTestFunc(d.Func, d.File, "B") {
-				out.Unsupported = append(out.Unsupported, unsupportedDecl{
-					Name: name, Pos: pos, What: "benchmark"})
-			} else {
+			// Benchmarks compile into the test variant but, like `go test`
+			// without -bench, do not run. There is no benchmark runner yet,
+			// so their presence is neither a test nor a suite failure.
+			if !isTestFunc(d.Func, d.File, "B") {
 				out.Malformed = append(out.Malformed, malformed{Name: name, Pos: pos,
 					Why: "want func BenchmarkXxx(b *testing.B)"})
 			}

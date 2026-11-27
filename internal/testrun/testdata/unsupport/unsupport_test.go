@@ -8,8 +8,7 @@ func TestFine(t *testing.T) {}
 // test reports it malformed and does not run it.
 func TestBadShape(t *testing.T, extra int) {}
 
-// BenchmarkV is reported unsupported — it compiles (the B placeholder
-// answers the type) but never runs.
+// BenchmarkV compiles but, like `go test` without -bench, does not run.
 func BenchmarkV(b *testing.B) {}
 
 // FuzzV likewise.

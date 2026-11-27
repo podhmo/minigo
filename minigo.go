@@ -970,6 +970,7 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	vmm := e.newVM()
 	vmm.EnsureProc()
 	defer vmm.ReleaseProc()
+	defer vmm.StopProcOnContext(ctx)()
 	member, err := pkg.MemberV(name, e.materialize, func(fn *runtime.Function) error {
 		_, err := vmm.Call(fn, nil)
 		return err
@@ -977,9 +978,8 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	if err != nil {
 		return nil, err
 	}
-	// host arguments cross as snapshots: a []string arrives as a
-	// *runtime.Slice instead of trapping "cannot use []string as
-	// []string" in the callee's param coerce.
+	// host arguments cross as snapshots: a []string arrives as a *runtime.Slice
+	// instead of trapping "cannot use []string as []string" in the callee's param coerce.
 	sargs := make([]runtime.Value, len(args))
 	for i, a := range args {
 		sargs[i] = vm.SnapshotOf(a)
@@ -1126,10 +1126,8 @@ func (e *Engine) bindPublishLocked(importPath string, p *runtime.Package) ([]str
 	var tdKeys []string
 	for _, k := range p.Globals.Names() {
 		v, _ := p.Globals.Get(k)
-		if bf, ok := v.(*runtime.BuiltinFunc); ok && (bf.Pkg == nil || bf.Pkg.Path == p.Path) {
-			// a BuiltinFunc bound under several paths keeps its first
-			// owner; a re-Bind re-points at the new live package
-			bf.Pkg = p
+		if bf, ok := v.(*runtime.BuiltinFunc); ok {
+			runtime.AdoptBuiltinOwner(bf, p)
 		}
 		if td, ok := v.(*runtime.TypeDef); ok {
 			if td.Pkg == nil {

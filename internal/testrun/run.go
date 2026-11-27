@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"time"
 
 	"github.com/podhmo/minigo"
@@ -22,17 +20,22 @@ type Options struct {
 	Dir string // package directory; a filesystem path, not an import path
 	Out io.Writer
 
-	Verbose  bool   // -v: stream === RUN / --- / log lines like go test -v
-	Short    bool   // -short: bound to testing.Short()
-	Run      string // -run: "/" separated unanchored regexps
-	Count    int    // -count: run the whole suite this many times (<=0 runs it once)
-	Timeout  time.Duration
-	FailFast bool // -failfast: stop scheduling after the first failing test
+	Verbose bool   // -v: stream === RUN / --- / log lines like go test -v
+	Short   bool   // -short: bound to testing.Short()
+	Run     string // -run: "/" separated unanchored regexps
+	Count   int    // -count: run the whole suite this many times (<=0 runs it once)
+	Timeout time.Duration
+	// TestTimeout bounds each top-level test invocation. It is a library
+	// harness control, not go test's suite-wide -timeout semantics.
+	TestTimeout time.Duration
+	FailFast    bool // -failfast: stop scheduling after the first failing test
+	Isolate     bool // fork an isolated engine session for each test
 
 	// Modes/Tags carry `minigo run`'s --src/--deny/--tags plumbing:
 	// Modes is minigo.WithPackageModes, Tags the build tag list.
-	Modes map[string]minigo.PackageMode
-	Tags  []string
+	Modes  map[string]minigo.PackageMode
+	Tags   []string
+	GOROOT string
 
 	// Tagged (--tagged <tag>) adds the tag to the build config AND
 	// restricts the run set to tests declared in files the tag selects
@@ -74,34 +77,9 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 
-	// The build config is --tags plus the --tagged gate tag; the run
-	// set gate compares file lists under the two configs.
-	cfg := resolve.BuildConfig{Tags: o.Tags}
-	buildCfg := cfg
-	if o.Tagged != "" {
-		buildCfg.Tags = append(append([]string{}, cfg.Tags...), o.Tagged)
-	}
-	scan, err := scanTests(abs, buildCfg)
+	scan, gated, buildCfg, err := scanForRun(abs, o.Tags, o.Tagged)
 	if err != nil {
 		return err
-	}
-	var gated map[string]bool
-	if o.Tagged != "" {
-		plain, err := scanTests(abs, cfg)
-		if err != nil {
-			return err
-		}
-		inPlain := map[string]bool{}
-		for _, f := range plain.all {
-			inPlain[f] = true
-		}
-		gated = map[string]bool{}
-		for _, f := range scan.all {
-			if !inPlain[f] {
-				// keyed like syntax.File.Name: slash-normalized
-				gated[filepath.ToSlash(f)] = true
-			}
-		}
 	}
 
 	// The suite state the facade reads (-short, -v, ctx, deadline).
@@ -144,7 +122,11 @@ func Run(ctx context.Context, o Options) error {
 	// The test variant: the directory's own build files plus the
 	// internal *_test.go files, via a resolver that splices them into
 	// LocateDir's file list for this directory only.
-	inner, err := resolve.NewGoScanResolver(abs, buildCfg)
+	var resolverOpts []resolve.GoScanOption
+	if o.GOROOT != "" {
+		resolverOpts = append(resolverOpts, resolve.WithGOROOT(o.GOROOT))
+	}
+	inner, err := resolve.NewGoScanResolver(abs, buildCfg, resolverOpts...)
 	if err != nil {
 		return err
 	}
@@ -242,9 +224,26 @@ loop:
 			if suite.Verbose {
 				rep.emitLine("=== RUN   " + ti.Name)
 			}
-			cerr := callTest(ctx, e, pkg, ti.Name, t)
+			testCtx := ctx
+			var cancelTest context.CancelFunc
+			if o.TestTimeout > 0 {
+				testCtx, cancelTest = context.WithTimeout(ctx, o.TestTimeout)
+				defer cancelTest()
+			}
+			runEngine, runPkg, runTestingPkg := e, pkg, testingPkg
+			if o.Isolate {
+				var err error
+				runEngine, runPkg, runTestingPkg, err = isolatedSession(testCtx, e, suite, abs)
+				if err != nil {
+					t.SetVerdict(mtesting.Trap, err.Error())
+					rep.testDone(t)
+					failed = true
+					continue
+				}
+			}
+			cerr := callTest(testCtx, runEngine, runPkg, ti.Name, t)
 			t.CancelContext()
-			if pkg.State() == runtime.Failed {
+			if runPkg.State() == runtime.Failed && !(o.Isolate && errors.Is(cerr, context.DeadlineExceeded)) {
 				// init failed: the remaining tests would all die the
 				// same way — report once and stop scheduling.
 				rep.note("%s: package initialization failed: %v", ti.Pos, cerr)
@@ -256,7 +255,7 @@ loop:
 			classifyCall(t, cerr)
 			// t.Cleanup script funcs need a live process: run them in a
 			// second Engine.Call against the bound __cleanup member.
-			cleanupErr := runTopCleanups(ctx, e, testingPkg, t)
+			cleanupErr := runTopCleanups(testCtx, runEngine, runTestingPkg, t)
 			// A cleanup failure after a dead test keeps the body's
 			// PANIC/TRAP — folding its stopError into the flags would
 			// downgrade the verdict. Otherwise re-evaluate the flags even
@@ -288,92 +287,4 @@ loop:
 		return ErrFailed
 	}
 	return nil
-}
-
-// classifyCall folds an Engine.Call error into the test's verdict.
-func classifyCall(t *mtesting.T, err error) {
-	if err == nil {
-		setFlagVerdict(t)
-		return
-	}
-	if st, ok := mtesting.StopOf(err); ok && st == t {
-		setFlagVerdict(t)
-		return
-	}
-	if _, ok := err.(*runtime.Panic); ok {
-		t.SetVerdict(mtesting.Panic, err.Error())
-		return
-	}
-	t.SetVerdict(mtesting.Trap, err.Error())
-}
-
-// setFlagVerdict derives the verdict from the T's own flags after a
-// normally-returned (or own-sentinel) call.
-func setFlagVerdict(t *mtesting.T) {
-	switch {
-	case t.Failed():
-		t.SetVerdict(mtesting.Fail, "")
-	case t.Skipped():
-		t.SetVerdict(mtesting.Skip, "")
-	default:
-		t.SetVerdict(mtesting.Pass, "")
-	}
-}
-
-// compileRun splits -run into per-level unanchored regexps.
-func compileRun(run string) ([]*regexp.Regexp, error) {
-	if run == "" {
-		return nil, nil
-	}
-	var out []*regexp.Regexp
-	for _, pat := range splitSlash(run) {
-		re, err := regexp.Compile(pat)
-		if err != nil {
-			return nil, fmt.Errorf("invalid -run %q: %w", run, err)
-		}
-		out = append(out, re)
-	}
-	return out, nil
-}
-
-// splitSlash splits a -run pattern on unescaped "/" — go's level
-// separator.
-func splitSlash(s string) []string {
-	var out []string
-	var cur []rune
-	esc := false
-	for _, r := range s {
-		if esc {
-			cur = append(cur, r)
-			esc = false
-			continue
-		}
-		if r == '\\' {
-			esc = true
-			cur = append(cur, r)
-			continue
-		}
-		if r == '/' {
-			out = append(out, string(cur))
-			cur = nil
-			continue
-		}
-		cur = append(cur, r)
-	}
-	return append(out, string(cur))
-}
-
-// pathOfDir is the package spelling for the trailer line: the
-// directory's slash-cleaned absolute path.
-func pathOfDir(dir string) string {
-	return filepath.ToSlash(dir)
-}
-
-// relPath spells a scanned file like declPos does — relative to the
-// package dir when it nests inside it.
-func relPath(dir, file string) string {
-	if rel, err := filepath.Rel(dir, file); err == nil && rel != "." && !strings.HasPrefix(rel, "..") {
-		return filepath.ToSlash(rel)
-	}
-	return filepath.ToSlash(file)
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/pkg/locator"
 	"github.com/podhmo/minigo/resolve"
 )
@@ -47,5 +48,31 @@ replace example.com/b => example.com/a v0.0.0
 	// control: a plain miss still carries ErrUnresolved.
 	if _, err := r.Locate(context.Background(), "", "example.com/nothing"); !errors.Is(err, resolve.ErrUnresolved) {
 		t.Errorf("Locate(miss): want ErrUnresolved, got %v", err)
+	}
+}
+
+func TestGoScanResolverWithGOROOT(t *testing.T) {
+	start := t.TempDir()
+	goRoot := t.TempDir()
+	fmtDir := filepath.Join(goRoot, "src", "fmt")
+	if err := os.MkdirAll(fmtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fmtDir, "fmt.go"), []byte("package fmt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := resolve.NewGoScanResolver(start, resolve.BuildConfig{}, resolve.WithGOROOT(goRoot))
+	if err != nil {
+		t.Fatalf("NewGoScanResolver: %v", err)
+	}
+	meta, err := r.Locate(context.Background(), "", "fmt")
+	if err != nil {
+		t.Fatalf("Locate: %v", err)
+	}
+	if diff := cmp.Diff(fmtDir, meta.Dir); diff != "" {
+		t.Errorf("fmt dir mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(true, meta.Standard); diff != "" {
+		t.Errorf("standard mismatch (-want +got):\n%s", diff)
 	}
 }

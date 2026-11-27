@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/internal/testrun"
 )
 
@@ -18,12 +17,6 @@ func runTest(ctx context.Context, args []string) error {
 	o := testrun.Options{Out: os.Stdout, Count: 1}
 	var denys, srcs, tags []string
 	dir := ""
-	need := func(name string, i int) error {
-		if i >= len(args) {
-			return usageErrorf("%s requires a value", name)
-		}
-		return nil
-	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		// "-x=v" spellings; each flag also answers its -test.x form.
@@ -61,15 +54,16 @@ func runTest(ctx context.Context, args []string) error {
 		case isBool(&o.Verbose, "-v", "--v", "-verbose", "--verbose", "-test.v", "-test.verbose"):
 		case isBool(&o.Short, "-short", "--short", "-test.short"):
 		case isBool(&o.FailFast, "-failfast", "--failfast", "-test.failfast"):
+		case isBool(&o.Isolate, "-isolate", "--isolate", "-test.isolate"):
 		case is("-run", "--run", "-test.run"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			o.Run = args[i]
 		case is("-count", "--count", "-test.count"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			n, err := strconv.Atoi(args[i])
@@ -79,7 +73,7 @@ func runTest(ctx context.Context, args []string) error {
 			o.Count = n
 		case is("-timeout", "--timeout", "-test.timeout"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			d, err := time.ParseDuration(args[i])
@@ -89,28 +83,34 @@ func runTest(ctx context.Context, args []string) error {
 			o.Timeout = d
 		case is("--tagged", "-tagged"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			o.Tagged = args[i]
 		case is("--deny", "-deny"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			denys = append(denys, strings.Split(args[i], ",")...)
 		case is("--src", "-src"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			srcs = append(srcs, strings.Split(args[i], ",")...)
 		case is("--tags", "-tags"):
 			i++
-			if err := need(a, i); err != nil {
+			if err := needValue(a, i, len(args)); err != nil {
 				return err
 			}
 			tags = append(tags, splitTags(args[i])...)
+		case is("--goroot", "-goroot"):
+			i++
+			if err := needValue(a, i, len(args)); err != nil {
+				return err
+			}
+			o.GOROOT = args[i]
 		default:
 			if s, ok := val("-run", "--run", "-test.run"); ok {
 				o.Run = s
@@ -134,6 +134,8 @@ func runTest(ctx context.Context, args []string) error {
 				srcs = append(srcs, strings.Split(s, ",")...)
 			} else if s, ok := val("--tags", "-tags"); ok {
 				tags = append(tags, splitTags(s)...)
+			} else if s, ok := val("--goroot", "-goroot"); ok {
+				o.GOROOT = s
 			} else if isHelpFlag(a) {
 				return errHelp
 			} else if strings.HasPrefix(a, "-") {
@@ -149,14 +151,7 @@ func runTest(ctx context.Context, args []string) error {
 		dir = "."
 	}
 	o.Dir = dir
-	modes := map[string]minigo.PackageMode{}
-	for _, p := range denys {
-		modes[p] = minigo.ModeDeny
-	}
-	for _, p := range srcs {
-		modes[p] = minigo.ModeSource
-	}
-	if len(modes) > 0 {
+	if modes := testPackageModes(denys, srcs); len(modes) > 0 {
 		o.Modes = modes
 	}
 	o.Tags = tags

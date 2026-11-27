@@ -22,16 +22,16 @@ flags (accepted before or after dir):
   -timeout d        fail after a duration like 30s; timeout abandons unstarted cleanups too (including TempDir removal)
   -short            bound to testing.Short()
   -failfast         stop scheduling tests after the first failure
-  --tagged tag      also select files needing this build tag, and run
-                    only tests declared in those files
+  --isolate         run each test in a fresh interpreter session
+  --goroot dir      resolve standard-library source under dir
+  --tagged tag      also select files needing this build tag, running only tests declared there
   --tags tag,...    build tags for file selection, like go build -tags
   --deny pkg,...    make importing these packages fail with a clear error
-  --src pkg,...     interpret these packages from source even where a
-                    host-bound version exists
+  --src pkg,...     interpret these packages from source even where a host-bound version exists
   -h, --help        show this help
 
 Not supported in this version (reported loudly): external
-'package foo_test' files, BenchmarkXxx, FuzzXxx, examples with an
+'package foo_test' files, FuzzXxx, examples with an
 // Output: comment, TestMain, t.Parallel scheduling, t.Setenv, t.Chdir.
 `
 }

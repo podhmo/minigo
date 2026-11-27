@@ -843,8 +843,8 @@ func (v *VM) loop(f *frame) {
 			a := f.pop()
 			f.push(v.unaryOp(f, bytecode.UnOp(ins.A), a))
 		case bytecode.OpJump:
-			if int(ins.A) < f.ip && v.H.Prof != nil {
-				v.profCheck() // loop back-edge: a long loop is a safepoint
+			if int(ins.A) < f.ip {
+				v.backEdge()
 			}
 			f.ip = int(ins.A)
 		case bytecode.OpJumpFalse:

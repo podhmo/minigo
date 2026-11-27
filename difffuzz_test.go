@@ -40,12 +40,7 @@ func TestDiffRegressions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range dirs {
-		dir := filepath.Dir(f)
-		t.Run(filepath.Base(dir), func(t *testing.T) {
-			runDiffCase(t, dir, "PENDING", nil)
-		})
-	}
+	runDiffCases(t, dirs, "PENDING", nil)
 }
 
 // TestStrictLazyConformance is the M4-8b conformance job: the whole
@@ -60,12 +55,29 @@ func TestStrictLazyConformance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runDiffCases(t, dirs, "STRICT_PENDING", []minigo.Option{minigo.WithStrictLazyCompile()})
+}
+
+// runDiffCases schedules one corpus set. Cases stay serial when they
+// capture the process-wide stderr writer or mutate the host environment.
+func runDiffCases(t *testing.T, dirs []string, pendingFile string, extra []minigo.Option) {
 	for _, f := range dirs {
 		dir := filepath.Dir(f)
 		t.Run(filepath.Base(dir), func(t *testing.T) {
-			runDiffCase(t, dir, "STRICT_PENDING", []minigo.Option{minigo.WithStrictLazyCompile()})
+			if diffCaseParallelizable(dir) {
+				t.Parallel()
+			}
+			runDiffCase(t, dir, pendingFile, extra)
 		})
 	}
+}
+
+func diffCaseParallelizable(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, "want.stderr")); err == nil {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "main.go"))
+	return err != nil || !bytes.Contains(b, []byte("os.Setenv("))
 }
 
 // runDiffCase runs one difffuzz dir and applies the verdict contract:
