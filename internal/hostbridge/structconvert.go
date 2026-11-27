@@ -18,7 +18,7 @@ func typeConversionCall(m *runtime.Function, call *ast.CallExpr) bool {
 		return false
 	}
 	id, ok := call.Fun.(*ast.Ident)
-	if !ok {
+	if !ok || receiverShadowed(m, id.Name, nil) {
 		return false
 	}
 	if predeclaredTypeName(id.Name) || typeSpecOf(m, id.Name) != nil {
