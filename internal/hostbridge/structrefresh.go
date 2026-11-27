@@ -17,6 +17,11 @@ func refreshableMethod(m *runtime.Function) bool {
 	if len(results) != 1 && len(results) != 2 {
 		return false
 	}
+	for _, r := range results {
+		if len(r.Names) > 1 {
+			return false
+		}
+	}
 	id, ok := results[0].Type.(*ast.Ident)
 	if !ok {
 		return false

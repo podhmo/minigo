@@ -83,7 +83,7 @@ var FileBudgets = map[string]int{
 	"internal/hostbridge/structdatahost.go":      176,
 	"internal/hostbridge/structfill.go":          72,
 	"internal/hostbridge/structpure.go":          38,
-	"internal/hostbridge/structrefresh.go":       47,
+	"internal/hostbridge/structrefresh.go":       52,
 	"internal/hostbridge/structmethod_slot.go":   20,
 	"internal/hostbridge/hostseq.go":             217,
 	"internal/hostbridge/hostshape_cache.go":     49,

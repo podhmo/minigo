@@ -53,6 +53,7 @@ func TestRefreshableMethodLimitsResultShapes(t *testing.T) {
 		{"scalar getter", "func (p *T) Label() int { return p.N }\n", true},
 		{"scalar error", "func (p *T) Status() (int, error) { return p.N, nil }\n", true},
 		{"struct result", "func (p *T) Child() *T { return p }\n", false},
+		{"grouped results", "func (p *T) Pair() (a, b int) { return p.N, p.N }\n", false},
 		{"channel receive", "func (p *T) Read() int { return <-p.Values }\n", false},
 	}
 	for _, tc := range tests {
