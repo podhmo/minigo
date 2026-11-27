@@ -38,7 +38,6 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 				rv.SetMapIndex(mk, reflect.Value{})
 			}
 		}
-		keyAliases := canonicalKeyAliases(rv)
 		for i := 0; i < s.Len(); i++ {
 			sk, sv := s.At(i)
 			if old, ok := e.snap[projKey(sk)]; ok && sameSlot(sv, old) {
@@ -60,7 +59,6 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 					continue
 				}
 			}
-			dropCanonicalKeyAliases(rv, hk, keyAliases[projKey(sk)])
 			rv.SetMapIndex(hk, hv)
 			m.registerProjected(sv, hv.Interface())
 		}

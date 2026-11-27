@@ -499,7 +499,7 @@ func (m *Marshal) DeepHost(v runtime.Value, vc runtime.VMCaller, h *HostMarshal)
 		}
 		out, _ := h.Walk.Container(v, func(e runtime.Value) any {
 			return m.DeepHost(e, vc, h)
-		}, runtime.UnwrapKey)
+		}, projectionInterfaceKey)
 		m.registerProjected(v, out)
 		return out
 	case *runtime.Cell, *runtime.FieldRef, *runtime.IndexRef, *runtime.DerefRef:
@@ -624,9 +624,7 @@ func (h *HostMarshal) typedContainer(v runtime.Value, vc runtime.VMCaller) (any,
 			k, _ := x.At(i)
 			kv := reflect.New(rt.Key()).Elem()
 			if ifaceKey {
-				// an `any` key keeps the generic projection's canonical
-				// key form — a script struct key must stay hashable.
-				if uk := runtime.UnwrapKey(k); uk != nil {
+				if uk := projectionInterfaceKey(k); uk != nil {
 					kv.Set(reflect.ValueOf(uk))
 				}
 			} else if !h.setHost(kv, k, vc) {
