@@ -61,7 +61,9 @@ was filtered out.
    generates `zzz_driver.go`, then runs `GOROOT=<work>/goroot minigo run
    <work>/main --src <pkg> -- <TestName>` per test with cwd set to the
    copied package dir. One test per process keeps a minigo trap from
-   taking down the rest of the suite.
+   taking down the rest of the suite. External example suites select this
+   process path automatically even under `-runner=auto`; they do not need
+   an explicit `-runner=process`.
 
 ## Verdicts
 
