@@ -1,30 +1,10 @@
 package hostbridge
 
 import (
-	"fmt"
 	"reflect"
 
 	"github.com/podhmo/minigo/runtime"
 )
-
-// projKey renders a script map key for the merge snapshots. Any
-// deterministic form works — the repr compares a key only to its own
-// earlier self.
-func projKey(k runtime.Value) string {
-	return fmt.Sprintf("%#v", runtime.IfaceKeyOf(k))
-}
-
-// hostKey is projKey for the host side of a projection.
-func hostKey(rv reflect.Value) string {
-	for rv.Kind() == reflect.Interface && !rv.IsNil() {
-		rv = rv.Elem()
-	}
-	if !rv.IsValid() {
-		return "<nil>"
-	}
-	v := rv.Interface()
-	return fmt.Sprintf("%T:%#v", v, v)
-}
 
 // scriptSnap records a script map's key->value set.
 func scriptSnap(s *runtime.Map) map[string]runtime.Value {

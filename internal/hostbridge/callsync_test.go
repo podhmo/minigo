@@ -1,6 +1,7 @@
 package hostbridge
 
 import (
+	"bytes"
 	"reflect"
 	"testing"
 	"time"
@@ -70,6 +71,20 @@ func TestPullProjectedKeepsHostKeyTypes(t *testing.T) {
 				t.Fatalf("host map mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestProjectionSnapshotKeysUsePointerIdentity(t *testing.T) {
+	b1 := bytes.NewBufferString("same")
+	b2 := bytes.NewBufferString("same")
+	if diff := cmp.Diff(projKey(b1), projKey(b2)); diff == "" {
+		t.Fatal("distinct same-content buffer keys collapsed")
+	}
+	if diff := cmp.Diff(projKey(b1), projKey(b1)); diff != "" {
+		t.Fatalf("same buffer key changed (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(hostKey(reflect.ValueOf(b1)), hostKey(reflect.ValueOf(b2))); diff == "" {
+		t.Fatal("distinct same-content host buffer keys collapsed")
 	}
 }
 
