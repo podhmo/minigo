@@ -72,7 +72,7 @@ func structDataHost(recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, 
 		// missing members.
 	}
 	plan := planStructProjection(recv, s, vc)
-	out := reflect.New(plan.typ)
+	out := newStructProjection(plan.typ, recv)
 	h.Walk.Register(key, out.Interface())
 	// Keep the receiver itself on the walk for cyclic conversion identity;
 	// the call scope separately owns it for round-trips that outlive one
