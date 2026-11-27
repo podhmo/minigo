@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/resolve"
@@ -131,12 +130,12 @@ func NestedNilEmbeddedWriteString() string {
 	minigo.WithOutput(embeddedWriteStringWriter{})(e)
 	r, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteStringErr")
 	if err != nil {
-		if strings.Contains(fmt.Sprint(err), "write string failed") || strings.Contains(fmt.Sprint(err), "nil pointer") {
+		if bytes.Contains([]byte(fmt.Sprint(err)), []byte("write string failed")) || bytes.Contains([]byte(fmt.Sprint(err)), []byte("nil pointer")) {
 			return "error"
 		}
 		return fmt.Sprint(err)
 	}
-	if strings.Contains(fmt.Sprint(r), "write string failed") || strings.Contains(fmt.Sprint(r), "nil pointer") {
+	if bytes.Contains([]byte(fmt.Sprint(r)), []byte("write string failed")) || bytes.Contains([]byte(fmt.Sprint(r)), []byte("nil pointer")) {
 		return "error"
 	}
 	return "no error"
