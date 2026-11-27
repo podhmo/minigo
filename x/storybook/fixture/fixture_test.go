@@ -60,3 +60,15 @@ func TestNativeModes(t *testing.T) {
 		t.Fatalf("named pointer Minimal mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestNativeCompositeShapes(t *testing.T) {
+	type pair [2]string
+	type shaped struct {
+		Pair   pair
+		Scores map[string]int
+	}
+	want := shaped{Pair: pair{"x", "x"}, Scores: map[string]int{"x": 1}}
+	if diff := cmp.Diff(want, Minimal[shaped]()); diff != "" {
+		t.Fatalf("composite Minimal mismatch (-want +got):\n%s", diff)
+	}
+}
