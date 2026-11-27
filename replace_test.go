@@ -2,10 +2,12 @@ package minigo
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 func TestReplaceSourceFuncScriptReplacement(t *testing.T) {
@@ -55,6 +57,23 @@ func TestReplaceSourceFuncGoReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	if diff := cmp.Diff(int64(42), got); diff != "" {
+		t.Fatalf("Score() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestReplaceSourceFuncTargetOnlyBuiltinKeepsErrorResult(t *testing.T) {
+	ctx := context.Background()
+	e := NewEngine(".")
+	target := func(id int) (int, error) { return 0, errors.New("fake failure") }
+	replacement := &runtime.BuiltinFunc{Name: "fakeLoadScore", Target: target}
+	if err := e.ReplaceSourceFunc(ctx, "./testdata/srcreplace/app", "LoadScore", replacement); err != nil {
+		t.Fatal(err)
+	}
+	got, err := e.Run(ctx, "./testdata/srcreplace/app", "Score")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff(int64(-1), got); diff != "" {
 		t.Fatalf("Score() mismatch (-want +got):\n%s", diff)
 	}
 }
