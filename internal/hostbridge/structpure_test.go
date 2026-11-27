@@ -43,3 +43,23 @@ func TestPureMethodRejectsChannelOperations(t *testing.T) {
 		})
 	}
 }
+
+func TestRefreshableMethodLimitsResultShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"scalar getter", "func (p *T) Label() int { return p.N }\n", true},
+		{"scalar error", "func (p *T) Status() (int, error) { return p.N, nil }\n", true},
+		{"struct result", "func (p *T) Child() *T { return p }\n", false},
+		{"channel receive", "func (p *T) Read() int { return <-p.Values }\n", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if diff := cmp.Diff(tc.want, refreshableMethod(parsePureTestMethod(t, tc.body))); diff != "" {
+				t.Fatalf("refreshableMethod (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

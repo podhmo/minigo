@@ -16,11 +16,22 @@ const sessionMemoryRegressionScript = `package main
 
 import (
 	"probe"
+	"strconv"
 	"strings"
 	"text/template"
 )
 
 type Item struct{ N int }
+
+var childCalls int
+
+type Child struct{}
+
+func (c *Child) Label() string { childCalls++; return "x" }
+
+type EffectParent struct{ N int }
+
+func (p *EffectParent) Child() *Child { return &Child{} }
 
 type Stream struct {
 	N      int
@@ -74,6 +85,23 @@ func RenderReceive() string {
 	}
 	return out.String()
 }
+
+func RenderChildEffect() string {
+	item := &EffectParent{N: 7}
+	childCalls = 0
+	t := template.Must(template.New("child-effect").Funcs(template.FuncMap{
+		"update": func() any {
+			item.N = 8
+			return item
+		},
+	}).Parse("{{with update}}{{.Child.Label}}{{end}}"))
+
+	var out strings.Builder
+	if err := t.Execute(&out, item); err != nil {
+		return err.Error()
+	}
+	return out.String() + "/" + strconv.Itoa(childCalls)
+}
 `
 
 func runSessionMemoryRegression(t *testing.T) map[string]any {
@@ -104,7 +132,7 @@ func runSessionMemoryRegression(t *testing.T) map[string]any {
 	}
 
 	out := map[string]any{}
-	for _, name := range []string{"RoundTrip", "Render", "RenderReceive"} {
+	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderChildEffect"} {
 		value, err := engine.Call(ctx, pkg, name)
 		if err != nil {
 			t.Fatal(err)
@@ -132,5 +160,12 @@ func TestCallbackReturnedReceiveMethodsAreNotRepeated(t *testing.T) {
 	got := runSessionMemoryRegression(t)["RenderReceive"]
 	if diff := cmp.Diff("1", got); diff != "" {
 		t.Fatalf("RenderReceive (-want +got):\n%s", diff)
+	}
+}
+
+func TestCallbackReturnedCompositeMethodsDoNotDuplicateChildEffects(t *testing.T) {
+	got := runSessionMemoryRegression(t)["RenderChildEffect"]
+	if diff := cmp.Diff("x/1", got); diff != "" {
+		t.Fatalf("RenderChildEffect (-want +got):\n%s", diff)
 	}
 }
