@@ -59,7 +59,7 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 		nanSeen := 0
 		for it.Next() {
 			hk, ev := it.Key(), it.Value()
-			sk := GoSlotValueOf(hk)
+			sk := goSlotKeyValueOf(hk)
 			if nanReflectKey(hk) {
 				// a NaN key never resolves under Get — one existing
 				// script NaN entry stands for each host one; extra

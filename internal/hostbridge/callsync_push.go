@@ -34,7 +34,7 @@ func (m *Marshal) syncProjectedSeen(e *projEntry, vc runtime.VMCaller, seen map[
 			if !e.host[hostKey(mk)] {
 				continue // host-added since the merge — keep
 			}
-			if _, ok := s.Get(GoSlotValueOf(mk)); !ok {
+			if _, ok := s.Get(goSlotKeyValueOf(mk)); !ok {
 				rv.SetMapIndex(mk, reflect.Value{})
 			}
 		}
