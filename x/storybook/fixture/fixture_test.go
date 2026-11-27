@@ -1,7 +1,6 @@
 package fixture
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -23,25 +22,41 @@ type recursiveView struct {
 	Next *recursiveView
 }
 
+type namedIntPointer *int
+
 func TestNativeModes(t *testing.T) {
-	empty := Empty[view]()
-	if diff := cmp.Diff(view{}, empty); diff != "" {
+	if diff := cmp.Diff(view{}, Empty[view]()); diff != "" {
 		t.Fatalf("Empty mismatch (-want +got):\n%s", diff)
 	}
-	minimal := Minimal[view]()
-	if minimal.Name != "x" || minimal.Count != 1 || len(minimal.Tags) != 1 || minimal.Inner == nil || !minimal.Inner.Enabled {
-		t.Fatalf("unexpected Minimal: %+v", minimal)
+	wantMinimal := view{Name: "x", Count: 1, Tags: []string{"x"}, Inner: &inner{Enabled: true}}
+	if diff := cmp.Diff(wantMinimal, Minimal[view]()); diff != "" {
+		t.Fatalf("Minimal mismatch (-want +got):\n%s", diff)
 	}
-	maximal := Maximal[view]()
-	if len(maximal.Name) != 64 || maximal.Count != int(^uint(0)>>1) || len(maximal.Tags) != 3 {
-		t.Fatalf("unexpected Maximal: %+v", maximal)
+	maxText := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+	wantMaximal := view{
+		Name:  maxText,
+		Count: int(^uint(0) >> 1),
+		Tags:  []string{maxText, maxText, maxText},
+		Inner: &inner{Enabled: true},
 	}
-	longText := LongText[view]()
-	if !strings.Contains(longText.Name, "表示確認") {
-		t.Fatalf("unexpected LongText: %q", longText.Name)
+	if diff := cmp.Diff(wantMaximal, Maximal[view]()); diff != "" {
+		t.Fatalf("Maximal mismatch (-want +got):\n%s", diff)
 	}
-	recursive := Minimal[recursiveView]()
-	if recursive.Name != "x" || recursive.Next != nil {
-		t.Fatalf("unexpected recursive Minimal: %+v", recursive)
+	longText := "supercalifragilisticexpialidocious-and-very-long-japanese-text-これはとても長い表示確認用の文章です"
+	wantLong := wantMinimal
+	wantLong.Name = longText
+	wantLong.Tags = []string{longText}
+	if diff := cmp.Diff(wantLong, LongText[view]()); diff != "" {
+		t.Fatalf("LongText mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(recursiveView{Name: "x"}, Minimal[recursiveView]()); diff != "" {
+		t.Fatalf("recursive Minimal mismatch (-want +got):\n%s", diff)
+	}
+	p := Minimal[namedIntPointer]()
+	if p == nil {
+		t.Fatal("named pointer Minimal is nil")
+	}
+	if diff := cmp.Diff(1, *p); diff != "" {
+		t.Fatalf("named pointer Minimal mismatch (-want +got):\n%s", diff)
 	}
 }

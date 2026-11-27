@@ -52,11 +52,11 @@ func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, depth int, se
 	switch u.Kind {
 	case runtime.KindStruct:
 		z := vc.Zero(td)
-		st, ok := z.(*runtime.Struct)
+		st, ok := runtime.Unwrap(z).(*runtime.Struct)
 		if !ok {
 			return z
 		}
-		fts, err := vc.FieldTypes(td)
+		fts, err := vc.FieldTypes(u)
 		if err != nil {
 			return z
 		}
@@ -65,7 +65,7 @@ func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, depth int, se
 				st.Fields[i] = convertOr(vc, fts[i], scriptValue(vc, fts[i], m, depth+1, seen))
 			}
 		}
-		return st
+		return z
 	case runtime.KindNamedBasic:
 		return convertOr(vc, td, scalarValue(u, m))
 	case runtime.KindPointer:
@@ -79,7 +79,7 @@ func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, depth int, se
 		if err != nil || et == nil {
 			return vc.Zero(td)
 		}
-		n := scriptCount(vc, td, m)
+		n := scriptCount(vc, td, u, m)
 		el := make([]runtime.Value, n)
 		for i := range el {
 			el[i] = convertOr(vc, et, scriptValue(vc, et, m, depth+1, seen))
@@ -112,24 +112,16 @@ func scalarValue(td *runtime.TypeDef, m mode) runtime.Value {
 			return float64(math.MaxFloat64)
 		}
 		return float64(1.25)
-	case "uint", "uint64", "uintptr":
-		if m == modeMaximal {
-			// script integers are int64-shaped; use the largest
-			// representable positive value rather than a negative wrap.
-			return int64(math.MaxInt64)
-		}
-		return int64(1)
+	case "uint", "uint64", "uintptr", "int", "int64":
+		// script integers are int64-shaped; use the largest
+		// representable positive value rather than a negative wrap.
+		return int64Or(m, math.MaxInt64)
 	case "uint8", "byte":
 		return int64Or(m, math.MaxUint8)
 	case "uint16":
 		return int64Or(m, math.MaxUint16)
 	case "uint32":
 		return int64Or(m, math.MaxUint32)
-	case "int", "int64":
-		if m == modeMaximal {
-			return int64(math.MaxInt64)
-		}
-		return int64(1)
 	case "int8":
 		return int64Or(m, math.MaxInt8)
 	case "int16":
@@ -148,8 +140,11 @@ func int64Or(m mode, max int64) int64 {
 	return 1
 }
 
-func scriptCount(vc runtime.VMCaller, td *runtime.TypeDef, m mode) int {
+func scriptCount(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode) int {
 	if n, ok := vc.ArrayLenOf(td); ok {
+		return int(n)
+	}
+	if n, ok := vc.ArrayLenOf(u); ok {
 		return int(n)
 	}
 	if m == modeMaximal {
@@ -191,10 +186,18 @@ func mapKeyType(vc runtime.VMCaller, td, u *runtime.TypeDef) *runtime.TypeDef {
 	if x == nil {
 		return nil
 	}
-	kt, err := vc.ResolveType(td, x)
-	if err != nil {
-		return nil
+	return typeExprType(vc, td, x)
+}
+
+func typeExprType(vc runtime.VMCaller, from *runtime.TypeDef, x ast.Expr) *runtime.TypeDef {
+	if p, ok := x.(*ast.ParenExpr); ok {
+		return typeExprType(vc, from, p.X)
 	}
+	if star, ok := x.(*ast.StarExpr); ok {
+		return &runtime.TypeDef{Kind: runtime.KindPointer, Anon: star, Pkg: from.Pkg, File: from.File,
+			Binds: from.Binds, LocalTypes: from.LocalTypes, Elem: typeExprType(vc, from, star.X)}
+	}
+	kt, _ := vc.ResolveType(from, x)
 	return kt
 }
 

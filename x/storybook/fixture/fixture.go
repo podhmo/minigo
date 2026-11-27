@@ -65,6 +65,9 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 		if v := buildValue(t.Elem(), m, depth+1, seen); v.IsValid() {
 			p.Elem().Set(v)
 		}
+		if p.Type() != t {
+			return p.Convert(t)
+		}
 		return p
 	case reflect.Struct:
 		v := reflect.New(t).Elem()

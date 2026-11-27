@@ -124,6 +124,10 @@ func TestRenderGeneratedFixture(t *testing.T) {
 
 type Inner struct{ Enabled bool }
 type Label string
+type Pair [2]string
+type Pair2 Pair
+type Base struct{ Text string }
+type Defined Base
 type View struct {
 	Name Label
 	Count int
@@ -131,13 +135,17 @@ type View struct {
 	Inner *Inner
 	Scores map[string]int
 	Badge template.HTML
-	Pair [2]string
+	Pair Pair
+	Defined Defined
+	PtrScores map[*Inner]int
+	SlicePtrScores map[*[]int]int
+	Pair2 Pair2
 	Next *View
 }
 
 func StoryGenerated() {
 	v := fixture.Minimal[View]()
-	fmt.Printf("%s/%d/%d/%t/%t/%d/%d/%s/%s/%t", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"], v.Badge, v.Pair[1], v.Next == nil)
+	fmt.Printf("%s/%d/%d/%t/%t/%d/%d/%s/%s/%t/%s/%d/%d/%s", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"], v.Badge, v.Pair[1], v.Next == nil, v.Defined.Text, len(v.PtrScores), len(v.SlicePtrScores), v.Pair2[1])
 }
 
 func StoryGeneratedLong() {
@@ -150,7 +158,7 @@ func StoryGeneratedLong() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("x/1/1/true/true/1/1/x/x/true", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("x/1/1/true/true/1/1/x/x/true/x/1/1/x", string(page.Body)); diff != "" {
 		t.Fatalf("generated fixture output (-want +got):\n%s", diff)
 	}
 	page, err = b.Render(t.Context(), "StoryGeneratedLong")
