@@ -92,7 +92,16 @@ func (s *scriptIface) Close() error {
 
 func (s *scriptIface) WriteString(str string) (int, error) {
 	vc := s.m.AnchorMember(s.vc)
-	if _, ok := vc.Member(s.recv, "WriteString"); !ok {
+	hasWriteString := false
+	if set, _ := vc.MethodSetOf(s.recv); set != nil {
+		// MethodSetOf is static: a method promoted through a nil embedded
+		// pointer is still present and must panic when invoked, rather
+		// than being mistaken for a write-only implementation.
+		hasWriteString = set["WriteString"]
+	} else if _, ok := vc.Member(s.recv, "WriteString"); ok {
+		hasWriteString = true
+	}
+	if !hasWriteString {
 		// The proxy's static io surface includes WriteString. When the
 		// script value only implements Write, io's usual fallback keeps
 		// fmt's string fast path equivalent instead of failing.

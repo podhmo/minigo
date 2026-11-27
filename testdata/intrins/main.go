@@ -99,6 +99,14 @@ func StdoutWriteString() int {
 	return 0
 }
 
+func StdoutWriteStringErr() string {
+	_, err := os.Stdout.WriteString("hello 42\n")
+	if err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
 // StdoutReflectWrite drives os.Stdout through the reflect method
 // expression — the facade's Write must still reach the engine's
 // configured output, not the process fd.

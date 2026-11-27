@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/resolve"
@@ -112,6 +114,32 @@ func NestedOutputWriter() string {
 		return fmt.Sprint(err)
 	}
 	return fmt.Sprint(n)
+}
+
+type writeStringInner int
+
+func (writeStringInner) WriteString(s string) (int, error) {
+	return 0, errors.New("write string failed")
+}
+
+type embeddedWriteStringWriter struct{ *writeStringInner }
+
+func (embeddedWriteStringWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func NestedNilEmbeddedWriteString() string {
+	e := minigo.NewEngine(".")
+	minigo.WithOutput(embeddedWriteStringWriter{})(e)
+	r, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteStringErr")
+	if err != nil {
+		if strings.Contains(fmt.Sprint(err), "write string failed") || strings.Contains(fmt.Sprint(err), "nil pointer") {
+			return "error"
+		}
+		return fmt.Sprint(err)
+	}
+	if strings.Contains(fmt.Sprint(r), "write string failed") || strings.Contains(fmt.Sprint(r), "nil pointer") {
+		return "error"
+	}
+	return "no error"
 }
 
 func NestedHostPolicyScriptFunc() string {
