@@ -76,6 +76,7 @@ PR [#1438](https://github.com/podhmo/minigo/pull/1438) は compact 案を段階�
 - いきなり CLI 互換を決めず、experiment command または example から始める
 
 判断: podhmo に確認が必要。`docs/sketch/ja/improvement-ideas.md` の F2 がこの判断待ち。
+設計メモ: [`docs/sketch/ja/exploration-minigo-test.md`](../sketch/ja/exploration-minigo-test.md) — go test の 4 構成物の minigo への写像。testing facade は host bind 案で決定済み。FailNow/Skip は sentinel error で運ぶ設計。`--tags`（build のみに効く go 互換）と `--tagged`（tag-gated ファイル由来のテストだけ実行する storybook 用途）は別フラグとして分離。v1 は `minigo test ./dir` のみ・internal test のみ（外部 `foo_test`/Example は v2）。exit code は非 PASS → 1 で統一、`t.Helper` の file:line は近似出力＋本実装は TODO。
 
 ## perf-gate: どの性能契約を CI で強制するか？
 
