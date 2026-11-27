@@ -255,14 +255,8 @@ loop:
 			}
 			classifyCall(t, cerr)
 			// t.Cleanup script funcs need a live process: run them in a
-			// second Engine.Call against the bound __cleanups member.
-			var cleanupErr error
-			for len(t.Cleanups()) > 0 {
-				cerr := callCleanup(ctx, e, testingPkg, t)
-				if cerr != nil && cleanupErr == nil {
-					cleanupErr = cerr
-				}
-			}
+			// second Engine.Call against the bound __cleanup member.
+			cleanupErr := runTopCleanups(ctx, e, testingPkg, t)
 			// A cleanup failure after a dead test keeps the body's
 			// PANIC/TRAP — folding its stopError into the flags would
 			// downgrade the verdict. Otherwise re-evaluate the flags even

@@ -27,7 +27,7 @@ func TestRunCleanupsDrainsLateRegistrationAndPanic(t *testing.T) {
 	if diff := cmp.Diff([]string{"last-registered", "late", "first-registered"}, order); diff != "" {
 		t.Errorf("cleanup order mismatch (-want +got):\n%s", diff)
 	}
-	if got := tr.cleanupCount(); got != 0 {
+	if got := tr.CleanupCount(); got != 0 {
 		t.Errorf("cleanupCount = %d, want 0", got)
 	}
 }
@@ -45,7 +45,7 @@ func TestCleanupRegistrationConcurrent(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if got := tr.cleanupCount(); got != 800 {
+	if got := tr.CleanupCount(); got != 800 {
 		t.Errorf("cleanupCount = %d, want 800", got)
 	}
 }

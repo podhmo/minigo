@@ -95,11 +95,11 @@ type frame struct {
 	ip       int
 
 	defers []deferredCall // LIFO
-	// deferredTrap is a drain-defers control trap raised inside one of
-	// this frame's deferred calls. It is held while the rest of the
-	// defer list drains, then rethrown.
-	deferredTrap *runtime.Trap
-	sentinel     bool // placeholder frame for a deferred builtin — a
+	// deferredTrap holds drain-defers control flow until the defer list
+	// drains; deferredTrapInflight identifies the panic it may supersede.
+	deferredTrap         *runtime.Trap
+	deferredTrapInflight *runtime.Panic
+	sentinel             bool // placeholder frame for a deferred builtin — a
 	// wrapper in Go's terms: it does not count toward recover()'s
 	// one-frame distance rule
 	retNamed bool // gather named result slots after defers run

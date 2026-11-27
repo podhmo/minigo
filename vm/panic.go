@@ -208,12 +208,7 @@ func (v *VM) unwind(f *frame, r any) {
 			}
 		}()
 	}
-	if f.deferredTrap != nil {
-		tr := f.deferredTrap
-		f.deferredTrap = nil
-		v.failProc(tr)
-		panic(tr)
-	}
+	v.rethrowDeferredTrap(f)
 	if r != nil {
 		if p != nil || (v.inflight != saved && v.inflight != nil) {
 			// the drain left a panic to propagate — either the original
@@ -401,9 +396,7 @@ func (v *VM) runOneDefer(f *frame, unwinding *runtime.Panic) {
 		case *runtime.Trap:
 			e.Frames = append(e.Frames, below...)
 			if runtime.TrapDrainsDefers(e) {
-				if f.deferredTrap == nil {
-					f.deferredTrap = e
-				}
+				f.holdDeferredTrap(e, v.inflight)
 				return
 			}
 			panic(r)

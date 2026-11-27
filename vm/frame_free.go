@@ -44,7 +44,7 @@ func freeFrame(f *frame) {
 		f.defers[i] = deferredCall{}
 	}
 	f.defers = f.defers[:0]
-	f.deferredTrap = nil
+	f.deferredTrap, f.deferredTrapInflight = nil, nil
 	f.sentinel = false
 	f.retNamed = false
 	// f.results' backing may be the returned Tuple's Elems — release it

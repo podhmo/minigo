@@ -14,7 +14,7 @@ import (
 // subtest passed.
 func (t *T) run(vc runtime.VMCaller, name string, f runtime.Value) (runtime.Value, error) {
 	if t.suite.Stop() {
-		return false, nil
+		return true, nil
 	}
 	sub := newSub(t, t.childName(name))
 	if !t.suite.MatchFullName(sub.name) {

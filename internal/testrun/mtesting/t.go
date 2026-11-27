@@ -213,7 +213,10 @@ func (t *T) popCleanup() (any, bool) {
 	return c, true
 }
 
-func (t *T) cleanupCount() int {
+// CleanupCount reports how many cleanup callbacks remain. The runner uses
+// the count so checking progress does not copy the callback slice once per
+// cleanup.
+func (t *T) CleanupCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.cleanups)
@@ -509,13 +512,6 @@ func (t *T) MarkFailed() { t.markFailed() }
 // AddCleanup registers f to run when the test finishes (LIFO). f is
 // either a script function value or a host func().
 func (t *T) AddCleanup(f any) { t.addCleanup(f) }
-
-// Cleanups returns the registered cleanups in registration order.
-func (t *T) Cleanups() []any {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return append([]any(nil), t.cleanups...)
-}
 
 // AppendEvent records a subtest's buffered block or a stray host log
 // line under this test.

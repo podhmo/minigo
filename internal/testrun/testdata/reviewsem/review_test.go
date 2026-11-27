@@ -53,3 +53,19 @@ func TestCleanupPanicDrains(t *testing.T) {
 		t.Log("inner cleanup ran")
 	})
 }
+
+func TestDeferSkipDoesNotHidePanic(t *testing.T) {
+	defer func() {
+		panic("panic after skip must win")
+	}()
+	defer t.SkipNow()
+}
+
+func TestCleanupSkipDoesNotHidePanic(t *testing.T) {
+	t.Cleanup(func() {
+		panic("panic after cleanup skip must win")
+	})
+	t.Cleanup(func() {
+		t.SkipNow()
+	})
+}
