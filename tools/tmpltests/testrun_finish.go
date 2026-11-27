@@ -2,17 +2,17 @@ package main
 
 import "os"
 
-// finishTestRunOutput preserves the first runner failure while still
-// closing the report file; close and earlier write failures become the
-// result only when the runner itself succeeded.
+// finishTestRunOutput closes the report; write/close failures are harness errors.
 func finishTestRunOutput(reportFile *os.File, out *checkedWriter, err error) error {
+	var writeErr error
 	if reportFile != nil {
-		if cerr := reportFile.Close(); err == nil {
-			err = cerr
-		}
+		writeErr = reportFile.Close()
 	}
-	if err == nil {
-		err = out.Err()
+	if werr := out.Err(); writeErr == nil {
+		writeErr = werr
+	}
+	if writeErr != nil {
+		err = writeErr
 	}
 	return err
 }

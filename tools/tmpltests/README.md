@@ -2,9 +2,10 @@
 
 Runs Go's own stdlib test files **verbatim** under minigo: the target
 package's upstream sources are copied into a scratch GOROOT next to their
-(renamed) `*_test.go` files, a generated driver calls each `func
-TestXxx(*testing.T)` in its own minigo process, and per-test verdicts are
-collected. Unlike difffuzz's generated probes, the corpus here is the real
+(renamed) `*_test.go` files. Internal `TestXxx` suites run through the
+in-process `minigo test` runner by default; `-runner=process` keeps the
+original generated-driver, one-minigo-process-per-test harness. Unlike
+difffuzz's generated probes, the corpus here is the real
 upstream suite — a FAIL is Go behavior minigo gets wrong, a TRAP is
 unimplemented surface that became backlog.
 
@@ -47,18 +48,19 @@ was filtered out.
 
 ## How it works
 
-1. Build `cmd/minigo` (or use `-minigo <bin>`).
-2. Assemble a scratch GOROOT at `<work>/goroot`: every `$GOROOT/src` entry
+1. Assemble a scratch GOROOT at `<work>/goroot`: every `$GOROOT/src` entry
    is a symlink except `testing`, `flag`, `iter` (replaced by shims in
    `shims.go`) and the target package's parents. The target package itself
    is a real directory: symlinks to upstream `.go` files, `testdata/`, plus
    renamed copies of the selected test files (`exec_test.go` →
-   `exec_srctest.go` — minigo's loader drops `*_test.go`) and a generated
-   `zzz_driver.go` (`RunAll`/`Run1` + a `name → func` table scanned from
-   the test files).
-3. For each test: `GOROOT=<work>/goroot minigo run <work>/main --src
-   <pkg> -- <TestName>` with cwd set to the copied package dir so
-   `testdata/` resolves. One test per process keeps a minigo trap from
+   `exec_srctest.go` — minigo's loader drops `*_test.go`).
+2. The default in-process runner renames those copies back to `*_test.go`,
+   passes the scratch GOROOT through resolver configuration, and runs each
+   test in an isolated interpreter session; it does not build `cmd/minigo`.
+3. `-runner=process` first builds `cmd/minigo` (or uses `-minigo <bin>`),
+   generates `zzz_driver.go`, then runs `GOROOT=<work>/goroot minigo run
+   <work>/main --src <pkg> -- <TestName>` per test with cwd set to the
+   copied package dir. One test per process keeps a minigo trap from
    taking down the rest of the suite.
 
 ## Verdicts
@@ -132,5 +134,3 @@ The example suites need `log`, which source-resolves and formats via
 
 - `link_test.go` — drives the Go toolchain itself (`internal/testenv`,
   `os/exec`); meaningless here.
-
-Internal `TestXxx` suites use the in-process `minigo test` runner by default (`-runner=auto`), with a scratch GOROOT passed through resolver configuration and one isolated interpreter session per test. `-runner=process` keeps the original process-per-test harness; external example suites still use it because external test packages and examples are outside `minigo test` v1 scope.
