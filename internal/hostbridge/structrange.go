@@ -49,23 +49,13 @@ func receiverFieldType(m *runtime.Function, name string) (ast.Expr, bool) {
 // nonChannelTypeExpr reports whether x is known not to be a channel.
 // Unknown shapes are false so ranging over them stays conservative.
 func nonChannelTypeExpr(m *runtime.Function, x ast.Expr, seen map[string]bool) bool {
-	switch x := x.(type) {
-	case *ast.ArrayType, *ast.MapType:
-		return true
-	case *ast.ParenExpr:
-		return nonChannelTypeExpr(m, x.X, seen)
-	case *ast.Ident:
-		if seen[x.Name] {
-			return false
+	return typeExprMatches(m, x, seen, func(x ast.Expr) bool {
+		switch x.(type) {
+		case *ast.ArrayType, *ast.MapType:
+			return true
 		}
-		ts := typeSpecOf(m, x.Name)
-		if ts == nil {
-			return false
-		}
-		seen[x.Name] = true
-		return nonChannelTypeExpr(m, ts.Type, seen)
-	}
-	return false
+		return false
+	})
 }
 
 // rangeKnownNonChannel recognizes the common receiver-field shape

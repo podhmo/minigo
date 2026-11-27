@@ -13,37 +13,9 @@ func typeSpecOf(m *runtime.Function, name string) *ast.TypeSpec {
 	return m.Pkg.Index.TypeSpec(name)
 }
 
-// scalarTypeExpr reports whether x is a predeclared scalar or a package
-// type whose underlying type resolves to one. Composite and unknown types
-// are false so refresh stays conservative.
-func scalarTypeExpr(m *runtime.Function, x ast.Expr, seen map[string]bool) bool {
-	switch x := x.(type) {
-	case *ast.ParenExpr:
-		return scalarTypeExpr(m, x.X, seen)
-	case *ast.Ident:
-		switch x.Name {
-		case "bool", "string", "byte", "rune",
-			"int", "int8", "int16", "int32", "int64",
-			"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
-			"float32", "float64", "complex64", "complex128":
-			return true
-		}
-		if seen[x.Name] {
-			return false
-		}
-		ts := typeSpecOf(m, x.Name)
-		if ts == nil {
-			return false
-		}
-		seen[x.Name] = true
-		return scalarTypeExpr(m, ts.Type, seen)
-	}
-	return false
-}
-
-func predeclaredTypeName(name string) bool {
+func scalarTypeName(name string) bool {
 	switch name {
-	case "bool", "string", "byte", "rune", "any", "error",
+	case "bool", "string", "byte", "rune",
 		"int", "int8", "int16", "int32", "int64",
 		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
 		"float32", "float64", "complex64", "complex128":
@@ -52,24 +24,33 @@ func predeclaredTypeName(name string) bool {
 	return false
 }
 
-// typeConversionCall reports whether call is a conversion rather than a
-// function invocation. Conversions can allocate, but they do not mutate
-// script state, so they do not make a getter impure.
-func typeConversionCall(m *runtime.Function, call *ast.CallExpr) bool {
-	if len(call.Args) != 1 {
-		return false
-	}
-	id, ok := call.Fun.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	if predeclaredTypeName(id.Name) || typeSpecOf(m, id.Name) != nil {
+// typeExprMatches follows named types until match; unknown shapes are false.
+func typeExprMatches(m *runtime.Function, x ast.Expr, seen map[string]bool, match func(ast.Expr) bool) bool {
+	if match(x) {
 		return true
 	}
-	for _, name := range m.TParams {
-		if id.Name == name {
-			return true
+	switch x := x.(type) {
+	case *ast.ParenExpr:
+		return typeExprMatches(m, x.X, seen, match)
+	case *ast.Ident:
+		if seen[x.Name] {
+			return false
 		}
+		ts := typeSpecOf(m, x.Name)
+		if ts == nil {
+			return false
+		}
+		seen[x.Name] = true
+		return typeExprMatches(m, ts.Type, seen, match)
 	}
 	return false
+}
+
+// scalarTypeExpr reports whether x is a predeclared scalar or a package
+// type whose underlying type resolves to one.
+func scalarTypeExpr(m *runtime.Function, x ast.Expr, seen map[string]bool) bool {
+	return typeExprMatches(m, x, seen, func(x ast.Expr) bool {
+		id, ok := x.(*ast.Ident)
+		return ok && scalarTypeName(id.Name)
+	})
 }
