@@ -9,10 +9,9 @@ import (
 // fillStructProjection writes one projection's exported fields, methods
 // and promoted members. Initial projection zeroes every writable field so
 // a failed member reads as the same dropped entry a fresh projection would
-// have. Refresh rewrites data members but deliberately keeps method slots:
-// those slots already ran once when the host object was created, and
-// re-running them on every mutation barrier would duplicate their side
-// effects even when the template referenced the method only once.
+// have. Refresh rewrites data members and expression-only methods.
+// Methods with possible side effects keep their first result rather than
+// duplicating writes; pure getters reflect post-callback data.
 func fillStructProjection(ev reflect.Value, plan structProjectionPlan, recv runtime.Value, s *runtime.Struct, vc runtime.VMCaller, h *HostMarshal, methods bool) {
 	for i := 0; i < ev.NumField(); i++ {
 		if !methods && i >= len(plan.fidx) {
@@ -43,9 +42,10 @@ func fillStructProjection(ev reflect.Value, plan structProjectionPlan, recv runt
 	if td == nil {
 		return
 	}
-	if methods {
-		for k, name := range plan.mnames {
-			h.projMethod(ev.Field(len(plan.fidx)+k), td.Methods[name], recv, td.Methods[name].PtrRecv && plan.valueRecv, vc)
+	for k, name := range plan.mnames {
+		m := td.Methods[name]
+		if methods || pureMethod(m) {
+			h.projMethod(ev.Field(len(plan.fidx)+k), m, recv, m.PtrRecv && plan.valueRecv, vc)
 		}
 	}
 	for j, name := range plan.pnames {
@@ -59,7 +59,7 @@ func fillStructProjection(ev reflect.Value, plan structProjectionPlan, recv runt
 		case it.hv.IsValid():
 			fv.Set(it.hv)
 		case it.m != nil:
-			if methods {
+			if methods || pureMethod(it.m) {
 				h.projMethod(fv, it.m, it.recv, false, vc)
 			}
 		default:

@@ -284,7 +284,7 @@ func (h *HostMarshal) projMethod(fv reflect.Value, m *runtime.Function, recv run
 	}
 	h.Budget--
 	res, err := vc.Call(bm, nil)
-	h.M.noteScriptCallback()
+	h.M.noteImpureMethodCallback(m)
 	if err != nil {
 		return
 	}

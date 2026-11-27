@@ -94,3 +94,10 @@ func TestHostHeldStructProjectionRoundTripsAfterGC(t *testing.T) {
 		t.Fatalf("RoundTrip (-want +got):\n%s", diff)
 	}
 }
+
+func TestCallbackReturnedStructMethodsRefresh(t *testing.T) {
+	got := runSessionMemoryRegression(t)["Render"]
+	if diff := cmp.Diff("8/8", got); diff != "" {
+		t.Fatalf("Render (-want +got):\n%s", diff)
+	}
+}
