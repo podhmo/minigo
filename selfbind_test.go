@@ -42,6 +42,17 @@ func TestSelfBoundEngineCallKeepsScriptRecorder(t *testing.T) {
 	}
 }
 
+func TestSelfBoundEngineCallSnapshotsScriptContainers(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedSliceIsolation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("orig", got); diff != "" {
+		t.Fatalf("NestedSliceIsolation() mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestSelfBoundEngineInheritsHostPolicy(t *testing.T) {
 	e := NewEngine(".", WithHostPolicy(func(path, sym string) bool {
 		return !(path == "os" && sym == "Getenv")

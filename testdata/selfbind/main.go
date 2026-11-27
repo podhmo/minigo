@@ -84,4 +84,17 @@ func NestedRecorder() string {
 	return fmt.Sprintf("%d|%s|%s", res.StatusCode, res.Header.Get("X-Test"), rec.Body.String())
 }
 
+func NestedSliceIsolation() string {
+	e := minigo.NewEngine(".")
+	pkg, err := e.Package(context.Background(), "./testdata/selfbindrec")
+	if err != nil {
+		return fmt.Sprint(err)
+	}
+	xs := []string{"orig"}
+	if _, err := e.Call(context.Background(), pkg, "Mutate", xs); err != nil {
+		return fmt.Sprint(err)
+	}
+	return xs[0]
+}
+
 func NestedMarker() string { return minigo.Marker() }
