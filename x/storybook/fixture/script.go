@@ -70,7 +70,7 @@ func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, depth int, se
 		return convertOr(vc, td, scalarValue(u, m))
 	case runtime.KindPointer:
 		et, err := vc.ElemOf(td)
-		if err != nil || et == nil {
+		if err != nil || et == nil || seen[et] {
 			return vc.Zero(td)
 		}
 		return convertOr(vc, td, &runtime.Cell{Elem: scriptValue(vc, et, m, depth+1, seen)})

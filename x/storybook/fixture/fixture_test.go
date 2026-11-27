@@ -18,6 +18,11 @@ type view struct {
 	Inner *inner
 }
 
+type recursiveView struct {
+	Name string
+	Next *recursiveView
+}
+
 func TestNativeModes(t *testing.T) {
 	empty := Empty[view]()
 	if diff := cmp.Diff(view{}, empty); diff != "" {
@@ -34,5 +39,9 @@ func TestNativeModes(t *testing.T) {
 	longText := LongText[view]()
 	if !strings.Contains(longText.Name, "表示確認") {
 		t.Fatalf("unexpected LongText: %q", longText.Name)
+	}
+	recursive := Minimal[recursiveView]()
+	if recursive.Name != "x" || recursive.Next != nil {
+		t.Fatalf("unexpected recursive Minimal: %+v", recursive)
 	}
 }
