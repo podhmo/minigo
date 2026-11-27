@@ -3,7 +3,6 @@ package mtesting
 import (
 	"fmt"
 
-	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -18,37 +17,13 @@ import (
 // suite's report sink.
 func FlagSymbols(s *Suite) map[string]runtime.Value {
 	fs := &flagState{defs: map[string]*flagDef{}, actual: map[string]bool{}, suite: s}
-	str := func(v runtime.Value) runtime.Value { return stdlib.Str(v) }
-	boolArg := func(v runtime.Value) runtime.Value {
-		b, _ := hostbridge.GoNative(v).(bool)
-		return b
-	}
-	int64Arg := func(v runtime.Value) runtime.Value { return intArg(v) }
-	float64Arg := func(v runtime.Value) runtime.Value { return floatArg(v) }
-	dur := func(v runtime.Value) runtime.Value { return hostbridge.GoNative(v) }
-	return map[string]runtime.Value{
+	symbols := map[string]runtime.Value{
 		"NewFlagSet": flagFn("flag.NewFlagSet", func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			return newFlagSetValue(flagName(args), flagSetMode(args), s), nil
 		}),
 		"ContinueOnError": int64(0),
 		"ExitOnError":     int64(1),
 		"PanicOnError":    int64(2),
-		"Bool":            flagFn("flag.Bool", fs.flagScalar(boolArg, false, parseBoolFlag)),
-		"BoolVar":         flagFn("flag.BoolVar", fs.scalarVar(boolArg, false, parseBoolFlag)),
-		"Duration":        flagFn("flag.Duration", fs.flagScalar(dur, int64(0), parseDurationFlag)),
-		"DurationVar":     flagFn("flag.DurationVar", fs.scalarVar(dur, int64(0), parseDurationFlag)),
-		"Float64":         flagFn("flag.Float64", fs.flagScalar(float64Arg, float64(0), parseFloatFlag)),
-		"Float64Var":      flagFn("flag.Float64Var", fs.scalarVar(float64Arg, float64(0), parseFloatFlag)),
-		"Int":             flagFn("flag.Int", fs.flagScalar(int64Arg, int64(0), parseIntFlag)),
-		"IntVar":          flagFn("flag.IntVar", fs.scalarVar(int64Arg, int64(0), parseIntFlag)),
-		"Int64":           flagFn("flag.Int64", fs.flagScalar(int64Arg, int64(0), parseIntFlag)),
-		"Int64Var":        flagFn("flag.Int64Var", fs.scalarVar(int64Arg, int64(0), parseIntFlag)),
-		"String":          flagFn("flag.String", fs.flagScalar(str, "", parseStringFlag)),
-		"StringVar":       flagFn("flag.StringVar", fs.scalarVar(str, "", parseStringFlag)),
-		"Uint":            flagFn("flag.Uint", fs.flagScalar(int64Arg, int64(0), parseUintFlag)),
-		"UintVar":         flagFn("flag.UintVar", fs.scalarVar(int64Arg, int64(0), parseUintFlag)),
-		"Uint64":          flagFn("flag.Uint64", fs.flagScalar(int64Arg, int64(0), parseUintFlag)),
-		"Uint64Var":       flagFn("flag.Uint64Var", fs.scalarVar(int64Arg, int64(0), parseUintFlag)),
 		"Var":             flagFn("flag.Var", fs.varFlag),
 		"Parse":           flagFn("flag.Parse", fs.parse),
 		"Parsed":          flagFn("flag.Parsed", fs.parsedFlag),
@@ -60,6 +35,10 @@ func FlagSymbols(s *Suite) map[string]runtime.Value {
 		"Set":             flagFn("flag.Set", fs.set),
 		"PrintDefaults":   flagFn("flag.PrintDefaults", fs.printDefaults),
 	}
+	for _, m := range scalarFlagMembers(fs) {
+		symbols[m.name] = flagFn("flag."+m.name, m.fn)
+	}
+	return symbols
 }
 
 // flagFn adapts a raw-args flag builtin.

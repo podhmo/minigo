@@ -22,13 +22,14 @@ func flagSetMode(args []runtime.Value) int64 {
 	return 0
 }
 
-// newFlagSetValue builds the script-visible FlagSet facade. It is a
-// struct whose function-valued fields are the methods; using script
-// builtins instead of reflect methods keeps the VMCaller available for
-// script flag.Value implementations and makes the scalar constructors
-// return script cells, so `*p` reads like a Go pointer result.
-func newFlagSetValue(_ string, mode int64, suite *Suite) runtime.Value {
-	fs := &flagState{defs: map[string]*flagDef{}, actual: map[string]bool{}, suite: suite}
+type flagMember struct {
+	name string
+	fn   func(runtime.VMCaller, []runtime.Value) (runtime.Value, error)
+}
+
+// scalarFlagMembers is the registration surface shared by the
+// package-level flag set and every NewFlagSet instance.
+func scalarFlagMembers(fs *flagState) []flagMember {
 	str := func(v runtime.Value) runtime.Value { return stdlib.Str(v) }
 	boolArg := func(v runtime.Value) runtime.Value {
 		b, _ := hostbridge.GoNative(v).(bool)
@@ -37,11 +38,7 @@ func newFlagSetValue(_ string, mode int64, suite *Suite) runtime.Value {
 	int64Arg := func(v runtime.Value) runtime.Value { return intArg(v) }
 	float64Arg := func(v runtime.Value) runtime.Value { return floatArg(v) }
 	dur := func(v runtime.Value) runtime.Value { return hostbridge.GoNative(v) }
-
-	members := []struct {
-		name string
-		fn   func(runtime.VMCaller, []runtime.Value) (runtime.Value, error)
-	}{
+	return []flagMember{
 		{"Bool", fs.flagScalar(boolArg, false, parseBoolFlag)},
 		{"BoolVar", fs.scalarVar(boolArg, false, parseBoolFlag)},
 		{"Duration", fs.flagScalar(dur, int64(0), parseDurationFlag)},
@@ -58,8 +55,19 @@ func newFlagSetValue(_ string, mode int64, suite *Suite) runtime.Value {
 		{"UintVar", fs.scalarVar(int64Arg, int64(0), parseUintFlag)},
 		{"Uint64", fs.flagScalar(int64Arg, int64(0), parseUintFlag)},
 		{"Uint64Var", fs.scalarVar(int64Arg, int64(0), parseUintFlag)},
-		{"Var", fs.varFlag},
-		{"Parse", func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	}
+}
+
+// newFlagSetValue builds the script-visible FlagSet facade. It is a
+// struct whose function-valued fields are the methods; using script
+// builtins instead of reflect methods keeps the VMCaller available for
+// script flag.Value implementations and makes the scalar constructors
+// return script cells, so `*p` reads like a Go pointer result.
+func newFlagSetValue(_ string, mode int64, suite *Suite) runtime.Value {
+	fs := &flagState{defs: map[string]*flagDef{}, actual: map[string]bool{}, suite: suite}
+	members := append(scalarFlagMembers(fs),
+		flagMember{"Var", fs.varFlag},
+		flagMember{"Parse", func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
 				return nil, fmt.Errorf("flag.(*FlagSet).Parse: got %d argument(s), want 1", len(args))
 			}
@@ -74,15 +82,15 @@ func newFlagSetValue(_ string, mode int64, suite *Suite) runtime.Value {
 			// parse error like ContinueOnError instead.
 			return stdlib.ErrVal(err), nil
 		}},
-		{"Parsed", fs.parsedFlag},
-		{"Args", fs.args},
-		{"Arg", fs.arg},
-		{"NArg", fs.narg},
-		{"NFlag", fs.nflag},
-		{"Lookup", fs.lookup},
-		{"Set", fs.set},
-		{"PrintDefaults", fs.printDefaults},
-	}
+		flagMember{"Parsed", fs.parsedFlag},
+		flagMember{"Args", fs.args},
+		flagMember{"Arg", fs.arg},
+		flagMember{"NArg", fs.narg},
+		flagMember{"NFlag", fs.nflag},
+		flagMember{"Lookup", fs.lookup},
+		flagMember{"Set", fs.set},
+		flagMember{"PrintDefaults", fs.printDefaults},
+	)
 	fields := make([]string, len(members))
 	vals := make([]runtime.Value, len(members))
 	for i, m := range members {
