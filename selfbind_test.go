@@ -53,6 +53,24 @@ func TestSelfBoundEngineCallSnapshotsScriptContainers(t *testing.T) {
 	}
 }
 
+func TestSelfBoundScriptValuesCrossEmbeddingOptions(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedOutputWriter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("9", got); diff != "" {
+		t.Errorf("NestedOutputWriter() mismatch (-want +got):\n%s", diff)
+	}
+	got, err = e.Run(context.Background(), "./testdata/selfbind", "NestedHostPolicyScriptFunc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("denied", got); diff != "" {
+		t.Errorf("NestedHostPolicyScriptFunc() mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestSelfBoundEngineInheritsHostPolicy(t *testing.T) {
 	e := NewEngine(".", WithHostPolicy(func(path, sym string) bool {
 		return !(path == "os" && sym == "Getenv")

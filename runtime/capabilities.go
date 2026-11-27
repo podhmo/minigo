@@ -147,6 +147,13 @@ type ValTyper interface {
 	TypeOf(x Value) *TypeDef
 }
 
+// HostMarshaler converts a script value to a typed host parameter with
+// the VM's full marshaler: script values can adapt to host interfaces
+// and funcs, not just unwrap to simplified native shapes.
+type HostMarshaler interface {
+	MarshalHost(v Value, t reflect.Type) (reflect.Value, error)
+}
+
 // Converter applies the T(x) conversion.
 type Converter interface {
 	Convert(td *TypeDef, x Value) (Value, error)

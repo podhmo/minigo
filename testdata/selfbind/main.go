@@ -97,4 +97,32 @@ func NestedSliceIsolation() string {
 	return xs[0]
 }
 
+type scriptWriter struct{}
+
+var scriptWriterBytes int
+
+func (scriptWriter) Write(p []byte) (int, error) {
+	scriptWriterBytes += len(p)
+	return len(p), nil
+}
+
+func NestedOutputWriter() string {
+	scriptWriterBytes = 0
+	e := minigo.NewEngine(".")
+	minigo.WithOutput(scriptWriter{})(e)
+	if _, err := e.Run(context.Background(), "./testdata/intrins", "Prints"); err != nil {
+		return fmt.Sprint(err)
+	}
+	return fmt.Sprint(scriptWriterBytes)
+}
+
+func NestedHostPolicyScriptFunc() string {
+	e := minigo.NewEngine(".")
+	minigo.WithHostPolicy(func(path, symbol string) bool { return symbol != "Getenv" })(e)
+	if _, err := e.Run(context.Background(), "./testdata/hostenv", "Read"); err != nil {
+		return "denied"
+	}
+	return "allowed"
+}
+
 func NestedMarker() string { return minigo.Marker() }

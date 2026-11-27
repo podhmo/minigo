@@ -74,6 +74,13 @@ func init() {
 	}
 }
 
+// MarshalHost is the VM's HostMarshaler capability: bound host functions
+// built through the lightweight stdlib wrapper use it when their simple
+// native conversion cannot express a script interface or func adapter.
+func (v *VM) MarshalHost(x runtime.Value, t hostbridge.Type) (hostbridge.Value, error) {
+	return marshalHost.ToReflect(x, t, v)
+}
+
 // funcMapElemFor returns funcMapElem when t is a registered FuncMap
 // type, else nil.
 func funcMapElemFor(t hostbridge.Type) func(runtime.Value, runtime.VMCaller) (hostbridge.Value, error) {
