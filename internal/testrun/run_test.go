@@ -328,3 +328,97 @@ func TestShort(t *testing.T) {
 		t.Errorf("TestShort did not honor -short:\n%s", got)
 	}
 }
+
+func TestReviewVerdictSemantics(t *testing.T) {
+	got, err := run(t, "testdata/reviewsem", func(o *testrun.Options) { o.Verbose = true })
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	for _, want := range []string{
+		"--- FAIL: TestErrorThenSkip",
+		"--- FAIL: TestCleanupError",
+		"--- FAIL: TestSubCleanupError",
+		"--- FAIL: TestSubCleanupError/child",
+		"--- PASS: TestSkippedSubtestResult",
+		"--- SKIP: TestSkippedSubtestResult/skip",
+		"--- FAIL: TestDeferFatalDrainsDefers",
+		"outer defer ran",
+		"--- PANIC: TestCleanupPanicDrains",
+		"inner cleanup ran",
+		"outer cleanup ran",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "--- SKIP: TestErrorThenSkip") {
+		t.Errorf("failure-then-skip was reported as skip:\n%s", got)
+	}
+}
+
+func TestSlashInSubtestNameFilter(t *testing.T) {
+	got, err := run(t, "testdata/reviewsem", func(o *testrun.Options) {
+		o.Verbose = true
+		o.Run = "TestZones/America/New_York"
+	})
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, got)
+	}
+	for _, want := range []string{
+		"=== RUN   TestZones/America/New_York",
+		"--- PASS: TestZones",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestTaggedOnlyDirectory(t *testing.T) {
+	got, err := run(t, "testdata/tagonly", func(o *testrun.Options) {
+		o.Verbose = true
+		o.Tagged = "special"
+	})
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, got)
+	}
+	if !strings.Contains(got, "--- PASS: TestTaggedOnly") {
+		t.Errorf("tagged-only test did not run:\n%s", got)
+	}
+}
+
+func TestNestedFailFast(t *testing.T) {
+	got, err := run(t, "testdata/ffastsub", func(o *testrun.Options) {
+		o.Verbose = true
+		o.FailFast = true
+	})
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	if strings.Contains(got, "TestNested/second") || strings.Contains(got, "second must not run") {
+		t.Errorf("later sibling subtest ran under -failfast:\n%s", got)
+	}
+}
+
+func TestHostBoundTargetPackageLoadsSource(t *testing.T) {
+	got, err := run(t, "../../pkg/importmanager", nil)
+	if err != nil {
+		t.Fatalf("Run: %v\n%s", err, got)
+	}
+	if strings.Contains(got, "no index") || strings.Contains(got, "TRAP") || strings.Contains(got, "PANIC") {
+		t.Errorf("host-bound target package was not source-loaded:\n%s", got)
+	}
+}
+
+func TestBrokenNonTestFileIsNotTestOnly(t *testing.T) {
+	got, err := run(t, "testdata/brokenmeta", nil)
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	if !strings.Contains(got, "parsing //go:build line") {
+		t.Errorf("broken non-test file was hidden by test-only synthesis:\n%s", got)
+	}
+	if strings.Contains(got, "=== RUN") {
+		t.Errorf("test ran despite broken non-test file:\n%s", got)
+	}
+}

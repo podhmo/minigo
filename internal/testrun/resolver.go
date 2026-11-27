@@ -2,6 +2,7 @@ package testrun
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,10 +27,9 @@ func (r *variantResolver) Locate(ctx context.Context, fromDir, importPath string
 func (r *variantResolver) LocateDir(ctx context.Context, dir string) (*resolve.PackageMeta, error) {
 	meta, err := r.inner.LocateDir(ctx, dir)
 	if err != nil {
-		// A directory of only *_test.go files: the file walk sees no
-		// buildable non-test sources, but `go test` builds the test
-		// files alone — synthesize the meta so they run.
-		if dir == r.dir && len(r.testFiles) > 0 {
+		// Only an empty constraint-filtered file list means test-only;
+		// `go test` builds those test files alone.
+		if dir == r.dir && len(r.testFiles) > 0 && errors.Is(err, resolve.ErrNoBuildableGoFiles) {
 			return r.testOnlyMeta(dir), nil
 		}
 		return nil, err

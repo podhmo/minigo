@@ -27,22 +27,22 @@ func FlagSymbols(s *Suite) map[string]runtime.Value {
 	float64Arg := func(v runtime.Value) runtime.Value { return floatArg(v) }
 	dur := func(v runtime.Value) runtime.Value { return hostbridge.GoNative(v) }
 	return map[string]runtime.Value{
-		"Bool":          flagFn("flag.Bool", fs.flagScalar(boolArg, false)),
-		"BoolVar":       flagFn("flag.BoolVar", fs.scalarVar(boolArg, false)),
-		"Duration":      flagFn("flag.Duration", fs.flagScalar(dur, int64(0))),
-		"DurationVar":   flagFn("flag.DurationVar", fs.scalarVar(dur, int64(0))),
-		"Float64":       flagFn("flag.Float64", fs.flagScalar(float64Arg, float64(0))),
-		"Float64Var":    flagFn("flag.Float64Var", fs.scalarVar(float64Arg, float64(0))),
-		"Int":           flagFn("flag.Int", fs.flagScalar(int64Arg, int64(0))),
-		"IntVar":        flagFn("flag.IntVar", fs.scalarVar(int64Arg, int64(0))),
-		"Int64":         flagFn("flag.Int64", fs.flagScalar(int64Arg, int64(0))),
-		"Int64Var":      flagFn("flag.Int64Var", fs.scalarVar(int64Arg, int64(0))),
-		"String":        flagFn("flag.String", fs.flagScalar(str, "")),
-		"StringVar":     flagFn("flag.StringVar", fs.scalarVar(str, "")),
-		"Uint":          flagFn("flag.Uint", fs.flagScalar(int64Arg, int64(0))),
-		"UintVar":       flagFn("flag.UintVar", fs.scalarVar(int64Arg, int64(0))),
-		"Uint64":        flagFn("flag.Uint64", fs.flagScalar(int64Arg, int64(0))),
-		"Uint64Var":     flagFn("flag.Uint64Var", fs.scalarVar(int64Arg, int64(0))),
+		"Bool":          flagFn("flag.Bool", fs.flagScalar(boolArg, false, parseBoolFlag)),
+		"BoolVar":       flagFn("flag.BoolVar", fs.scalarVar(boolArg, false, parseBoolFlag)),
+		"Duration":      flagFn("flag.Duration", fs.flagScalar(dur, int64(0), parseDurationFlag)),
+		"DurationVar":   flagFn("flag.DurationVar", fs.scalarVar(dur, int64(0), parseDurationFlag)),
+		"Float64":       flagFn("flag.Float64", fs.flagScalar(float64Arg, float64(0), parseFloatFlag)),
+		"Float64Var":    flagFn("flag.Float64Var", fs.scalarVar(float64Arg, float64(0), parseFloatFlag)),
+		"Int":           flagFn("flag.Int", fs.flagScalar(int64Arg, int64(0), parseIntFlag)),
+		"IntVar":        flagFn("flag.IntVar", fs.scalarVar(int64Arg, int64(0), parseIntFlag)),
+		"Int64":         flagFn("flag.Int64", fs.flagScalar(int64Arg, int64(0), parseIntFlag)),
+		"Int64Var":      flagFn("flag.Int64Var", fs.scalarVar(int64Arg, int64(0), parseIntFlag)),
+		"String":        flagFn("flag.String", fs.flagScalar(str, "", parseStringFlag)),
+		"StringVar":     flagFn("flag.StringVar", fs.scalarVar(str, "", parseStringFlag)),
+		"Uint":          flagFn("flag.Uint", fs.flagScalar(int64Arg, int64(0), parseUintFlag)),
+		"UintVar":       flagFn("flag.UintVar", fs.scalarVar(int64Arg, int64(0), parseUintFlag)),
+		"Uint64":        flagFn("flag.Uint64", fs.flagScalar(int64Arg, int64(0), parseUintFlag)),
+		"Uint64Var":     flagFn("flag.Uint64Var", fs.scalarVar(int64Arg, int64(0), parseUintFlag)),
 		"Var":           flagFn("flag.Var", fs.varFlag),
 		"Parse":         flagFn("flag.Parse", fs.parse),
 		"Parsed":        flagFn("flag.Parsed", fs.parsedFlag),
@@ -68,6 +68,7 @@ type flagDef struct {
 	usage string
 	value runtime.Value // *runtime.Cell or the flag.Value impl
 	vx    flagValue     // Var's script impl + caller
+	parse func(string) (runtime.Value, error)
 }
 
 // flagValue is a script flag.Value captured with its VMCaller so Set
@@ -107,49 +108,37 @@ func flagName(args []runtime.Value) string {
 // scalarArg converts a flag default argument into its stored value.
 type scalarArg func(runtime.Value) runtime.Value
 
-func intArg(v runtime.Value) int64 {
-	switch x := hostbridge.GoNative(v).(type) {
-	case int64:
-		return x
-	case int:
-		return int64(x)
-	}
-	return 0
-}
-
-func floatArg(v runtime.Value) float64 {
-	switch x := hostbridge.GoNative(v).(type) {
-	case float64:
-		return x
-	case int64:
-		return float64(x)
-	}
-	return 0
-}
-
 // flagScalar builds a flag.* scalar constructor —
 // flag.String("n", "d", "u") -> *Cell{Elem: d}.
-func (fs *flagState) flagScalar(as scalarArg, zero runtime.Value) func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
+func (fs *flagState) flagScalar(as scalarArg, zero runtime.Value, parse func(string) (runtime.Value, error)) func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
 	return func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		def := zero
 		if len(args) > 1 {
 			def = as(args[1])
 		}
 		c := &runtime.Cell{Elem: def}
-		fs.register(flagName(args), flagUsage(args, 2), c)
+		name := flagName(args)
+		fs.register(name, flagUsage(args, 2), c)
+		fs.defs[name].parse = parse
 		return c, nil
 	}
 }
 
 // scalarVar builds a flag.*Var constructor — args[0] is the &target
 // (a *runtime.Cell); SetRef writes the default (args[2]) through it.
-func (fs *flagState) scalarVar(as scalarArg, zero runtime.Value) func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
+func (fs *flagState) scalarVar(as scalarArg, zero runtime.Value, parse func(string) (runtime.Value, error)) func(runtime.VMCaller, []runtime.Value) (runtime.Value, error) {
 	return func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		def := zero
 		if len(args) > 2 {
 			def = as(args[2])
 		}
-		return fs.setDefault(args, def)
+		v, err := fs.setDefault(args, def)
+		if err == nil {
+			if d := fs.defs[flagName(args[1:])]; d != nil {
+				d.parse = parse
+			}
+		}
+		return v, err
 	}
 }
 
@@ -204,19 +193,6 @@ func (fs *flagState) nflag(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value
 	return int64(0), nil
 }
 
-// Lookup returns the flag's storage cell (an approximation — the real
-// Lookup returns a *Flag descriptor).
-func (fs *flagState) lookup(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-	if len(args) == 0 {
-		return runtime.NIL, nil
-	}
-	d, ok := fs.defs[stdlib.Str(args[0])]
-	if !ok {
-		return runtime.NIL, nil
-	}
-	return d.value, nil
-}
-
 // Set assigns a flag by name: Var entries call the script impl's Set;
 // scalar cells store the value directly.
 func (fs *flagState) set(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
@@ -225,30 +201,33 @@ func (fs *flagState) set(_ runtime.VMCaller, args []runtime.Value) (runtime.Valu
 	}
 	d, ok := fs.defs[stdlib.Str(args[0])]
 	if !ok {
-		return nil, fmt.Errorf("flag.Set: no such flag %q", stdlib.Str(args[0]))
+		return stdlib.ErrVal(fmt.Errorf("flag.Set: no such flag %q", stdlib.Str(args[0]))), nil
 	}
 	if d.vx.v != nil {
 		m, ok := d.vx.vc.Member(d.vx.v, "Set")
 		if !ok {
 			return nil, fmt.Errorf("flag.Set: flag %q value has no Set method", d.name)
 		}
-		if _, err := d.vx.vc.Call(m, []runtime.Value{stdlib.Str(args[1])}); err != nil {
+		ret, err := d.vx.vc.Call(m, []runtime.Value{stdlib.Str(args[1])})
+		if err != nil {
 			return nil, err
+		}
+		if ret != nil && !runtime.IsNilIface(runtime.Unwrap(ret)) {
+			return ret, nil
 		}
 		return runtime.NIL, nil
 	}
-	if !runtime.SetRef(d.value, stdlib.Str(args[1])) {
-		return nil, fmt.Errorf("flag.Set: cannot store into flag %q", d.name)
+	raw := stdlib.Str(args[1])
+	v := runtime.Value(raw)
+	if d.parse != nil {
+		parsed, err := d.parse(raw)
+		if err != nil {
+			return stdlib.ErrVal(fmt.Errorf("flag.Set: invalid value %q for flag %q: %w", raw, d.name, err)), nil
+		}
+		v = parsed
 	}
-	return runtime.NIL, nil
-}
-
-func (fs *flagState) printDefaults(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-	if fs.suite == nil || fs.suite.Emit == nil {
-		return runtime.NIL, nil
-	}
-	for _, d := range fs.order {
-		fs.suite.Emit(fmt.Sprintf("  -%s\n    \t%s", d.name, d.usage))
+	if !runtime.SetRef(d.value, v) {
+		return stdlib.ErrVal(fmt.Errorf("flag.Set: cannot store into flag %q", d.name)), nil
 	}
 	return runtime.NIL, nil
 }

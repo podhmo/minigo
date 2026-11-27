@@ -252,9 +252,9 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			reasons = append(reasons, fmt.Sprintf("%d skipped (cgo is not supported)", cgo))
 		}
 		if len(reasons) > 0 {
-			return nil, fmt.Errorf("no buildable Go source files in %s: %s", what, strings.Join(reasons, ", "))
+			return nil, fmt.Errorf("%w in %s: %s", ErrNoBuildableGoFiles, what, strings.Join(reasons, ", "))
 		}
-		return nil, fmt.Errorf("no buildable Go source files in %s", what)
+		return nil, fmt.Errorf("%w in %s", ErrNoBuildableGoFiles, what)
 	}
 	// The package clause is a majority vote over every matched file —
 	// a mixed directory (already a `go build` failure) must not take

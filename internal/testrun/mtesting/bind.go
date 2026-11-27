@@ -52,19 +52,19 @@ func Symbols(s *Suite) map[string]runtime.Value {
 		"Verbose": &runtime.BuiltinFunc{Name: "testing.Verbose", Fn: func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 			return s.Verbose, nil
 		}},
-		// __cleanups is the second-process executor for a top-level
-		// test's t.Cleanup funcs: the test function's Engine.Call is
-		// over and its VM is gone, so the runner calls this builtin in
-		// a fresh Call to vc.Call the script funcs it registered.
-		"__cleanups": &runtime.BuiltinFunc{Name: "testing.__cleanups", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+		// __cleanup is the second-process executor for one top-level
+		// t.Cleanup func: the test function's Engine.Call is over and
+		// its VM is gone. The runner calls it once per cleanup so a
+		// panicking cleanup cannot kill the process later cleanups need.
+		"__cleanup": &runtime.BuiltinFunc{Name: "testing.__cleanup", Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 			if len(args) != 1 {
-				return nil, errArgs("__cleanups", len(args), 1)
+				return nil, errArgs("__cleanup", len(args), 1)
 			}
 			t, err := tOf(args[0])
 			if err != nil {
 				return nil, err
 			}
-			return nil, runCleanups(vc, t)
+			return nil, RunOneCleanup(vc, t)
 		}},
 	}
 }
@@ -76,7 +76,7 @@ func tOf(v runtime.Value) (*T, error) {
 			return t, nil
 		}
 	}
-	return nil, errArgs("__cleanups", 1, 1)
+	return nil, errArgs("__cleanup", 1, 1)
 }
 
 func errArgs(name string, got, want int) error {

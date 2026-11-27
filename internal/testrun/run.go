@@ -27,7 +27,7 @@ type Options struct {
 	Run      string // -run: "/" separated unanchored regexps
 	Count    int    // -count: run the whole suite this many times (<=0 runs it once)
 	Timeout  time.Duration
-	FailFast bool // -failfast: stop scheduling after the first non-PASS test
+	FailFast bool // -failfast: stop scheduling after the first failing test
 
 	// Modes/Tags carry `minigo run`'s --src/--deny/--tags plumbing:
 	// Modes is minigo.WithPackageModes, Tags the build tag list.
@@ -49,7 +49,7 @@ var ErrFailed = errors.New("minigo test: not all tests passed")
 // Run executes `minigo test <dir>`: build the package's test variant,
 // discover TestXxx functions, run them one Engine.Call each, and write
 // the `go test -v` shaped report to o.Out. It returns nil on all-pass,
-// [ErrFailed] on any non-PASS outcome, and another error for
+// [ErrFailed] on any failure outcome, and another error for
 // operational failures (the directory cannot be scanned, ...).
 func Run(ctx context.Context, o Options) error {
 	out := o.Out
@@ -106,11 +106,12 @@ func Run(ctx context.Context, o Options) error {
 
 	// The suite state the facade reads (-short, -v, ctx, deadline).
 	suite := &mtesting.Suite{
-		Short:   o.Short,
-		Verbose: o.Verbose,
-		Emit:    rep.emitLine,
-		Ctx:     ctx,
-		Match:   match,
+		Short:    o.Short,
+		Verbose:  o.Verbose,
+		FailFast: o.FailFast,
+		Emit:     rep.emitLine,
+		Ctx:      ctx,
+		Match:    match,
 	}
 	if o.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -140,16 +141,6 @@ func Run(ctx context.Context, o Options) error {
 		failed = true
 	}
 
-	opts := []minigo.Option{
-		minigo.WithOutput(out),
-		minigo.WithArgs([]string{abs}),
-		minigo.WithBuildConfig(buildCfg),
-	}
-	if len(o.Modes) > 0 {
-		opts = append(opts, minigo.WithPackageModes(o.Modes))
-	}
-	e := minigo.NewEngine(abs, opts...)
-
 	// The test variant: the directory's own build files plus the
 	// internal *_test.go files, via a resolver that splices them into
 	// LocateDir's file list for this directory only.
@@ -158,21 +149,39 @@ func Run(ctx context.Context, o Options) error {
 		return err
 	}
 	vr := &variantResolver{inner: inner, dir: abs, testFiles: scan.internal, pkgName: scan.pkgName}
-	e.WithResolver(vr)
-	e.Bind("testing", mtesting.Symbols(suite))
-	e.Bind("flag", mtesting.FlagSymbols(suite))
 
 	// Locate before building: the meta carries the import path for the
 	// trailer, and a locate failure is "[setup failed]" where a build
 	// failure is "[build failed]" (go test's wording).
 	importPath := pathOfDir(abs)
-	if meta, err := vr.LocateDir(ctx, abs); err != nil {
+	meta, err := vr.LocateDir(ctx, abs)
+	if err != nil {
 		rep.note("%v", err)
 		rep.buildFailed(importPath, time.Since(start), "setup failed")
 		return ErrFailed
-	} else {
-		importPath = meta.ImportPath
 	}
+	importPath = meta.ImportPath
+
+	// The test target itself must always be interpreted from source. A
+	// host-bound package may expose the same import path for ordinary
+	// scripts, but its bound package has no syntax index to scan for
+	// TestXxx declarations.
+	modes := map[string]minigo.PackageMode{importPath: minigo.ModeSource}
+	for path, mode := range o.Modes {
+		if path != importPath {
+			modes[path] = mode
+		}
+	}
+	opts := []minigo.Option{
+		minigo.WithOutput(out),
+		minigo.WithArgs([]string{abs}),
+		minigo.WithBuildConfig(buildCfg),
+		minigo.WithPackageModes(modes),
+	}
+	e := minigo.NewEngine(abs, opts...)
+	e.WithResolver(vr)
+	e.Bind("testing", mtesting.Symbols(suite))
+	e.Bind("flag", mtesting.FlagSymbols(suite))
 
 	pkg, err := e.Package(ctx, abs)
 	if err != nil {
@@ -218,14 +227,14 @@ func Run(ctx context.Context, o Options) error {
 loop:
 	for iter := 0; iter < count; iter++ {
 		for _, ti := range disc.Tests {
-			if !suite.MatchName(0, ti.Name) {
+			if !suite.MatchFullName(ti.Name) {
 				continue
 			}
 			if gated != nil && !gated[ti.File] {
 				rep.excludedByTag(ti.Name, o.Tagged)
 				continue
 			}
-			if failfast || ctx.Err() != nil {
+			if failfast || suite.Stop() || ctx.Err() != nil {
 				break loop
 			}
 			ran++
@@ -234,6 +243,7 @@ loop:
 				rep.emitLine("=== RUN   " + ti.Name)
 			}
 			cerr := callTest(ctx, e, pkg, ti.Name, t)
+			t.CancelContext()
 			if pkg.State() == runtime.Failed {
 				// init failed: the remaining tests would all die the
 				// same way — report once and stop scheduling.
@@ -246,14 +256,20 @@ loop:
 			classifyCall(t, cerr)
 			// t.Cleanup script funcs need a live process: run them in a
 			// second Engine.Call against the bound __cleanups member.
-			if len(t.Cleanups()) > 0 {
-				cerr := callCleanups(ctx, e, testingPkg, t)
-				// A cleanup failure after a dead test keeps the body's
-				// PANIC/TRAP — folding its stopError into the flags
-				// would downgrade the verdict.
-				if cerr != nil && t.Verdict() != mtesting.Panic && t.Verdict() != mtesting.Trap {
-					classifyCall(t, cerr)
+			var cleanupErr error
+			for len(t.Cleanups()) > 0 {
+				cerr := callCleanup(ctx, e, testingPkg, t)
+				if cerr != nil && cleanupErr == nil {
+					cleanupErr = cerr
 				}
+			}
+			// A cleanup failure after a dead test keeps the body's
+			// PANIC/TRAP — folding its stopError into the flags would
+			// downgrade the verdict. Otherwise re-evaluate the flags even
+			// when cleanup returned nil: t.Error/t.Fatal inside cleanup
+			// must change a PASS body into FAIL.
+			if t.Verdict() != mtesting.Panic && t.Verdict() != mtesting.Trap {
+				classifyCall(t, cleanupErr)
 			}
 			t.Finish()
 			rep.testDone(t)
@@ -261,6 +277,7 @@ loop:
 				failed = true
 				if o.FailFast {
 					failfast = true
+					suite.Halt()
 				}
 			}
 		}
@@ -300,47 +317,13 @@ func classifyCall(t *mtesting.T, err error) {
 // normally-returned (or own-sentinel) call.
 func setFlagVerdict(t *mtesting.T) {
 	switch {
-	case t.Skipped():
-		t.SetVerdict(mtesting.Skip, "")
 	case t.Failed():
 		t.SetVerdict(mtesting.Fail, "")
+	case t.Skipped():
+		t.SetVerdict(mtesting.Skip, "")
 	default:
 		t.SetVerdict(mtesting.Pass, "")
 	}
-}
-
-// callAsync runs fn in a goroutine so the -timeout deadline can
-// abandon a hung Engine.Call — the leaked goroutine keeps running;
-// the suite is failed and the process unwinds (documented
-// divergence: go's panic instead).
-func callAsync(ctx context.Context, fn func() error) error {
-	ch := make(chan error, 1)
-	go func() { ch <- fn() }()
-	select {
-	case err := <-ch:
-		return err
-	case <-ctx.Done():
-		return fmt.Errorf("test timed out: %w", ctx.Err())
-	}
-}
-
-// callTest invokes the test function through callAsync.
-func callTest(ctx context.Context, e *minigo.Engine, pkg *runtime.Package, name string, t *mtesting.T) error {
-	return callAsync(ctx, func() error {
-		start := time.Now()
-		_, err := e.Call(ctx, pkg, name, &runtime.GoValue{V: t})
-		t.SetElapsed(time.Since(start))
-		return err
-	})
-}
-
-// callCleanups runs the top-level test's cleanups through the bound
-// __cleanups member of the testing package in a second Engine.Call.
-func callCleanups(ctx context.Context, e *minigo.Engine, testingPkg *runtime.Package, t *mtesting.T) error {
-	return callAsync(ctx, func() error {
-		_, err := e.Call(ctx, testingPkg, "__cleanups", &runtime.GoValue{V: t})
-		return err
-	})
 }
 
 // compileRun splits -run into per-level unanchored regexps.

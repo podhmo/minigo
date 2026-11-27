@@ -12,10 +12,10 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
-	"unicode"
 
-	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
 
@@ -64,8 +64,13 @@ type Event struct {
 // functions answer, and the output sink chatty (-v) lines stream into.
 // The runner fills it once per `minigo test` invocation.
 type Suite struct {
-	Short   bool
-	Verbose bool
+	Short    bool
+	Verbose  bool
+	FailFast bool
+	// halt is the shared -failfast latch. Subtests consult it before
+	// each nested Run, so a failure in one sibling stops later sibling
+	// subtests instead of only later top-level tests.
+	halt atomic.Bool
 	// Emit writes one already-formatted runner line (=== RUN, === ATTR,
 	// eager log lines in -v mode). Nil discards — the non-verbose report
 	// buffers everything and never calls it.
@@ -82,13 +87,27 @@ type Suite struct {
 	Match []*regexp.Regexp
 }
 
-// MatchName reports whether a test segment at depth matches the -run
-// filter: deeper levels than the pattern's always match.
-func (s *Suite) MatchName(depth int, name string) bool {
-	if depth >= len(s.Match) {
-		return true
+// Halt records a failure for -failfast; Stop reports whether further
+// tests or subtests must not be scheduled.
+func (s *Suite) Halt()      { s.halt.Store(true) }
+func (s *Suite) Stop() bool { return s != nil && s.halt.Load() }
+
+// MatchFullName reports whether a slash-separated full test name
+// matches the -run filter. Each pattern level applies to the same
+// slash level of the full name; deeper levels than the pattern match
+// unconditionally, like go test. Matching the full name keeps slashes
+// inside a subtest name addressable (TestZones/America/New_York).
+func (s *Suite) MatchFullName(name string) bool {
+	parts := strings.Split(name, "/")
+	for depth, re := range s.Match {
+		if depth >= len(parts) {
+			break
+		}
+		if !re.MatchString(parts[depth]) {
+			return false
+		}
 	}
-	return s.Match[depth].MatchString(name)
+	return true
 }
 
 // T is the script-visible *testing.T. The runner creates one per test
@@ -107,10 +126,17 @@ type T struct {
 	pos    string // file:line of the test function's declaration
 	depth  int
 
+	// mu guards the mutable test state. Script goroutines may call T
+	// methods concurrently even though top-level tests are scheduled
+	// serially; callbacks are invoked only after releasing it.
+	mu       sync.Mutex
 	failed   bool
 	skipped  bool
 	finished bool
 	parallel bool
+
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	events   []Event
 	children []*T
@@ -126,7 +152,101 @@ type T struct {
 // the leaf name (or a slash-chain when a -count round names it), pos
 // its declaration's file:line.
 func NewT(s *Suite, name, pos string) *T {
-	return &T{suite: s, name: name, pos: pos, used: map[string]int{}}
+	parent := context.Background()
+	if s != nil && s.Ctx != nil {
+		parent = s.Ctx
+	}
+	ctx, cancel := context.WithCancel(parent)
+	return &T{suite: s, name: name, pos: pos, used: map[string]int{}, ctx: ctx, cancel: cancel}
+}
+
+// newSub creates a child test with a context canceled before its own
+// cleanups, like testing.T.Context.
+func newSub(t *T, name string) *T {
+	ctx, cancel := context.WithCancel(t.Context())
+	return &T{suite: t.suite, parent: t, name: name, pos: t.pos, depth: t.depth + 1, used: map[string]int{}, ctx: ctx, cancel: cancel}
+}
+
+// cancelContext implements testing.T.Context's contract: the test's
+// context is canceled before its cleanups run.
+func (t *T) cancelContext() {
+	if t.cancel != nil {
+		t.cancel()
+	}
+}
+
+// CancelContext cancels the test context before the runner invokes
+// cleanups. It is exported for the runner; scripts only see Context.
+func (t *T) CancelContext() { t.cancelContext() }
+
+func (t *T) markFailed() {
+	t.mu.Lock()
+	t.failed = true
+	t.mu.Unlock()
+}
+
+func (t *T) markSkipped() {
+	t.mu.Lock()
+	t.skipped = true
+	t.mu.Unlock()
+}
+
+func (t *T) addCleanup(f any) {
+	t.mu.Lock()
+	t.cleanups = append(t.cleanups, f)
+	t.mu.Unlock()
+}
+
+// popCleanup removes the innermost registered cleanup. Popping rather
+// than indexing a fixed length lets a cleanup register another cleanup;
+// that later registration is the next one run.
+func (t *T) popCleanup() (any, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := len(t.cleanups)
+	if n == 0 {
+		return nil, false
+	}
+	c := t.cleanups[n-1]
+	t.cleanups[n-1] = nil
+	t.cleanups = t.cleanups[:n-1]
+	return c, true
+}
+
+func (t *T) cleanupCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.cleanups)
+}
+
+func (t *T) appendEvent(e Event) {
+	t.mu.Lock()
+	t.events = append(t.events, e)
+	t.mu.Unlock()
+}
+
+func (t *T) appendChild(sub *T) {
+	t.mu.Lock()
+	t.children = append(t.children, sub)
+	t.mu.Unlock()
+}
+
+func (t *T) setParallel() {
+	t.mu.Lock()
+	t.parallel = true
+	t.mu.Unlock()
+}
+
+func (t *T) setFinished() {
+	t.mu.Lock()
+	t.finished = true
+	t.mu.Unlock()
+}
+
+func (t *T) isFinished() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.finished
 }
 
 // --- plain Go methods ---
@@ -141,16 +261,16 @@ func NewT(s *Suite, name, pos string) *T {
 
 func (t *T) trapStop(skip bool) *runtime.Trap {
 	if skip {
-		t.skipped = true
+		t.markSkipped()
 		return &runtime.Trap{Reason: "test skipped", Err: &stopError{t: t, skip: true}}
 	}
-	t.failed = true
+	t.markFailed()
 	return &runtime.Trap{Reason: "test failed", Err: &stopError{t: t}}
 }
 
 func (t *T) logGo(args []any, fail bool) {
 	if fail {
-		t.failed = true
+		t.markFailed()
 	}
 	t.logMsg(strings.TrimSuffix(fmt.Sprintln(args...), "\n"))
 }
@@ -166,12 +286,12 @@ func (t *T) Error(args ...any) { t.logGo(args, true) }
 
 // Errorf is Logf plus a test failure.
 func (t *T) Errorf(format string, args ...any) {
-	t.failed = true
+	t.markFailed()
 	t.logMsg(fmt.Sprintf(format, args...))
 }
 
 // Fail marks the test failed and lets it continue.
-func (t *T) Fail() { t.failed = true }
+func (t *T) Fail() { t.markFailed() }
 
 // FailNow marks the test failed and stops its execution.
 func (t *T) FailNow() { panic(t.trapStop(false)) }
@@ -184,7 +304,7 @@ func (t *T) Fatal(args ...any) {
 
 // Fatalf is Errorf plus FailNow.
 func (t *T) Fatalf(format string, args ...any) {
-	t.failed = true
+	t.markFailed()
 	t.logMsg(fmt.Sprintf(format, args...))
 	panic(t.trapStop(false))
 }
@@ -212,7 +332,7 @@ func (t *T) Helper() {}
 // path stores script func values; this reflect path — reachable only
 // through method-set queries, never a script call — stores the host
 // func as is.
-func (t *T) Cleanup(f func()) { t.cleanups = append(t.cleanups, f) }
+func (t *T) Cleanup(f func()) { t.addCleanup(f) }
 
 // TempDir creates a temporary directory removed at test end.
 func (t *T) TempDir() string {
@@ -220,15 +340,15 @@ func (t *T) TempDir() string {
 	if err != nil {
 		panic(&runtime.Trap{Reason: "t.TempDir: " + err.Error(), Err: err})
 	}
-	t.cleanups = append(t.cleanups, func() { _ = os.RemoveAll(dir) })
+	t.addCleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
 }
 
 // Run runs f as a subtest. This reflect-path variant exists only to
 // complete the method set — ScriptMethod answers real calls.
 func (t *T) Run(name string, f func(*T)) bool {
-	sub := &T{suite: t.suite, parent: t, name: t.childName(name), pos: t.pos, depth: t.depth + 1, used: map[string]int{}}
-	t.children = append(t.children, sub)
+	sub := newSub(t, t.childName(name))
+	t.appendChild(sub)
 	if t.suite != nil && t.suite.Verbose && t.suite.Emit != nil {
 		t.suite.Emit("=== RUN   " + sub.name)
 	}
@@ -242,14 +362,14 @@ func (t *T) Run(name string, f func(*T)) bool {
 		}()
 		f(sub)
 	}()
-	sub.elapsed = time.Since(start)
+	sub.SetElapsed(time.Since(start))
 	if rerr != nil {
-		sub.verdict, sub.verdictErr = Panic, rerr.Error()
-		t.failed = true
+		sub.SetVerdict(Panic, rerr.Error())
+		t.markFailed()
 	}
-	sub.finished = true
-	t.events = append(t.events, Event{Child: sub})
-	return sub.verdict == Pass
+	sub.setFinished()
+	t.appendEvent(Event{Child: sub})
+	return !FailedVerdict(sub.Verdict())
 }
 
 // Deadline reports the suite's -timeout deadline.
@@ -262,14 +382,14 @@ func (t *T) Deadline() (time.Time, bool) {
 
 // Context returns the suite's context.
 func (t *T) Context() context.Context {
-	if t.suite == nil || t.suite.Ctx == nil {
-		return context.Background()
+	if t.ctx != nil {
+		return t.ctx
 	}
-	return t.suite.Ctx
+	return context.Background()
 }
 
 // Parallel is a no-op: the runner is serial.
-func (t *T) Parallel() { t.parallel = true }
+func (t *T) Parallel() { t.setParallel() }
 
 // Setenv is not supported (host process state).
 func (t *T) Setenv(key, value string) {
@@ -323,54 +443,90 @@ func (t *T) Pos() string { return t.pos }
 func (t *T) Depth() int { return t.depth }
 
 // Events returns the buffered report items in order.
-func (t *T) Events() []Event { return t.events }
+func (t *T) Events() []Event {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]Event(nil), t.events...)
+}
 
 // Verdict is the finished test's classification.
-func (t *T) Verdict() Verdict { return t.verdict }
+func (t *T) Verdict() Verdict {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.verdict
+}
 
 // VerdictErr is the detail text for PANIC/TRAP verdicts ("" otherwise).
-func (t *T) VerdictErr() string { return t.verdictErr }
+func (t *T) VerdictErr() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.verdictErr
+}
 
 // SetVerdict records the finished classification.
-func (t *T) SetVerdict(v Verdict, detail string) { t.verdict, t.verdictErr = v, detail }
+func (t *T) SetVerdict(v Verdict, detail string) {
+	t.mu.Lock()
+	t.verdict, t.verdictErr = v, detail
+	t.mu.Unlock()
+}
 
 // Elapsed is the measured run time.
-func (t *T) Elapsed() time.Duration { return t.elapsed }
+func (t *T) Elapsed() time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.elapsed
+}
 
 // SetElapsed records the measured run time.
-func (t *T) SetElapsed(d time.Duration) { t.elapsed = d }
+func (t *T) SetElapsed(d time.Duration) {
+	t.mu.Lock()
+	t.elapsed = d
+	t.mu.Unlock()
+}
 
 // Finish marks the test done: post-completion log calls trap, like go's
 // "Log in goroutine after test has completed" — here the call returns
 // a plain error (a trap for the script) instead of a host panic.
-func (t *T) Finish() { t.finished = true }
+func (t *T) Finish() { t.setFinished() }
 
 // Failed reports whether the test (or one of its subtests) failed.
-func (t *T) Failed() bool { return t.failed }
+func (t *T) Failed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.failed
+}
 
 // Skipped reports whether the test was skipped.
-func (t *T) Skipped() bool { return t.skipped }
+func (t *T) Skipped() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.skipped
+}
 
 // MarkFailed is how a finished subtest reports back to its parent.
-func (t *T) MarkFailed() { t.failed = true }
+func (t *T) MarkFailed() { t.markFailed() }
 
 // AddCleanup registers f to run when the test finishes (LIFO). f is
 // either a script function value or a host func().
-func (t *T) AddCleanup(f any) { t.cleanups = append(t.cleanups, f) }
+func (t *T) AddCleanup(f any) { t.addCleanup(f) }
 
 // Cleanups returns the registered cleanups in registration order.
-func (t *T) Cleanups() []any { return t.cleanups }
+func (t *T) Cleanups() []any {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]any(nil), t.cleanups...)
+}
 
 // AppendEvent records a subtest's buffered block or a stray host log
 // line under this test.
-func (t *T) AppendEvent(e Event) { t.events = append(t.events, e) }
+func (t *T) AppendEvent(e Event) { t.appendEvent(e) }
 
 // LogLine appends one decorated log line ("pos: msg"); in -v mode it
 // also streams eagerly through the suite's sink — always a single
 // indent: only the buffered --- lines nest per level in go test.
 func (t *T) LogLine(msg string) {
 	line := t.pos + ": " + msg
-	t.events = append(t.events, Event{Log: line})
+	t.appendEvent(Event{Log: line})
 	if t.suite.Verbose && t.suite.Emit != nil {
 		t.suite.Emit("    " + line)
 	}
@@ -394,6 +550,10 @@ type stopError struct {
 	t    *T
 	skip bool
 }
+
+// DrainDefers marks the sentinel as runtime.Goexit-like control flow:
+// the VM drains the frame's remaining defers before returning it.
+func (e *stopError) DrainDefers() {}
 
 func (e *stopError) Error() string {
 	if e.skip {
@@ -446,7 +606,7 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 		}, true
 	case "Error":
 		return func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			t.failed = true
+			t.markFailed()
 			t.logMsg(sprintArgs(args))
 			return runtime.NIL, nil
 		}, true
@@ -456,23 +616,23 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 			if err != nil {
 				return nil, err
 			}
-			t.failed = true
+			t.markFailed()
 			t.logMsg(s)
 			return runtime.NIL, nil
 		}, true
 	case "Fail":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-			t.failed = true
+			t.markFailed()
 			return runtime.NIL, nil
 		}, true
 	case "FailNow":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-			t.failed = true
+			t.markFailed()
 			return nil, &stopError{t: t}
 		}, true
 	case "Fatal":
 		return func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			t.failed = true
+			t.markFailed()
 			t.logMsg(sprintArgs(args))
 			return nil, &stopError{t: t}
 		}, true
@@ -482,13 +642,13 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 			if err != nil {
 				return nil, err
 			}
-			t.failed = true
+			t.markFailed()
 			t.logMsg(s)
 			return nil, &stopError{t: t}
 		}, true
 	case "Skip":
 		return func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
-			t.skipped = true
+			t.markSkipped()
 			t.logMsg(sprintArgs(args))
 			return nil, &stopError{t: t, skip: true}
 		}, true
@@ -498,22 +658,22 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 			if err != nil {
 				return nil, err
 			}
-			t.skipped = true
+			t.markSkipped()
 			t.logMsg(s)
 			return nil, &stopError{t: t, skip: true}
 		}, true
 	case "SkipNow":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-			t.skipped = true
+			t.markSkipped()
 			return nil, &stopError{t: t, skip: true}
 		}, true
 	case "Failed":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-			return t.failed, nil
+			return t.Failed(), nil
 		}, true
 	case "Skipped":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
-			return t.skipped, nil
+			return t.Skipped(), nil
 		}, true
 	case "Name":
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
@@ -533,7 +693,7 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 			if err := checkCallable(args[0]); err != nil {
 				return nil, fmt.Errorf("t.Cleanup: %w", err)
 			}
-			t.cleanups = append(t.cleanups, args[0])
+			t.addCleanup(args[0])
 			return runtime.NIL, nil
 		}, true
 	case "TempDir":
@@ -542,7 +702,7 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 			if err != nil {
 				return nil, err
 			}
-			t.cleanups = append(t.cleanups, func() { _ = os.RemoveAll(dir) })
+			t.addCleanup(func() { _ = os.RemoveAll(dir) })
 			return dir, nil
 		}, true
 	case "Run":
@@ -577,7 +737,7 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 		return func(_ runtime.VMCaller, _ []runtime.Value) (runtime.Value, error) {
 			// serial runner: recorded so a diagnostic can report it,
 			// but no scheduling pauses exist to honor.
-			t.parallel = true
+			t.setParallel()
 			return runtime.NIL, nil
 		}, true
 	case "Setenv":
@@ -614,241 +774,11 @@ func (t *T) ScriptMethod(name string) (func(runtime.VMCaller, []runtime.Value) (
 // logMsg appends one log entry; logging after Finish is the go test
 // "Log in goroutine after test has completed" error.
 func (t *T) logMsg(msg string) {
-	if t.finished {
+	if t.isFinished() {
 		// post-finish logs have nowhere to go: record under the test
 		// anyway so the suite keeps them visible rather than dropping.
-		t.events = append(t.events, Event{Log: t.pos + ": " + msg})
+		t.appendEvent(Event{Log: t.pos + ": " + msg})
 		return
 	}
 	t.LogLine(msg)
-}
-
-// run implements t.Run: a subtest f(t *testing.T) invoked through the
-// caller's VM. The returned bool is Go's Run result — whether the
-// subtest passed.
-func (t *T) run(vc runtime.VMCaller, name string, f runtime.Value) (runtime.Value, error) {
-	sub := &T{suite: t.suite, parent: t, name: t.childName(name), pos: t.pos, depth: t.depth + 1, used: map[string]int{}}
-	if !t.suite.MatchName(sub.depth, shortName(sub.name)) {
-		// filtered out by -run: the subtest is discarded — go test
-		// reports neither the RUN line nor a verdict for it.
-		return true, nil
-	}
-	t.children = append(t.children, sub)
-	if t.suite.Verbose && t.suite.Emit != nil {
-		t.suite.Emit("=== RUN   " + sub.name)
-	}
-	start := time.Now()
-	_, err := vc.Call(f, []runtime.Value{&runtime.GoValue{V: sub}})
-	sub.elapsed = time.Since(start)
-	if rerr := t.classifyErr(sub, err); rerr != nil {
-		// a stopError for an ancestor keeps unwinding toward its own
-		// level; the aborted subtest is recorded as a trap.
-		sub.finished = true
-		t.failed = true
-		t.events = append(t.events, Event{Child: sub})
-		return nil, rerr
-	}
-	if cerr := runCleanups(vc, sub); cerr != nil {
-		if st, ok := StopOf(cerr); ok && st != sub {
-			// a cleanup called an ancestor's FailNow — propagate it.
-			sub.finished = true
-			t.failed = true
-			t.events = append(t.events, Event{Child: sub})
-			return nil, cerr
-		}
-		// cleanup errors land on the subtest through classifyErr's
-		// host-error arm; the flags were set by the sentinel path.
-		t.classifyErr(sub, cerr)
-	}
-	sub.finished = true
-	if FailedVerdict(sub.verdict) {
-		t.failed = true
-	}
-	t.events = append(t.events, Event{Child: sub})
-	return sub.verdict == Pass, nil
-}
-
-// classifyErr folds a finished call's error into the subtest's verdict.
-// It returns the error itself when it is a stopError aimed at another
-// test — that sentinel belongs to an ancestor's unwinding and must
-// re-raise, not be swallowed as this child's own FailNow.
-func (t *T) classifyErr(sub *T, err error) error {
-	if err == nil {
-		sub.verdict = flagsVerdict(sub)
-		return nil
-	}
-	if st, ok := StopOf(err); ok {
-		if st == sub {
-			// the subtest's own FailNow/SkipNow: flags carry it.
-			sub.verdict = flagsVerdict(sub)
-			return nil
-		}
-		sub.verdict, sub.verdictErr = Trap, err.Error()
-		return err
-	}
-	if _, ok := err.(*runtime.Panic); ok {
-		sub.verdict, sub.verdictErr = Panic, err.Error()
-		return nil
-	}
-	sub.verdict, sub.verdictErr = Trap, err.Error()
-	return nil
-}
-
-// childName sanitizes and deduplicates a subtest name under t, the way
-// go's matcher does: spaces become underscores and repeats get "#NN"
-// suffixes.
-func (t *T) childName(name string) string {
-	name = sanitizeName(name)
-	full := t.name + "/" + name
-	if t.used[name] == 0 {
-		t.used[name] = 1
-		return full
-	}
-	for {
-		suffix := fmt.Sprintf("#%02d", t.used[name])
-		if t.used[name+suffix] == 0 {
-			t.used[name]++
-			t.used[name+suffix] = 1
-			return full + suffix
-		}
-		t.used[name]++
-	}
-}
-
-// shortName is the leaf segment of a full test name.
-func shortName(name string) string {
-	if i := strings.LastIndex(name, "/"); i >= 0 {
-		return name[i+1:]
-	}
-	return name
-}
-
-// sanitizeName maps a subtest name the way go test's rewrite does:
-// whitespace and other non-printing characters become underscores.
-func sanitizeName(name string) string {
-	var b strings.Builder
-	for _, r := range name {
-		switch {
-		case unicode.IsSpace(r):
-			b.WriteByte('_')
-		case !unicode.IsPrint(r):
-			fmt.Fprintf(&b, "_%x", r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	if b.Len() == 0 {
-		return "_"
-	}
-	return b.String()
-}
-
-// flagsVerdict classifies a normally returned test function from its
-// flags (Skip marks before the test body's own work when SkipNow
-// unwound).
-func flagsVerdict(t *T) Verdict {
-	switch {
-	case t.skipped:
-		return Skip
-	case t.failed:
-		return Fail
-	default:
-		return Pass
-	}
-}
-
-// runCleanups runs t's registered cleanups in LIFO order, the way
-// tRunner runs them on the way out. Host func()s run directly; script
-// function values run through vc.Call — which is why the top-level
-// test's cleanups need a second Engine.Call of their own (the test
-// Call's VM is gone by then), invoked via the bound "__cleanups".
-func runCleanups(vc runtime.VMCaller, t *T) error {
-	for i := len(t.cleanups) - 1; i >= 0; i-- {
-		c := t.cleanups[i]
-		var err error
-		if h, ok := c.(func()); ok {
-			err = safeHostCall(h)
-		} else {
-			_, err = vc.Call(c, nil)
-		}
-		if err != nil {
-			if st, ok := StopOf(err); ok && st == t {
-				// cleanup's own FailNow/SkipNow — flags already set.
-				continue
-			}
-			return err
-		}
-	}
-	return nil
-}
-
-// safeHostCall runs a host cleanup func, reporting a Go panic as the
-// error a script panic would surface as.
-func safeHostCall(f func()) (err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			if e, ok := r.(error); ok {
-				err = e
-			} else {
-				err = fmt.Errorf("panic: %v", r)
-			}
-		}
-	}()
-	f()
-	return nil
-}
-
-// RunCleanups exposes the cleanup loop for the bound __cleanups helper.
-func RunCleanups(vc runtime.VMCaller, t *T) error { return runCleanups(vc, t) }
-
-// --- argument rendering ---
-
-// argString renders one raw script value as text: untyped constants
-// materialize, Named peels, cells deref.
-func argString(v runtime.Value) string {
-	return fmt.Sprint(hostbridge.GoNative(v))
-}
-
-// sprintArgs joins args like fmt.Sprintln (go's t.Log/Error bodies):
-// operands separated by spaces, trailing newline trimmed by the caller.
-func sprintArgs(args []runtime.Value) string {
-	el := make([]any, len(args))
-	for i, a := range args {
-		el[i] = hostbridge.GoNative(a)
-	}
-	return strings.TrimSuffix(fmt.Sprintln(el...), "\n")
-}
-
-// sprintfArgs formats like t.Logf/Errorf: first arg the format string,
-// rest the operands.
-func sprintfArgs(args []runtime.Value) (string, error) {
-	if len(args) == 0 {
-		return "", fmt.Errorf("missing format argument")
-	}
-	format := argString(args[0])
-	el := make([]any, len(args)-1)
-	for i, a := range args[1:] {
-		el[i] = hostbridge.GoNative(a)
-	}
-	return fmt.Sprintf(format, el...), nil
-}
-
-// checkCallable reports whether v can be vc.Call'd — a runtime func
-// value or a builtin. t.Run/t.Cleanup reject anything else with a
-// readable error instead of a deep VM failure.
-func checkCallable(v runtime.Value) error {
-	switch runtime.Unwrap(v).(type) {
-	case *runtime.Function, *runtime.Closure, *runtime.BoundMethod, *runtime.BuiltinFunc:
-		return nil
-	}
-	return fmt.Errorf("argument is not a function (%T)", v)
-}
-
-// outputWriter adapts t.Output() to io.Writer: writes decorate into
-// the test's log buffer.
-type outputWriter struct{ t *T }
-
-func (w outputWriter) Write(b []byte) (int, error) {
-	w.t.logMsg(strings.TrimSuffix(string(b), "\n"))
-	return len(b), nil
 }
