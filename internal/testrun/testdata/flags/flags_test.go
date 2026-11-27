@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"testing"
+	"time"
 )
 
 var level = flag.Int("level", 7, "test level")
@@ -99,10 +100,13 @@ func TestNewFlagSet(t *testing.T) {
 	name := fs.String("name", "default", "name value")
 	count := fs.Int("count", 1, "count value")
 	verbose := fs.Bool("verbose", false, "verbose value")
-	timeout := fs.Duration("timeout", 0, "timeout value")
+	timeout := fs.Duration("timeout", time.Second, "timeout value")
 	var small smallFlag
 	fs.Var(&small, "small", "small value")
 
+	if timeout.Seconds() != 1 {
+		t.Fatalf("default timeout Seconds = %v, want 1", timeout.Seconds())
+	}
 	err := fs.Parse([]string{"-name", "bob", "-count=3", "-verbose", "-timeout=2s", "-small", "ok", "rest", "-x"})
 	if err != nil {
 		t.Fatalf("Parse: %v", err)

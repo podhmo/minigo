@@ -86,9 +86,19 @@ func passThroughSnapshot(v runtime.Value, mat Materialize, memo map[runtime.Valu
 		cp := *x
 		cp.Host = reflect.Value{}
 		memo[v] = &cp
-		cp.Elems = make([]runtime.Value, len(x.Elems))
-		for i, e := range x.Elems {
-			cp.Elems[i] = passThroughSnapshot(e, mat, memo)
+		n, c := len(x.Elems), cap(x.Elems)
+		cp.Elems = make([]runtime.Value, n, c)
+		if c > n {
+			cp.Elems = cp.Elems[:c]
+			xe := x.Elems[:c]
+			for i, e := range xe {
+				cp.Elems[i] = passThroughSnapshot(e, mat, memo)
+			}
+			cp.Elems = cp.Elems[:n]
+		} else {
+			for i, e := range x.Elems {
+				cp.Elems[i] = passThroughSnapshot(e, mat, memo)
+			}
 		}
 		return &cp
 	case *runtime.Map:
@@ -111,6 +121,30 @@ func passThroughSnapshot(v runtime.Value, mat Materialize, memo map[runtime.Valu
 		memo[v] = &cp
 		cp.V = passThroughSnapshot(x.V, mat, memo)
 		return &cp
+	case *runtime.GoValue:
+		rv := reflect.ValueOf(x.V)
+		if rv.IsValid() && rv.Type().Name() == "" {
+			switch rv.Kind() {
+			case reflect.Map:
+				if rv.IsNil() {
+					return v
+				}
+				cp := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+				it := rv.MapRange()
+				for it.Next() {
+					cp.SetMapIndex(it.Key(), it.Value())
+				}
+				return &runtime.GoValue{V: cp.Interface()}
+			case reflect.Slice:
+				if rv.IsNil() {
+					return v
+				}
+				cp := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Cap())
+				reflect.Copy(cp, rv)
+				return &runtime.GoValue{V: cp.Interface()}
+			}
+		}
+		return v
 	default:
 		return v
 	}
