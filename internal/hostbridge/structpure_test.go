@@ -12,14 +12,14 @@ import (
 
 func parsePureTestMethod(t *testing.T, body string) *runtime.Function {
 	t.Helper()
-	src := "package p\ntype T struct { N int; Values chan int }\n" + body
+	src := "package p\ntype T struct { N int; Values chan int; Items []int }\n" + body
 	f, err := parser.ParseFile(token.NewFileSet(), "x.go", src, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, decl := range f.Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok {
-			return &runtime.Function{Decl: fn}
+			return &runtime.Function{Decl: fn, Recv: "T"}
 		}
 	}
 	t.Fatal("method not found")
@@ -52,6 +52,8 @@ func TestRefreshableMethodLimitsResultShapes(t *testing.T) {
 	}{
 		{"scalar getter", "func (p *T) Label() int { return p.N }\n", true},
 		{"scalar error", "func (p *T) Status() (int, error) { return p.N, nil }\n", true},
+		{"byte getter", "func (p *T) Byte() byte { return byte(p.N) }\n", true},
+		{"rune getter", "func (p *T) Rune() rune { return rune(p.N) }\n", true},
 		{"struct result", "func (p *T) Child() *T { return p }\n", false},
 		{"grouped results", "func (p *T) Pair() (a, b int) { return p.N, p.N }\n", false},
 		{"channel receive", "func (p *T) Read() int { return <-p.Values }\n", false},

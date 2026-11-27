@@ -24,6 +24,8 @@ import (
 
 type Item struct{ N int }
 
+type Count int
+
 var errInvalid = errors.New("invalid")
 
 var childCalls int
@@ -44,6 +46,10 @@ func (s *Stream) Read() int { return <-s.Values }
 func (p *EffectParent) Child() *Child { return &Child{} }
 
 func (p *Item) Label() int { return p.N }
+
+func (p *Item) Count() Count { return Count(p.N) }
+
+func (p *Item) Byte() byte { return byte(p.N) }
 
 func (p *Item) Status() (int, error) {
 	if p.N == 8 {
@@ -128,6 +134,22 @@ func RenderError() string {
 	}
 	return out.String()
 }
+
+func RenderNamedScalars() string {
+	item := &Item{N: 7}
+	t := template.Must(template.New("named-scalars").Funcs(template.FuncMap{
+		"update": func() any {
+			item.N = 8
+			return item
+		},
+	}).Parse("{{with update}}{{.Count}}/{{.Byte}}{{end}}"))
+
+	var out strings.Builder
+	if err := t.Execute(&out, item); err != nil {
+		return err.Error()
+	}
+	return out.String()
+}
 `
 
 func runSessionMemoryRegression(t *testing.T) map[string]any {
@@ -158,7 +180,7 @@ func runSessionMemoryRegression(t *testing.T) map[string]any {
 	}
 
 	out := map[string]any{}
-	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderError", "RenderChildEffect"} {
+	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderNamedScalars", "RenderError", "RenderChildEffect"} {
 		value, err := engine.Call(ctx, pkg, name)
 		if err != nil {
 			t.Fatal(err)
@@ -200,5 +222,12 @@ func TestCallbackReturnedReceiveMethodsAreNotRepeated(t *testing.T) {
 	got := runSessionMemoryRegression(t)["RenderReceive"]
 	if diff := cmp.Diff("1", got); diff != "" {
 		t.Fatalf("RenderReceive (-want +got):\n%s", diff)
+	}
+}
+
+func TestCallbackReturnedNamedScalarMethodsRefresh(t *testing.T) {
+	got := runSessionMemoryRegression(t)["RenderNamedScalars"]
+	if diff := cmp.Diff("8/8", got); diff != "" {
+		t.Fatalf("RenderNamedScalars (-want +got):\n%s", diff)
 	}
 }
