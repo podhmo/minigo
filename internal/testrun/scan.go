@@ -4,7 +4,6 @@
 package testrun
 
 import (
-	"go/ast"
 	"go/build"
 	"go/parser"
 	"go/token"
@@ -12,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/podhmo/minigo/resolve"
@@ -99,7 +97,7 @@ func scanTests(dir string, cfg resolve.BuildConfig) (*scanFiles, error) {
 			out.rejected = append(out.rejected, abs)
 			continue
 		}
-		if importsC(f) {
+		if resolve.ImportsC(f) {
 			out.cgoSkipped = append(out.cgoSkipped, abs)
 			continue
 		}
@@ -151,15 +149,4 @@ func baseClause(files []scannedFile) string {
 		name = files[0].clause
 	}
 	return strings.TrimSuffix(name, "_test")
-}
-
-// importsC reports whether the parsed file imports "C" — cgo files are
-// skipped like the non-test walk skips them.
-func importsC(f *ast.File) bool {
-	for _, is := range f.Imports {
-		if path, err := strconv.Unquote(is.Path.Value); err == nil && path == "C" {
-			return true
-		}
-	}
-	return false
 }

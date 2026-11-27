@@ -309,18 +309,13 @@ func setFlagVerdict(t *mtesting.T) {
 	}
 }
 
-// callTest invokes the test function in a goroutine so the -timeout
-// deadline can abandon a hung call — the leaked goroutine keeps
-// running; the suite is failed and the process unwinds (documented
+// callAsync runs fn in a goroutine so the -timeout deadline can
+// abandon a hung Engine.Call — the leaked goroutine keeps running;
+// the suite is failed and the process unwinds (documented
 // divergence: go's panic instead).
-func callTest(ctx context.Context, e *minigo.Engine, pkg *runtime.Package, name string, t *mtesting.T) error {
+func callAsync(ctx context.Context, fn func() error) error {
 	ch := make(chan error, 1)
-	go func() {
-		start := time.Now()
-		_, err := e.Call(ctx, pkg, name, &runtime.GoValue{V: t})
-		t.SetElapsed(time.Since(start))
-		ch <- err
-	}()
+	go func() { ch <- fn() }()
 	select {
 	case err := <-ch:
 		return err
@@ -329,20 +324,23 @@ func callTest(ctx context.Context, e *minigo.Engine, pkg *runtime.Package, name 
 	}
 }
 
+// callTest invokes the test function through callAsync.
+func callTest(ctx context.Context, e *minigo.Engine, pkg *runtime.Package, name string, t *mtesting.T) error {
+	return callAsync(ctx, func() error {
+		start := time.Now()
+		_, err := e.Call(ctx, pkg, name, &runtime.GoValue{V: t})
+		t.SetElapsed(time.Since(start))
+		return err
+	})
+}
+
 // callCleanups runs the top-level test's cleanups through the bound
 // __cleanups member of the testing package in a second Engine.Call.
 func callCleanups(ctx context.Context, e *minigo.Engine, testingPkg *runtime.Package, t *mtesting.T) error {
-	ch := make(chan error, 1)
-	go func() {
+	return callAsync(ctx, func() error {
 		_, err := e.Call(ctx, testingPkg, "__cleanups", &runtime.GoValue{V: t})
-		ch <- err
-	}()
-	select {
-	case err := <-ch:
 		return err
-	case <-ctx.Done():
-		return fmt.Errorf("test timed out: %w", ctx.Err())
-	}
+	})
 }
 
 // compileRun splits -run into per-level unanchored regexps.

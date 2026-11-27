@@ -67,7 +67,7 @@ func packageClause(fset *token.FileSet, abs string) (name string, cgo bool, err 
 	if err != nil {
 		return "", false, err
 	}
-	return f.Name.Name, importsC(f), nil
+	return f.Name.Name, ImportsC(f), nil
 }
 
 // goodOSArchFile replicates the filename half of go/build's
