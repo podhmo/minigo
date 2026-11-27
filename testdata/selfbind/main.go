@@ -97,23 +97,21 @@ func NestedSliceIsolation() string {
 	return xs[0]
 }
 
-type scriptWriter struct{}
+type scriptWriter struct{ n *int }
 
-var scriptWriterBytes int
-
-func (scriptWriter) Write(p []byte) (int, error) {
-	scriptWriterBytes += len(p)
+func (w scriptWriter) Write(p []byte) (int, error) {
+	*w.n += len(p)
 	return len(p), nil
 }
 
 func NestedOutputWriter() string {
-	scriptWriterBytes = 0
+	n := 0
 	e := minigo.NewEngine(".")
-	minigo.WithOutput(scriptWriter{})(e)
+	minigo.WithOutput(scriptWriter{n: &n})(e)
 	if _, err := e.Run(context.Background(), "./testdata/intrins", "Prints"); err != nil {
 		return fmt.Sprint(err)
 	}
-	return fmt.Sprint(scriptWriterBytes)
+	return fmt.Sprint(n)
 }
 
 func NestedHostPolicyScriptFunc() string {
