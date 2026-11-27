@@ -2,6 +2,7 @@ package hostbridge
 
 import (
 	"go/ast"
+	"go/token"
 
 	"github.com/podhmo/minigo/runtime"
 )
@@ -20,21 +21,17 @@ func pureMethod(m *runtime.Function) bool {
 		if !pure {
 			return false
 		}
-		switch n.(type) {
-		case *ast.CallExpr, *ast.AssignStmt, *ast.IncDecStmt, *ast.SendStmt, *ast.GoStmt, *ast.DeferStmt:
+		switch x := n.(type) {
+		case *ast.CallExpr, *ast.AssignStmt, *ast.IncDecStmt, *ast.SendStmt, *ast.GoStmt, *ast.DeferStmt, *ast.RangeStmt, *ast.SelectStmt:
 			pure = false
 			return false
+		case *ast.UnaryExpr:
+			if x.Op == token.ARROW {
+				pure = false
+				return false
+			}
 		}
 		return true
 	})
 	return pure
-}
-
-// noteImpureMethodCallback marks the mutation barrier for a method call
-// that may write. Expression-only methods cannot mutate state, so their
-// refresh does not make the projection stale again.
-func (m *Marshal) noteImpureMethodCallback(f *runtime.Function) {
-	if !pureMethod(f) {
-		m.noteScriptCallback()
-	}
 }

@@ -22,6 +22,13 @@ import (
 
 type Item struct{ N int }
 
+type Stream struct {
+	N      int
+	Values chan int
+}
+
+func (s *Stream) Read() int { return <-s.Values }
+
 func (p *Item) Label() int { return p.N }
 
 func Save() {
@@ -41,6 +48,25 @@ func Render() string {
 			return item
 		},
 	}).Parse("{{with update}}{{.Label}}/{{.N}}{{end}}"))
+
+	var out strings.Builder
+	if err := t.Execute(&out, item); err != nil {
+		return err.Error()
+	}
+	return out.String()
+}
+
+func RenderReceive() string {
+	values := make(chan int, 2)
+	values <- 1
+	values <- 2
+	item := &Stream{Values: values}
+	t := template.Must(template.New("receive").Funcs(template.FuncMap{
+		"update": func() any {
+			item.N = 8
+			return item
+		},
+	}).Parse("{{with update}}{{.Read}}{{end}}"))
 
 	var out strings.Builder
 	if err := t.Execute(&out, item); err != nil {
@@ -78,7 +104,7 @@ func runSessionMemoryRegression(t *testing.T) map[string]any {
 	}
 
 	out := map[string]any{}
-	for _, name := range []string{"RoundTrip", "Render"} {
+	for _, name := range []string{"RoundTrip", "Render", "RenderReceive"} {
 		value, err := engine.Call(ctx, pkg, name)
 		if err != nil {
 			t.Fatal(err)
@@ -99,5 +125,12 @@ func TestCallbackReturnedStructMethodsRefresh(t *testing.T) {
 	got := runSessionMemoryRegression(t)["Render"]
 	if diff := cmp.Diff("8/8", got); diff != "" {
 		t.Fatalf("Render (-want +got):\n%s", diff)
+	}
+}
+
+func TestCallbackReturnedReceiveMethodsAreNotRepeated(t *testing.T) {
+	got := runSessionMemoryRegression(t)["RenderReceive"]
+	if diff := cmp.Diff("1", got); diff != "" {
+		t.Fatalf("RenderReceive (-want +got):\n%s", diff)
 	}
 }
