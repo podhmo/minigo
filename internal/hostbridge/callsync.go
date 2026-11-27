@@ -50,7 +50,7 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 			if _, tracked := e.snap[projKey(dk)]; !tracked {
 				continue // script-added since the merge — keep
 			}
-			hk, err := m.ToReflect(dk, krt, vc)
+			hk, err := m.projectionMapKey(dk, krt, vc)
 			if err != nil || !rv.MapIndex(hk).IsValid() {
 				s.Delete(dk) // a key the merge knew and the host dropped
 			}
@@ -59,7 +59,7 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 		nanSeen := 0
 		for it.Next() {
 			hk, ev := it.Key(), it.Value()
-			sk := GoSlotValueOf(hk)
+			sk := goSlotKeyValueOf(hk)
 			if nanReflectKey(hk) {
 				// a NaN key never resolves under Get — one existing
 				// script NaN entry stands for each host one; extra
@@ -91,7 +91,7 @@ func (m *Marshal) pullProjected(e *projEntry, vc runtime.VMCaller, seen map[runt
 				snap[projKey(dk)] = dv
 				continue
 			}
-			if hk, err := m.ToReflect(dk, krt, vc); err == nil && rv.MapIndex(hk).IsValid() {
+			if hk, err := m.projectionMapKey(dk, krt, vc); err == nil && rv.MapIndex(hk).IsValid() {
 				snap[projKey(dk)] = dv
 			}
 		}
@@ -186,151 +186,4 @@ func (m *Marshal) pullElem(cur runtime.Value, has bool, sk runtime.Value, parent
 	case *runtime.Slice:
 		p.Elems[idxs[0]] = retagElem(cur, nv)
 	}
-}
-
-// syncProjected merges the script container's changes into the host
-// projection the host keeps reading after the call — template
-// {{range}} sees the callback's writes like gc's shared map would.
-// Host-side writes survive: deletes apply only to keys the merge knew,
-// and a value the script left alone stays untouched. A child
-// container re-projects to a fresh host value, which registers so a
-// later callback receiving it resolves back.
-func (m *Marshal) syncProjected(e *projEntry, vc runtime.VMCaller) {
-	rv := e.rv
-	for rv.IsValid() && rv.Kind() == reflect.Interface {
-		rv = rv.Elem()
-	}
-	if !rv.IsValid() {
-		return
-	}
-	switch s := e.sv.(type) {
-	case *runtime.Map:
-		if rv.Kind() != reflect.Map || rv.IsNil() {
-			return
-		}
-		krt, ert := rv.Type().Key(), rv.Type().Elem()
-		for _, mk := range rv.MapKeys() {
-			if !e.host[hostKey(mk)] {
-				continue // host-added since the merge — keep
-			}
-			if _, ok := s.Get(GoSlotValueOf(mk)); !ok {
-				rv.SetMapIndex(mk, reflect.Value{})
-			}
-		}
-		for i := 0; i < s.Len(); i++ {
-			sk, sv := s.At(i)
-			if old, ok := e.snap[projKey(sk)]; ok && sameSlot(sv, old) {
-				continue // script left this entry alone — keep the host's
-			}
-			hk, err := m.ToReflect(sk, krt, vc)
-			if err != nil {
-				continue
-			}
-			hv, err := m.ToReflect(sv, ert, vc)
-			if err != nil {
-				continue
-			}
-			rv.SetMapIndex(hk, hv)
-			m.registerProjected(sv, hv.Interface())
-		}
-		e.host = hostSnap(rv)
-		e.snap = scriptSnap(s)
-	case *runtime.Slice:
-		if rv.Kind() != reflect.Slice {
-			return
-		}
-		if s.Host.IsValid() && s.Host.Pointer() == rv.Pointer() {
-			// the script slice's element stores already land on the
-			// host backing — pushing stale Elems back would revert
-			// writes the callee made through that same array.
-			return
-		}
-		ert := rv.Type().Elem()
-		for i := 0; i < rv.Len() && i < len(s.Elems); i++ {
-			ev, err := m.ToReflect(s.Elems[i], ert, vc)
-			if err != nil {
-				continue
-			}
-			if el := rv.Index(i); el.CanSet() {
-				el.Set(ev)
-				m.registerProjected(s.Elems[i], el.Interface())
-			}
-		}
-	}
-}
-
-// mergeEntries marks the caller's stack as merging and collects the
-// entries the pass will merge (usedOnly picks only consumed ones).
-// A nested pass — a merge-time re-projection's own host calls re-entering
-// sync/pull — returns nil so it cannot rework the same entries and feed
-// the projection feedback loop (issue #1399). Callers defer endMerge.
-func (m *Marshal) mergeEntries(usedOnly bool) (*callScopeStack, []*projEntry) {
-	st, ok := m.ownStack()
-	if !ok {
-		return nil, nil
-	}
-	s := st
-	s.mu.Lock()
-	if s.merging > 0 {
-		s.mu.Unlock()
-		return nil, nil
-	}
-	s.merging++
-	var es []*projEntry
-	for i := range s.scopes {
-		for p, e := range s.scopes[i] {
-			if usedOnly && !s.used[p] {
-				continue
-			}
-			es = append(es, e)
-		}
-	}
-	s.mu.Unlock()
-	return s, es
-}
-
-// endMerge releases the merge pass mergeEntries started.
-func (m *Marshal) endMerge(s *callScopeStack) {
-	s.mu.Lock()
-	s.merging--
-	s.mu.Unlock()
-}
-
-// syncRegistered mirrors every registered projection's script state
-// into its host counterpart. A FuncMap func's writes reach the map by
-// script identity — a closure mutating a captured map touches no arg —
-// so after each callback every entry syncs, not just the resolved
-// ones.
-func (m *Marshal) syncRegistered(vc runtime.VMCaller) {
-	s, es := m.mergeEntries(false)
-	if s == nil {
-		return
-	}
-	defer m.endMerge(s)
-	for _, e := range es {
-		m.syncProjected(e, vc)
-	}
-}
-
-// pullUsedEntries runs one last host->script merge on every consumed
-// projection before the call's write-back finishes — a host write that
-// landed after the last callback (or on a child only a callback held,
-// never the arg itself) still reaches the script value.
-func (m *Marshal) pullUsedEntries(vc runtime.VMCaller) {
-	s, es := m.mergeEntries(true)
-	if s == nil {
-		return
-	}
-	defer m.endMerge(s)
-	seen := map[runtime.Value]bool{}
-	for _, e := range es {
-		m.pullProjected(e, vc, seen)
-	}
-}
-
-// projectedUsed reports whether a callback on this goroutine consumed
-// the projection with this pointer — its script value is authoritative
-// now, so write-back must not restore the host copy's stale contents.
-func (m *Marshal) projectedUsed(p uintptr) bool {
-	return m.stackFlag(func(s *callScopeStack) bool { return s.used[p] })
 }

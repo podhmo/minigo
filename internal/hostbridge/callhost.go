@@ -497,7 +497,7 @@ func (mb *Marshal) mapWriteBack(h *CallHooks, vc runtime.VMCaller, sm, snap *run
 	alive := map[runtime.Value]bool{}
 	it := rv.MapRange()
 	for it.Next() {
-		sk := GoSlotValueOf(it.Key())
+		sk := goSlotKeyValueOf(it.Key())
 		alive[canonical(sk)] = true
 		ev := it.Value()
 		sv, had := snap.Get(sk)

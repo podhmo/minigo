@@ -331,32 +331,6 @@ func HostNilPtrType(td *runtime.TypeDef) reflect.Type {
 	return reflect.PointerTo(td.Elem.HostIdent)
 }
 
-// structOrigs records the script value each fabricated *struct{...}
-// projection stands for: a host that hands one back — a FuncMap func's
-// argument, an `any` round-trip — restores the script object it
-// started from rather than surfacing the anonymous host struct.
-// Entries live for the process, the same trade-off as
-// runtime.opaqueKeyOrigs.
-var structOrigs sync.Map
-
-// StructOrig reports the script value a *struct{...} projection
-// minted by structDataHost stands for — for recoverers outside the vm
-// package (minigo's jsonHostArg). The type gate precedes the lookup:
-// an unhashable x (a slice or map payload) would panic in sync.Map.
-func StructOrig(x any) (runtime.Value, bool) {
-	rt := reflect.TypeOf(x)
-	if rt == nil || rt.Kind() != reflect.Pointer {
-		return nil, false
-	}
-	if et := rt.Elem(); et.Kind() != reflect.Struct || et.Name() != "" {
-		return nil, false
-	}
-	if orig, ok := structOrigs.Load(x); ok {
-		return orig, true
-	}
-	return nil, false
-}
-
 // GoValueOf adapts a reflect result to a runtime value: script-native types
 // pass through, everything else stays boxed as a host GoValue. Value is
 // `any`, so the pass-through list names the concrete runtime types.
@@ -595,10 +569,4 @@ func GoSlotValueOf(rv reflect.Value) runtime.Value {
 		}
 	}
 	return GoValueOf(rv)
-}
-
-// RecordStructOrig stores the script value a fabricated *struct{...}
-// projection stands for; structDataHost in vm mints the projections.
-func RecordStructOrig(x any, orig runtime.Value) {
-	structOrigs.Store(x, orig)
 }

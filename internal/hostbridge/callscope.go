@@ -1,7 +1,6 @@
 package hostbridge
 
 import (
-	"fmt"
 	"reflect"
 	"sync"
 
@@ -36,22 +35,49 @@ type sliceReg struct {
 // write (key added, value changed, key deleted) from a host-side one —
 // without them every pull or sync would clobber the other side.
 type projEntry struct {
-	sv   runtime.Value
-	rv   reflect.Value
-	snap map[string]runtime.Value // script key repr -> value at last merge
-	host map[string]bool          // host key repr -> seen at last merge
+	sv    runtime.Value
+	rv    reflect.Value
+	epoch uint64
+	snap  map[string]runtime.Value // script key repr -> value at last merge
+	host  map[string]bool          // host key repr -> seen at last merge
 }
 
 type callScopeStack struct {
 	mu sync.Mutex
+	// walk folds repeat projections of the same script object inside one
+	// merge pass, so write-back reprojection reuses the projection the host
+	// already holds instead of minting a fresh one. Ordinary nested host
+	// calls use fresh walks: a script mutation made immediately before the
+	// inner call must marshal as its current value, not a cached copy.
+	walk *runtime.Walk
 	// scopes maps a projected host container's pointer to its merge
 	// state; slices mirrors the slice registrations so a windowed
 	// sub-slice projection resolves by range; used tracks the
 	// projections a callback actually consumed so write-back leaves
 	// their script value authoritative.
 	scopes []map[uintptr]*projEntry
+	// scriptScopes mirrors scopes with the reverse lookup: merging a parent
+	// container often needs the child projection by script identity, and a
+	// row list would make a scan over every entry quadratic.
+	scriptScopes []map[runtime.Value]*projEntry
+	// walks mirrors scopes: one conversion-identity walk per host call, so
+	// two args in the same call share a projection without leaking that
+	// copy into a nested or later host call.
+	walks  []*runtime.Walk
 	slices []sliceReg
 	used   map[uintptr]bool
+	active map[structProjectionKey]activeProjection
+	// scriptEpoch advances whenever invoked script code returns: it may
+	// have mutated any captured object. Each conversion walk records the
+	// epoch a struct projection last represented, so conversion identity
+	// can refresh exactly once after a mutation barrier instead of either
+	// serving the stale copy or re-running methods on every repeated edge.
+	scriptEpoch uint64
+	// originals strongly owns the script values backing struct projections
+	// for the duration of this goroutine's outermost host call. The
+	// process-wide StructOrig registry is weak; this bounded lifetime is
+	// what makes a projection handed back during its owning call round-trip.
+	originals map[runtime.Value]bool
 	// merging is nonzero while a sync/pull merge pass iterates the
 	// scopes. Re-projections a merge drives must not feed back into
 	// the merge machinery: a projection registered mid-merge only
@@ -77,6 +103,40 @@ func (m *Marshal) callGid() int64 {
 	return m.GoroutineID()
 }
 
+// scopedWalk starts a marshal over the current conversion-identity walk.
+// Ordinary host calls use the walk of their own scope: arguments in one
+// call share projections, while nested and later calls cannot reuse a
+// stale completed copy. Merge passes use their pass-wide walk instead.
+// In-progress struct projections are seeded into either walk so a method
+// that re-enters template rendering with its own receiver sees the object
+// already being built rather than recursively reprojecting it.
+func (m *Marshal) scopedWalk() *HostMarshal {
+	st, ok := m.ownStack()
+	if !ok {
+		return m.NewWalk()
+	}
+	s := st
+	s.mu.Lock()
+	var w *runtime.Walk
+	if s.merging > 0 {
+		if s.walk == nil {
+			s.walk = runtime.NewWalk()
+		}
+		w = s.walk
+	} else if n := len(s.walks); n > 0 {
+		w = s.walks[n-1]
+	}
+	for key, ap := range s.active {
+		w.Register(key, ap.out)
+		w.Register(ap.recv, ap.out)
+	}
+	s.mu.Unlock()
+	if w == nil {
+		return m.NewWalk()
+	}
+	return &HostMarshal{M: m, Walk: w, Budget: HostEvalBudget}
+}
+
 // pushCallScope opens a projection scope for the duration of a host
 // call; the returned func closes it. Nested calls on one goroutine
 // nest scopes so an inner call's close keeps the outer projections.
@@ -89,6 +149,8 @@ func (m *Marshal) pushCallScope() func() {
 	s := st.(*callScopeStack)
 	s.mu.Lock()
 	s.scopes = append(s.scopes, map[uintptr]*projEntry{})
+	s.scriptScopes = append(s.scriptScopes, map[runtime.Value]*projEntry{})
+	s.walks = append(s.walks, runtime.NewWalk())
 	if s.used == nil {
 		s.used = map[uintptr]bool{}
 	}
@@ -96,62 +158,14 @@ func (m *Marshal) pushCallScope() func() {
 	return func() {
 		s.mu.Lock()
 		s.scopes = s.scopes[:len(s.scopes)-1]
+		s.scriptScopes = s.scriptScopes[:len(s.scriptScopes)-1]
+		s.walks = s.walks[:len(s.walks)-1]
 		n := len(s.scopes)
 		s.mu.Unlock()
 		if n == 0 {
 			callScopes.CompareAndDelete(gid, st)
 		}
 	}
-}
-
-// projKey renders a script map key for the merge snapshots. Any
-// deterministic form works — the repr compares a key only to its own
-// earlier self.
-func projKey(k runtime.Value) string {
-	return fmt.Sprintf("%#v", runtime.Unwrap(k))
-}
-
-// hostKey is projKey for the host side of a projection.
-func hostKey(rv reflect.Value) string {
-	return fmt.Sprintf("%v", rv)
-}
-
-// scriptSnap records a script map's key->value set.
-func scriptSnap(s *runtime.Map) map[string]runtime.Value {
-	out := make(map[string]runtime.Value, s.Len())
-	for i := 0; i < s.Len(); i++ {
-		k, v := s.At(i)
-		out[projKey(k)] = v
-	}
-	return out
-}
-
-// hostSnap records a host map's key set.
-func hostSnap(rv reflect.Value) map[string]bool {
-	out := make(map[string]bool, rv.Len())
-	it := rv.MapRange()
-	for it.Next() {
-		out[hostKey(it.Key())] = true
-	}
-	return out
-}
-
-// sameSlot reports whether the script value at a key reads unchanged
-// since the snapshot — a scalar whose payload is equal — versus a
-// write that replaced it. Containers always report false: their
-// writes land inside, which the per-child merge handles.
-func sameSlot(cur, old runtime.Value) bool {
-	pa, pb := scalarPayload(cur), scalarPayload(old)
-	if pa == nil || pb == nil {
-		return false
-	}
-	switch runtime.Unwrap(pa).(type) {
-	case *runtime.Map, *runtime.Slice, *runtime.Struct, *runtime.Cell:
-		// writes land inside the pointee — the per-child merge
-		// decides whether the entry still matches its projection.
-		return false
-	}
-	return pa == pb
 }
 
 // ownStack returns the calling goroutine's projection stack; a foreign
@@ -189,109 +203,4 @@ func (m *Marshal) stackFlag(f func(*callScopeStack) bool) bool {
 // merge. Callable members bind lazily instead.
 func (m *Marshal) insideMerge() bool {
 	return m.stackFlag(func(s *callScopeStack) bool { return s.merging > 0 })
-}
-
-// registerProjected records v for the duration of the running host
-// call: v is a script map or slice that crossed an `any` parameter as
-// the plain host container out — the projection keeps no method set,
-// so a callback receiving out back (a FuncMap arg) resolves to v,
-// which still carries the typedef's methods. Anonymous containers
-// register too: the shared-identity model applies to every map/slice.
-func (m *Marshal) registerProjected(v runtime.Value, out any) {
-	switch v.(type) {
-	case *runtime.Map, *runtime.Slice:
-	default:
-		return
-	}
-	rv := reflect.ValueOf(out)
-	for rv.IsValid() && rv.Kind() == reflect.Interface {
-		rv = rv.Elem()
-	}
-	if !rv.IsValid() || (rv.Kind() != reflect.Map && rv.Kind() != reflect.Slice) || rv.IsNil() {
-		return
-	}
-	var reg *sliceReg
-	if ss, ok := v.(*runtime.Slice); ok && rv.Kind() == reflect.Slice {
-		reg = &sliceReg{base: rv.Pointer(), elemSize: rv.Type().Elem().Size(), n: len(ss.Elems), v: ss}
-	}
-	if rv.Pointer() == 0 {
-		return
-	}
-	st, ok := m.ownStack()
-	if !ok {
-		return
-	}
-	e := &projEntry{sv: v, rv: rv}
-	if sm, ok := v.(*runtime.Map); ok {
-		e.snap = scriptSnap(sm)
-		e.host = hostSnap(rv)
-	}
-	s := st
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.merging > 0 {
-		// a merge re-projects containers to fresh host values; tracking
-		// each fresh projection would grow the merge set every pass —
-		// the next callback would then merge an ever-larger list
-		// (issue #1399).
-		return
-	}
-	if n := len(s.scopes); n > 0 {
-		s.scopes[n-1][rv.Pointer()] = e
-		if reg != nil {
-			s.slices = append(s.slices, *reg)
-		}
-	}
-}
-
-// projectedVal returns the merge state registered for the host
-// container an `any` parameter is receiving — the projection an outer
-// call on this goroutine handed in — else nil.
-func (m *Marshal) projectedVal(rv reflect.Value) *projEntry {
-	for rv.IsValid() && rv.Kind() == reflect.Interface {
-		rv = rv.Elem()
-	}
-	var p uintptr
-	if !rv.IsValid() || (rv.Kind() != reflect.Map && rv.Kind() != reflect.Slice) || rv.IsNil() {
-		return nil
-	}
-	p = rv.Pointer()
-	st, ok := m.ownStack()
-	if !ok {
-		return nil
-	}
-	s := st
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := len(s.scopes) - 1; i >= 0; i-- {
-		if e, ok := s.scopes[i][p]; ok {
-			// a sub-slice projection shares its parent's leading
-			// address — `{{f (slice . 0 1)}}` — but the script value it
-			// stands for must have the projection's length, else the
-			// callback would see the range it was not given.
-			if ss, ok := e.sv.(*runtime.Slice); ok && rv.Len() != len(ss.Elems) {
-				continue
-			}
-			s.used[p] = true
-			return e
-		}
-	}
-	if rv.Kind() != reflect.Slice {
-		return nil
-	}
-	// a windowed sub-slice projection resolves by range: its address is
-	// base + idx*elemSize of a registered parent's backing. The view
-	// shares the parent's Elems, so element writes reach it.
-	for _, r := range s.slices {
-		if r.elemSize == 0 || p < r.base || (p-r.base)%r.elemSize != 0 {
-			continue
-		}
-		idx := int((p - r.base) / r.elemSize)
-		if idx < 0 || idx+rv.Len() > r.n {
-			continue
-		}
-		s.used[r.base] = true
-		return &projEntry{sv: &runtime.Slice{Elems: r.v.Elems[idx : idx+rv.Len()], Typ: r.v.Typ}, rv: rv}
-	}
-	return nil
 }

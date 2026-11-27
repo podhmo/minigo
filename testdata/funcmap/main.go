@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+
+	"github.com/podhmo/minigo/testdata/funcmap/identity"
 )
 
 type user struct{ Name string }
@@ -348,6 +350,228 @@ func HTMLTyped() string {
 	}).Parse(`<ul>{{list .Users}}</ul>`))
 	var sb strings.Builder
 	if err := t.Execute(&sb, newPage()); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+// NestedRenderFresh re-renders a map after a callback mutates it. The
+// nested template must marshal the current script map, not the host
+// projection cached by the outer render.
+func NestedRenderFresh() string {
+	data := map[string]any{"v": "old"}
+	t := template.Must(template.New("nested-fresh").Funcs(template.FuncMap{
+		"render": func() string {
+			data["v"] = "new"
+			var inner strings.Builder
+			if err := template.Must(template.New("inner-fresh").Parse(`{{.v}}`)).Execute(&inner, data); err != nil {
+				return "error: " + err.Error()
+			}
+			return inner.String()
+		},
+	}).Parse(`{{render}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type EmbedInner struct{ X int }
+type EmbedOuter struct{ *EmbedInner }
+
+// NestedRenderEmbedInit initializes a nil embedded pointer after the
+// outer render first projected its object. A re-render must project the
+// object's current promoted surface rather than the first shape.
+func NestedRenderEmbedInit() string {
+	o := &EmbedOuter{}
+	data := map[string]any{"o": o}
+	t := template.Must(template.New("nested-embed").Funcs(template.FuncMap{
+		"init": func() string { o.EmbedInner = &EmbedInner{X: 7}; return "" },
+		"render": func() string {
+			var inner strings.Builder
+			if err := template.Must(template.New("inner-embed").Parse(`{{.o.X}}`)).Execute(&inner, data); err != nil {
+				return "error: " + err.Error()
+			}
+			return inner.String()
+		},
+	}).Parse(`{{init}}{{render}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+// ChildMapWrite keeps a nested map's canonical projection across the
+// merge after an unrelated callback. A later callback receiving the child
+// must write through to the script map.
+func ChildMapWrite() string {
+	child := map[string]any{}
+	data := map[string]any{"child": child}
+	t := template.Must(template.New("child-write").Funcs(template.FuncMap{
+		"first": func() string { return "" },
+		"write": func(m map[string]any) string { m["x"] = "ok"; return "" },
+	}).Parse(`{{first}}{{write .child}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	if got, ok := child["x"].(string); ok {
+		return got
+	}
+	return "missing"
+}
+
+// SharedAnyArgs passes one map twice in a single host call. The two `any`
+// arguments must share one host projection, as the same Go map would.
+func SharedAnyArgs() string {
+	m := map[string]int{"x": 1}
+	return fmt.Sprint(identity.Same(m, m))
+}
+
+type MutablePage struct{ Name string }
+
+// CallbackReturnsFresh mutates the render data and returns the same
+// struct pointer. Conversion identity must refresh the projection at
+// that mutation barrier rather than serve the pre-callback field copy.
+func CallbackReturnsFresh() string {
+	data := &MutablePage{Name: "old"}
+	t := template.Must(template.New("callback-fresh").Funcs(template.FuncMap{
+		"current": func() any { data.Name = "new"; return data },
+	}).Parse(`{{with current}}{{.Name}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+// CallbackNestedStructFresh covers a struct first reached through the
+// render data map. The callback-time merge walks that map in a separate
+// conversion walk; the returned struct must still refresh the render
+// walk's own projection instead of trusting the merge copy's freshness.
+func CallbackNestedStructFresh() string {
+	data := &MutablePage{Name: "old"}
+	root := map[string]any{"page": data}
+	t := template.Must(template.New("callback-nested-fresh").Funcs(template.FuncMap{
+		"current": func() any { data.Name = "new"; return data },
+	}).Parse(`{{with current}}{{.Name}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, root); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type EffectPage struct {
+	Name  string
+	Calls int
+}
+
+// Label has a receiver-side effect so refresh must not eagerly run it a
+// second time when only the projection's data fields are rewritten.
+func (p *EffectPage) Label() string { p.Calls++; return "x" }
+
+// CallbackRefreshMethodsOnce mutates render data in a callback and then
+// reads both a method result and a field from the returned struct.
+func CallbackRefreshMethodsOnce() string {
+	data := &EffectPage{Name: "old"}
+	t := template.Must(template.New("callback-methods-once").Funcs(template.FuncMap{
+		"current": func() any { data.Name = "new"; return data },
+	}).Parse(`{{with current}}{{.Label}}|{{.Name}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return fmt.Sprintf("%s/%d", sb.String(), data.Calls)
+}
+
+type MethodMapPage struct{ M map[string]any }
+
+func (p *MethodMapPage) First() any { return p.M }
+func (p *MethodMapPage) Mutate() string {
+	p.M["x"] = "new"
+	return ""
+}
+func (p *MethodMapPage) Second() any { return p.M }
+
+// MethodMapStaysFresh reuses one map projection across method results.
+// Mutate runs between First and Second in the projection's deterministic
+// method order; the second result must not be the pre-mutation copy.
+func MethodMapStaysFresh() string {
+	data := &MethodMapPage{M: map[string]any{"x": "old"}}
+	t := template.Must(template.New("method-map-fresh").Parse(`{{$first := .First}}{{$mutated := .Mutate}}{{index .Second "x"}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type NestedMapPage struct {
+	Parent map[string]any
+	Child  map[string]any
+}
+
+func (p *NestedMapPage) Mutate() any {
+	p.Child["x"] = "new"
+	return p.Parent
+}
+
+// NestedChildMapStaysFresh mutates a child map but returns its parent.
+// Refreshing the parent must refresh the already projected child too;
+// otherwise the parent keeps pointing at the child's pre-mutation copy.
+func NestedChildMapStaysFresh() string {
+	child := map[string]any{"x": "old"}
+	data := &NestedMapPage{Parent: map[string]any{"child": child}, Child: child}
+	t := template.Must(template.New("nested-child-fresh").Parse(`{{with .Mutate}}{{index .child "x"}}{{end}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type IntKeyPage struct{ M map[any]string }
+
+func (p *IntKeyPage) Mutate() any {
+	identity.AddIntKey(p.M)
+	return p.M
+}
+
+// IntKeyMapStaysCanonical lets the host add one interface-keyed int
+// entry, then reads the shared map's host length. Both merge directions
+// must use the host int form; an int64/int mismatch would duplicate the
+// key in the host projection even though the script has one entry.
+func IntKeyMapStaysCanonical() string {
+	data := &IntKeyPage{M: map[any]string{}}
+	fm := template.FuncMap{"noop": func(m map[any]string) string { return "" }, "hostlen": identity.Len}
+	t := template.Must(template.New("int-key-canonical").Funcs(fm).Parse(`{{$x := .Mutate}}{{noop .M}}{{hostlen .M}}`))
+	var sb strings.Builder
+	if err := t.Execute(&sb, data); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+type RenderPage struct{ Name string }
+
+// Render re-renders its receiver. The nested template reads only a field,
+// so it must not recursively invoke Render while projecting the receiver.
+func (p *RenderPage) Render() string {
+	var sb strings.Builder
+	if err := template.Must(template.New("render-page-inner").Parse(`{{.Name}}`)).Execute(&sb, p); err != nil {
+		return "error: " + err.Error()
+	}
+	return sb.String()
+}
+
+// NestedRenderMethod invokes a template-facing method that passes its own
+// receiver to another template.
+func NestedRenderMethod() string {
+	var sb strings.Builder
+	if err := template.Must(template.New("render-page-outer").Parse(`{{.Render}}`)).Execute(&sb, &RenderPage{Name: "ok"}); err != nil {
 		return "error: " + err.Error()
 	}
 	return sb.String()

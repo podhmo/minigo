@@ -51,8 +51,8 @@ func Cyc() string {
 	return fmt.Sprintf("%v %v", m["a"], m["self"] != nil)
 }
 
-// IntKey passes a map whose canonical int key must survive a read-only
-// host call (the host copy's key spelling differs).
+// IntKey passes a map whose interface-keyed int entry must survive a
+// read-only host call without key duplication.
 func IntKey() string {
 	m := map[any]int{1: 2}
 	hostwb.Peek(m)

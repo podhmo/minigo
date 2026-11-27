@@ -3707,10 +3707,19 @@ func TestHostNilMap(t *testing.T) {
 // `go run ./testdata/funcmap`.
 func TestTemplateFuncMap(t *testing.T) {
 	e := newEngine(t)
+	e.Bind("github.com/podhmo/minigo/testdata/funcmap/identity", map[string]runtime.Value{
+		"Same": &runtime.GoValue{V: func(a, b any) bool {
+			av, bv := reflect.ValueOf(a), reflect.ValueOf(b)
+			return av.IsValid() && bv.IsValid() && av.Type() == bv.Type() && av.Pointer() == bv.Pointer()
+		}},
+		"AddIntKey": &runtime.GoValue{V: func(x any) { x.(map[any]string)[int(1)] = "host" }},
+		"Len":       &runtime.GoValue{V: func(m map[any]string) int { return len(m) }},
+	})
 	var got []any
 	for _, fn := range []string{
 		"Text", "Fail", "HTML", "NilFields", "Builtins",
 		"TypedParams", "WrongTypes", "NilElems", "Panics", "NotFunc", "CallbackPanics", "Goroutine", "HiddenFields", "HTMLTyped",
+		"NestedRenderFresh", "NestedRenderEmbedInit", "ChildMapWrite", "SharedAnyArgs", "NestedRenderMethod", "CallbackReturnsFresh", "CallbackNestedStructFresh", "CallbackRefreshMethodsOnce", "MethodMapStaysFresh", "NestedChildMapStaysFresh", "IntKeyMapStaysCanonical",
 	} {
 		got = append(got, run(t, e, "./testdata/funcmap", fn))
 	}
@@ -3762,6 +3771,17 @@ func TestTemplateFuncMap(t *testing.T) {
 		// own originals (a zero-size *struct{} would share one address)
 		"1 2",
 		"<ul><li>1,2</li><li>3,4</li></ul>",
+		"new",
+		"7",
+		"ok",
+		"true",
+		"ok",
+		"new",
+		"new",
+		"x|new/1",
+		"new",
+		"new",
+		"1",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("FuncMap (-want +got):\n%s", diff)

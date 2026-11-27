@@ -511,7 +511,7 @@ type jsonEncoder struct {
 
 // jsonHostArg recovers the script value a host `any` argument was
 // marshaled from: vm's reflect-call marshaling projects a script
-// struct to an anonymous *struct{...} recorded in vm's structOrigs.
+// struct to an anonymous *struct{...} recorded by hostbridge.StructOrig.
 // Restoring the original lets Encode apply goJSON — the projected
 // struct alone would lose tags, omitempty and Marshaler dispatch.
 // Container args (slices, maps) walk element-wise for nested
@@ -577,7 +577,7 @@ func jsonHostArgSeen(v any, seen map[unsafe.Pointer]bool) any {
 
 // projectedOrig reports the original script value a vm host `any`
 // projection stands for — the *struct{...} structDataHost mints,
-// recorded in vm's structOrigs.
+// recorded by hostbridge.StructOrig.
 func projectedOrig(v any) (runtime.Value, bool) {
 	return hostbridge.StructOrig(v)
 }
