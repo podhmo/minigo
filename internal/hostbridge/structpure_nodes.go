@@ -16,7 +16,7 @@ func effectfulNode(m *runtime.Function, n ast.Node) bool {
 	case *ast.CallExpr:
 		return !typeConversionCall(m, x)
 	case *ast.RangeStmt:
-		return !rangeKnownNonChannel(m, x.X)
+		return x.Tok == token.ASSIGN || !rangeKnownNonChannel(m, x.X)
 	case *ast.UnaryExpr:
 		return x.Op == token.ARROW
 	}

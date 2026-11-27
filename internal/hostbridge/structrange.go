@@ -20,11 +20,10 @@ func receiverName(m *runtime.Function) string {
 	if m == nil || m.Decl == nil || m.Decl.Recv == nil || len(m.Decl.Recv.List) == 0 {
 		return ""
 	}
-	names := m.Decl.Recv.List[0].Names
-	if len(names) == 0 {
-		return ""
+	for _, n := range m.Decl.Recv.List[0].Names {
+		return n.Name
 	}
-	return names[0].Name
+	return ""
 }
 
 func receiverFieldType(m *runtime.Function, name string) (ast.Expr, bool) {
@@ -66,7 +65,8 @@ func rangeKnownNonChannel(m *runtime.Function, x ast.Expr) bool {
 		return false
 	}
 	recv, ok := sel.X.(*ast.Ident)
-	if !ok || recv.Name != receiverName(m) {
+	name := receiverName(m)
+	if !ok || recv.Name != name || receiverShadowed(m, name) {
 		return false
 	}
 	typ, ok := receiverFieldType(m, sel.Sel.Name)
