@@ -193,7 +193,7 @@ var FileBudgets = map[string]int{
 	"internal/testrun/cleanup.go":                40,
 	"internal/testrun/session.go":                28,
 	"internal/testrun/verdict.go":                100,
-	"internal/testrun/run.go":                    296,
+	"internal/testrun/run.go":                    291,
 	"internal/testrun/scan_gate.go":              37,
 	"internal/testrun/scan.go":                   136,
 	"internal/testrun/scan_clause.go":            29,

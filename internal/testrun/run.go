@@ -228,8 +228,6 @@ loop:
 			var cancelTest context.CancelFunc
 			if o.TestTimeout > 0 {
 				testCtx, cancelTest = context.WithTimeout(ctx, o.TestTimeout)
-			}
-			if cancelTest != nil {
 				defer cancelTest()
 			}
 			runEngine, runPkg, runTestingPkg := e, pkg, testingPkg
@@ -245,7 +243,7 @@ loop:
 			}
 			cerr := callTest(testCtx, runEngine, runPkg, ti.Name, t)
 			t.CancelContext()
-			if runPkg.State() == runtime.Failed {
+			if runPkg.State() == runtime.Failed && !(o.Isolate && errors.Is(cerr, context.DeadlineExceeded)) {
 				// init failed: the remaining tests would all die the
 				// same way — report once and stop scheduling.
 				rep.note("%s: package initialization failed: %v", ti.Pos, cerr)
@@ -265,9 +263,6 @@ loop:
 			// must change a PASS body into FAIL.
 			if t.Verdict() != mtesting.Panic && t.Verdict() != mtesting.Trap {
 				classifyCall(t, cleanupErr)
-			}
-			if cancelTest != nil {
-				cancelTest()
 			}
 			t.Finish()
 			rep.testDone(t)

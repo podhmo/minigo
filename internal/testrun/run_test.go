@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/podhmo/minigo/internal/testrun"
@@ -29,6 +30,22 @@ var durRe = regexp.MustCompile(`\d+\.\d+s`)
 
 func normalizeDur(s string) string {
 	return durRe.ReplaceAllString(s, "0.00s")
+}
+
+func TestTimeoutLoopDoesNotStopIsolatedSuite(t *testing.T) {
+	got, err := run(t, "testdata/timeoutloop", func(o *testrun.Options) {
+		o.Verbose = true
+		o.Isolate = true
+		o.TestTimeout = 20 * time.Millisecond
+	})
+	if !errors.Is(err, testrun.ErrFailed) {
+		t.Fatalf("Run err = %v, want ErrFailed", err)
+	}
+	for _, want := range []string{"--- TRAP: TestLoop", "test timed out", "--- PASS: TestAfter"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q:\n%s", want, got)
+		}
+	}
 }
 
 func TestPass(t *testing.T) {
