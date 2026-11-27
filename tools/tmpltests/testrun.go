@@ -37,11 +37,7 @@ func runTestRun(pkgDir, gr, srcList, only string, timeout time.Duration, report 
 		Modes:       modes,
 		GOROOT:      gr,
 	})
-	if reportFile != nil {
-		if cerr := reportFile.Close(); err == nil {
-			err = cerr
-		}
-	}
+	err = finishTestRunOutput(reportFile, out, err)
 	if err == testrun.ErrFailed {
 		// tmpltests is a conformance report harness: like the process
 		// runner, non-passing upstream tests are data in the report rather

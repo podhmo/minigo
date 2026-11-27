@@ -1176,11 +1176,11 @@ func (h Hooks) symbolOf(v runtime.Value) (*xinspect.Decl, error) {
 		}
 		return h.symbolOf(x.Def)
 	case *runtime.BuiltinFunc:
-		name := x.Name
-		if x.Pkg != nil && strings.HasPrefix(name, x.Pkg.Path+".") {
-			name = name[len(x.Pkg.Path)+1:]
+		name, owner := x.Name, runtime.BuiltinOwner(x)
+		if owner != nil && strings.HasPrefix(name, owner.Path+".") {
+			name = name[len(owner.Path)+1:]
 		}
-		return h.hostDecl(x.Pkg, name, x), nil
+		return h.hostDecl(owner, name, x), nil
 	case *runtime.Package:
 		return nil, fmt.Errorf("inspect.SymbolOf: %s is a package, not a symbol", x.Path)
 	}

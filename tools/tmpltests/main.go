@@ -90,8 +90,8 @@ func run() error {
 	}
 	fmt.Println("workdir:", workDir)
 
-	minigo := *bin
-	if minigo == "" {
+	minigo, useTestRun := *bin, *runner == "testrun" || (*runner == "auto" && !*examples && *bin == "")
+	if !useTestRun && minigo == "" {
 		minigo = filepath.Join(workDir, "minigo")
 		cmd := exec.Command("go", "build", "-o", minigo, "./cmd/minigo")
 		cmd.Dir = *repoRoot
@@ -117,7 +117,7 @@ func run() error {
 	if *runner == "testrun" && *bin != "" {
 		return fmt.Errorf("-runner=testrun cannot use the external binary named by -minigo")
 	}
-	if *runner == "testrun" || (*runner == "auto" && !*examples && *bin == "") {
+	if useTestRun {
 		if *examples {
 			return fmt.Errorf("-runner=testrun does not support external example files yet")
 		}

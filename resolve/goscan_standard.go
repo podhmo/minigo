@@ -22,10 +22,9 @@ func (r *GoScanResolver) markStandard(meta *PackageMeta, err error) (*PackageMet
 	root, rerr := filepath.Abs(r.goRoot)
 	dir, derr := filepath.Abs(meta.Dir)
 	if rerr == nil && derr == nil {
-		if rel, err := filepath.Rel(root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") {
+		if rel, err := filepath.Rel(root, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, "../") && !strings.HasPrefix(rel, `..\`) {
 			meta.Standard = true
 		}
 	}
 	return meta, nil
 }
-

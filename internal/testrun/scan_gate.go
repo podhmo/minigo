@@ -34,4 +34,3 @@ func scanForRun(dir string, tags []string, tagged string) (*scanFiles, map[strin
 	}
 	return scan, gated, buildCfg, nil
 }
-
