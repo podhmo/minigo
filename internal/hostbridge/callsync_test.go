@@ -77,20 +77,21 @@ func TestPullProjectedKeepsHostKeyTypes(t *testing.T) {
 func TestProjectionSnapshotKeysUsePointerIdentity(t *testing.T) {
 	b1 := bytes.NewBufferString("same")
 	b2 := bytes.NewBufferString("same")
-	scriptBefore := projKey(b1)
-	hostBefore := hostKey(reflect.ValueOf(b1))
-	b1.WriteString(" changed")
 	if diff := cmp.Diff(projKey(b1), projKey(b2)); diff == "" {
 		t.Fatal("distinct same-content buffer keys collapsed")
 	}
+	if diff := cmp.Diff(hostKey(reflect.ValueOf(b1)), hostKey(reflect.ValueOf(b2))); diff == "" {
+		t.Fatal("distinct same-content host buffer keys collapsed")
+	}
+
+	scriptBefore := projKey(b1)
+	hostBefore := hostKey(reflect.ValueOf(b1))
+	b1.WriteString(" changed")
 	if diff := cmp.Diff(scriptBefore, projKey(b1)); diff != "" {
 		t.Fatalf("same buffer key changed across mutation (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff(hostBefore, hostKey(reflect.ValueOf(b1))); diff != "" {
 		t.Fatalf("same host buffer key changed across mutation (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff(hostKey(reflect.ValueOf(b1)), hostKey(reflect.ValueOf(b2))); diff == "" {
-		t.Fatal("distinct same-content host buffer keys collapsed")
 	}
 }
 
