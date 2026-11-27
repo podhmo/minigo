@@ -148,6 +148,11 @@ func (fs *flagState) varFlag(vc runtime.VMCaller, args []runtime.Value) (runtime
 	}
 	d := &flagDef{name: stdlib.Str(args[1]), usage: flagUsage(args, 2), value: args[0],
 		vx: flagValue{vc: vc, v: args[0]}}
+	if m, ok := vc.Member(args[0], "IsBoolFlag"); ok {
+		if ret, err := vc.Call(m, nil); err == nil {
+			d.boolFlag, _ = runtime.Unwrap(ret).(bool)
+		}
+	}
 	fs.defs[d.name] = d
 	fs.order = append(fs.order, d)
 	return runtime.NIL, nil

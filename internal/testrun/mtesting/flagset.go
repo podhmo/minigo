@@ -3,6 +3,7 @@ package mtesting
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/internal/stdlib"
@@ -37,7 +38,7 @@ func scalarFlagMembers(fs *flagState) []flagMember {
 	}
 	int64Arg := func(v runtime.Value) runtime.Value { return intArg(v) }
 	float64Arg := func(v runtime.Value) runtime.Value { return floatArg(v) }
-	dur := func(v runtime.Value) runtime.Value { return hostbridge.GoNative(v) }
+	dur := func(v runtime.Value) runtime.Value { return time.Duration(intArg(v)) }
 	return []flagMember{
 		{"Bool", fs.flagScalar(boolArg, false, parseBoolFlag)},
 		{"BoolVar", fs.scalarVar(boolArg, false, parseBoolFlag)},
@@ -76,7 +77,7 @@ func newFlagSetValue(_ string, mode int64, suite *Suite) runtime.Value {
 				return runtime.NIL, nil
 			}
 			if mode == 2 { // PanicOnError
-				panic(&runtime.Panic{Value: err.Error()})
+				panic(&runtime.Panic{Value: stdlib.ErrVal(err)})
 			}
 			// ExitOnError cannot exit the host test process; report the
 			// parse error like ContinueOnError instead.
@@ -118,6 +119,10 @@ func stringsArgs(v runtime.Value) []string {
 func (fs *flagState) parseArgs(vc runtime.VMCaller, args []string) error {
 	fs.parsed = true
 	rest := append([]string(nil), args...)
+	fail := func(err error) error {
+		fs.rest = append([]string(nil), rest...)
+		return err
+	}
 	for len(rest) > 0 {
 		s := rest[0]
 		if s == "--" {
@@ -127,13 +132,14 @@ func (fs *flagState) parseArgs(vc runtime.VMCaller, args []string) error {
 		if len(s) < 2 || s[0] != '-' || s == "-" {
 			break
 		}
+		rest = rest[1:]
 		numMinuses := 1
 		if s[1] == '-' {
 			numMinuses++
 		}
 		nameval := s[numMinuses:]
 		if nameval == "" || nameval[0] == '-' || nameval[0] == '=' {
-			return fmt.Errorf("bad flag syntax: %s", s)
+			return fail(fmt.Errorf("bad flag syntax: %s", s))
 		}
 		name, value, hasValue := nameval, "", false
 		if i := strings.IndexByte(nameval, '='); i >= 0 {
@@ -141,23 +147,22 @@ func (fs *flagState) parseArgs(vc runtime.VMCaller, args []string) error {
 		}
 		d, ok := fs.defs[name]
 		if !ok {
-			return fmt.Errorf("flag provided but not defined: -%s", name)
+			return fail(fmt.Errorf("flag provided but not defined: -%s", name))
 		}
 		if !hasValue {
 			if d.boolFlag {
 				value = "true"
 			} else {
-				if len(rest) < 2 {
-					return fmt.Errorf("flag needs an argument: -%s", name)
+				if len(rest) < 1 {
+					return fail(fmt.Errorf("flag needs an argument: -%s", name))
 				}
-				value = rest[1]
+				value = rest[0]
 				rest = rest[1:]
 			}
 		}
 		if err := fs.assign(vc, d, value); err != nil {
-			return fmt.Errorf("invalid value %q for flag -%s: %w", value, name, err)
+			return fail(fmt.Errorf("invalid value %q for flag -%s: %w", value, name, err))
 		}
-		rest = rest[1:]
 	}
 	fs.rest = rest
 	return nil

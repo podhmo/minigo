@@ -47,7 +47,7 @@ func parseDurationFlag(s string) (runtime.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return int64(v), nil
+	return v, nil
 }
 
 func intArg(v runtime.Value) int64 {
