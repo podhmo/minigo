@@ -1,9 +1,9 @@
 package minigo
 
-// nestedNewEngine resolves relative anchors in the parent's virtual cwd
-// and inherits the parent's security posture even when script-supplied
-// options try to replace it. AllowedRoots are handled at registration:
-// Engine.WithResolver would otherwise replace the confined resolver.
+// nestedNewEngine resolves only startDir in the parent's virtual cwd; later
+// Run/Package dir refs keep host-resolver semantics. It inherits the parent's
+// security posture even when script options try to replace it. AllowedRoots
+// are handled at registration: Engine.WithResolver would otherwise replace the confined resolver.
 func (e *Engine) nestedNewEngine(startDir string, opts ...Option) *Engine {
 	if p, err := e.fsPath(startDir); err == nil {
 		startDir = p
