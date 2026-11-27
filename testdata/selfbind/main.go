@@ -108,7 +108,7 @@ func NestedOutputWriter() string {
 	n := 0
 	e := minigo.NewEngine(".")
 	minigo.WithOutput(scriptWriter{n: &n})(e)
-	if _, err := e.Run(context.Background(), "./testdata/intrins", "Prints"); err != nil {
+	if _, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteString"); err != nil {
 		return fmt.Sprint(err)
 	}
 	return fmt.Sprint(n)

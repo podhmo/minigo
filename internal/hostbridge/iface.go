@@ -91,6 +91,13 @@ func (s *scriptIface) Close() error {
 }
 
 func (s *scriptIface) WriteString(str string) (int, error) {
+	vc := s.m.AnchorMember(s.vc)
+	if _, ok := vc.Member(s.recv, "WriteString"); !ok {
+		// The proxy's static io surface includes WriteString. When the
+		// script value only implements Write, io's usual fallback keeps
+		// fmt's string fast path equivalent instead of failing.
+		return s.Write([]byte(str))
+	}
 	rs, err := s.call("WriteString", str)
 	if err != nil {
 		return 0, err

@@ -93,6 +93,12 @@ func Prints() int {
 	return 0
 }
 
+// StdoutWriteString drives the engine output through os.Stdout's string fast path.
+func StdoutWriteString() int {
+	os.Stdout.WriteString("hello 42\n")
+	return 0
+}
+
 // StdoutReflectWrite drives os.Stdout through the reflect method
 // expression — the facade's Write must still reach the engine's
 // configured output, not the process fd.

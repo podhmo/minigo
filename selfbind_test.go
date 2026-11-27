@@ -71,6 +71,31 @@ func TestSelfBoundScriptValuesCrossEmbeddingOptions(t *testing.T) {
 	}
 }
 
+func TestSelfBoundScriptWriterSurvivesNestedEngineReuse(t *testing.T) {
+	e := NewEngine(".")
+	if got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "Setup"); err != nil || got != "ok" {
+		t.Fatalf("Setup() = %v, %v", got, err)
+	}
+	if got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "Use"); err != nil || got != "9" {
+		t.Fatalf("first Use() = %v, %v", got, err)
+	}
+	if got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "Use"); err != nil || got != "18" {
+		t.Fatalf("second Use() = %v, %v", got, err)
+	}
+}
+
+func TestSelfBoundScriptHostPolicySurvivesNestedEngineReuse(t *testing.T) {
+	e := NewEngine(".")
+	if got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "SetupPolicy"); err != nil || got != "ok" {
+		t.Fatalf("SetupPolicy() = %v, %v", got, err)
+	}
+	for i := 0; i < 2; i++ {
+		if got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "UsePolicy"); err != nil || got != "denied" {
+			t.Fatalf("UsePolicy() %d = %v, %v", i, got, err)
+		}
+	}
+}
+
 func TestSelfBoundEngineInheritsHostPolicy(t *testing.T) {
 	e := NewEngine(".", WithHostPolicy(func(path, sym string) bool {
 		return !(path == "os" && sym == "Getenv")
