@@ -17,11 +17,8 @@ import (
 	stdlibgodebug "github.com/podhmo/minigo/internal/stdlib/godebug"
 	stdruntime "github.com/podhmo/minigo/internal/stdlib/goruntime"
 	stdlibhex "github.com/podhmo/minigo/internal/stdlib/hex"
-	stdlibhost "github.com/podhmo/minigo/internal/stdlib/host"
 	stdlibhtml "github.com/podhmo/minigo/internal/stdlib/html"
 	stdlibhtmltemplate "github.com/podhmo/minigo/internal/stdlib/htmltemplate"
-	stdlibimportmanager "github.com/podhmo/minigo/internal/stdlib/importmanager"
-	stdinspect "github.com/podhmo/minigo/internal/stdlib/inspect"
 	stdio "github.com/podhmo/minigo/internal/stdlib/io"
 	stdjson "github.com/podhmo/minigo/internal/stdlib/json"
 	stdlibmaps "github.com/podhmo/minigo/internal/stdlib/maps"
@@ -83,22 +80,7 @@ func (e *Engine) registerStdlib() {
 	e.pending.Register("os", func() { stdlibos.Install(e.bindBound, h, h.env) })
 	e.pending.Register("path/filepath", func() { stdlibfilepath.Install(e.bindBound, h, h.env) })
 	e.pending.Register("os/exec", func() { stdlibosexec.Install(e.bindBound, h, h.env) })
-	e.pending.Register("minigo.dev/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
-	e.pending.Register("github.com/podhmo/minigo/host", func() { stdlibhost.Install(e.bindBound, h, h.env) })
-	e.pending.Register("minigo.dev/importmanager", func() { stdlibimportmanager.Install(e.bindBound, h) })
-	e.pending.Register("github.com/podhmo/minigo/pkg/importmanager", func() { stdlibimportmanager.Install(e.bindBound, h) })
-	stdinspectHooks := stdinspect.Hooks{
-		LoadPath:        e.loadPath,
-		LoadPathLenient: e.loadPathLenient,
-		LoadDirLenient:  e.loadDirLenient,
-		LoadFileLenient: e.loadFileLenient,
-		FSPath:          e.fsPath,
-		Materialize:     e.materialize,
-		BoundOf:         e.BoundOf,
-		SourceOf:        e.SourceOf,
-	}
-	e.pending.Register("minigo.dev/inspect", func() { stdinspect.Install(e.bindBound, stdinspectHooks) })
-	e.pending.Register("github.com/podhmo/minigo/inspect", func() { stdinspect.Install(e.bindBound, stdinspectHooks) })
+	e.registerMinigoBindings(h)
 	e.pending.Register("unsafe", func() { stdunsafe.Install(e.bindBound, e.reflectHooks()) })
 	e.pending.Register("runtime", func() { stdruntime.Install(e.bindBound, h) })
 	e.pending.Register("time", func() { stdlibtime.Install(e.bindBound, h) })
