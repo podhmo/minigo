@@ -31,6 +31,7 @@ import (
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/internal/testrun"
 
 	"github.com/podhmo/minigo/repl"
 	"github.com/podhmo/minigo/resolve"
@@ -67,6 +68,8 @@ func main() {
 		}
 	case "run":
 		err = run(ctx, args[1:])
+	case "test":
+		err = runTest(ctx, args[1:])
 	case "vet":
 		err = vet(ctx, args[1:])
 	case "gen-intrinsics":
@@ -80,6 +83,10 @@ func main() {
 	case err == nil:
 	case errors.Is(err, errHelp):
 		fmt.Print(helps[cmd])
+	case errors.Is(err, testrun.ErrFailed):
+		// the report already printed the FAIL trailer; only the
+		// exit status carries the failure, like go test.
+		os.Exit(1)
 	case errors.As(err, new(*usageError)):
 		fmt.Fprintf(os.Stderr, "minigo %s: %v\n\n%s", cmd, err, helps[cmd])
 		os.Exit(2)

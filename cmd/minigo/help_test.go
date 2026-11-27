@@ -15,7 +15,7 @@ func TestHelpTopics(t *testing.T) {
 		got = append(got, k)
 	}
 	sort.Strings(got)
-	want := []string{"", "env", "examples", "gen-intrinsics", "repl", "run", "vet"}
+	want := []string{"", "env", "examples", "gen-intrinsics", "repl", "run", "test", "vet"}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("help topics mismatch (-want +got):\n%s", diff)
 	}
@@ -46,6 +46,11 @@ func TestSubcommandArgs(t *testing.T) {
 		{"repl -h", func() error { return replArgs([]string{"-h"}) }, "help"},
 		{"repl x", func() error { return replArgs([]string{"x"}) }, "usage"},
 		{"repl", func() error { return replArgs(nil) }, ""},
+		{"test -h", func() error { return runTest(ctx, []string{"-h"}) }, "help"},
+		{"test two dirs", func() error { return runTest(ctx, []string{"a", "b"}) }, "usage"},
+		{"test unknown flag", func() error { return runTest(ctx, []string{"-nope"}) }, "usage"},
+		{"test -run missing", func() error { return runTest(ctx, []string{"-run"}) }, "usage"},
+		{"test -count bad", func() error { return runTest(ctx, []string{"-count", "x", "./testdata"}) }, "usage"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

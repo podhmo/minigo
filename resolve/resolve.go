@@ -218,7 +218,7 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			// interpreter cannot link native code, so a directory walk
 			// skips them like ignored files (an explicitly named file
 			// still fails at index time).
-			if importsC(f) {
+			if ImportsC(f) {
 				cgo++
 				continue
 			}
@@ -252,9 +252,9 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 			reasons = append(reasons, fmt.Sprintf("%d skipped (cgo is not supported)", cgo))
 		}
 		if len(reasons) > 0 {
-			return nil, fmt.Errorf("no buildable Go source files in %s: %s", what, strings.Join(reasons, ", "))
+			return nil, fmt.Errorf("%w in %s: %s", ErrNoBuildableGoFiles, what, strings.Join(reasons, ", "))
 		}
-		return nil, fmt.Errorf("no buildable Go source files in %s", what)
+		return nil, fmt.Errorf("%w in %s", ErrNoBuildableGoFiles, what)
 	}
 	// The package clause is a majority vote over every matched file —
 	// a mixed directory (already a `go build` failure) must not take
@@ -278,10 +278,10 @@ func ReadPackageFiles(dir, importPath string, cfg BuildConfig) (*PackageMeta, er
 	}, nil
 }
 
-// importsC reports whether the parsed file imports "C", the cgo
+// ImportsC reports whether the parsed file imports "C", the cgo
 // pseudo-package (any import spelling — import "C", import C "C",
 // import _ "C").
-func importsC(f *ast.File) bool {
+func ImportsC(f *ast.File) bool {
 	for _, is := range f.Imports {
 		if path, err := strconv.Unquote(is.Path.Value); err == nil && path == "C" {
 			return true

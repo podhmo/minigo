@@ -1,0 +1,3 @@
+//go:build (
+
+package brokenmeta

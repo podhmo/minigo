@@ -9,6 +9,7 @@ usage:
   minigo run file.go... [Func] [flags] [-- script args...]
   minigo <ref> [Func] [-- script args...]    shorthand for run
   minigo repl
+  minigo test [dir] [flags]
   minigo vet <ref> [--special import/path.Sym]...
   minigo gen-intrinsics -output <dir> <ref>...
   minigo help [topic]
