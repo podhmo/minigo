@@ -36,6 +36,19 @@ func (c *Child) Label() string { childCalls++; return "x" }
 
 type EffectParent struct{ N int }
 
+
+type ItemList struct {
+	N      int
+	Values []int
+}
+
+func (p *ItemList) Empty() bool {
+	for range p.Values {
+		return false
+	}
+	return true
+}
+
 type Stream struct {
 	N      int
 	Values chan int
@@ -150,6 +163,23 @@ func RenderNamedScalars() string {
 	}
 	return out.String()
 }
+
+func RenderSliceRange() string {
+	item := &ItemList{}
+	t := template.Must(template.New("slice-range").Funcs(template.FuncMap{
+		"update": func() any {
+			item.N = 8
+			item.Values = []int{1}
+			return item
+		},
+	}).Parse("{{with update}}{{.Empty}}{{end}}"))
+
+	var out strings.Builder
+	if err := t.Execute(&out, item); err != nil {
+		return err.Error()
+	}
+	return out.String()
+}
 `
 
 func runSessionMemoryRegression(t *testing.T) map[string]any {
@@ -180,7 +210,7 @@ func runSessionMemoryRegression(t *testing.T) map[string]any {
 	}
 
 	out := map[string]any{}
-	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderNamedScalars", "RenderError", "RenderChildEffect"} {
+	for _, name := range []string{"RoundTrip", "Render", "RenderReceive", "RenderNamedScalars", "RenderSliceRange", "RenderError", "RenderChildEffect"} {
 		value, err := engine.Call(ctx, pkg, name)
 		if err != nil {
 			t.Fatal(err)
@@ -229,5 +259,12 @@ func TestCallbackReturnedNamedScalarMethodsRefresh(t *testing.T) {
 	got := runSessionMemoryRegression(t)["RenderNamedScalars"]
 	if diff := cmp.Diff("8/8", got); diff != "" {
 		t.Fatalf("RenderNamedScalars (-want +got):\n%s", diff)
+	}
+}
+
+func TestCallbackReturnedSliceRangeMethodsRefresh(t *testing.T) {
+	got := runSessionMemoryRegression(t)["RenderSliceRange"]
+	if diff := cmp.Diff("false", got); diff != "" {
+		t.Fatalf("RenderSliceRange (-want +got):\n%s", diff)
 	}
 }
