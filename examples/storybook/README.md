@@ -209,6 +209,31 @@ page's images, JavaScript, or routes likewise need an appropriate serving
 setup; file URLs and preview URLs are not the application's original
 origin. An iframe view is not an end-to-end browser test of the application.
 
+## Extension: generate display fixtures from types
+
+`github.com/podhmo/minigo/x/storybook/fixture` provides four generic
+constructors for data-state experiments:
+
+```go
+v := fixture.Empty[UserView]()    // the Go zero value
+v = fixture.Minimal[UserView]()   // non-zero scalars, one-element collections
+v = fixture.Maximal[UserView]()   // large scalars, several collection elements
+v = fixture.LongText[UserView]()  // Minimal with long mixed-script strings
+```
+
+The same import is valid in a native Go test and in a story interpreted
+through `storybook.Book`: native code uses reflection, while `Book` binds
+the import path into minigo with script-aware versions. Generation walks
+structs, pointers, slices, arrays, and maps without running user methods,
+so it only reads the type declarations needed by the preview. Recursive
+types stop at their zero value instead of looping.
+
+This is a helper-level extension: the direct `minigo run` CLI does not
+bind the fixture package, and generated values are starting points rather
+than domain-valid fixtures. Tune important states by hand after generation;
+interfaces, functions, channels, and unrepresentable host types remain at
+their zero values.
+
 ## Extension: supply fake standard-library bindings
 
 A custom preview command embedding minigo can replace host bindings,

@@ -114,6 +114,50 @@ func notStory() {}
 // A story-prefixed func whose signature fits neither shape fails
 // discovery instead of being silently skipped — a typo'd signature
 // must not drop the story.
+
+func TestRenderGeneratedFixture(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	"github.com/podhmo/minigo/x/storybook/fixture"
+)
+
+type Inner struct{ Enabled bool }
+type Label string
+type View struct {
+	Name Label
+	Count int
+	Tags []string
+	Inner *Inner
+	Scores map[string]int
+}
+
+func StoryGenerated() {
+	v := fixture.Minimal[View]()
+	fmt.Printf("%s/%d/%d/%t/%t/%d/%d", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"])
+}
+
+func StoryGeneratedLong() {
+	v := fixture.LongText[View]()
+	fmt.Print(len(v.Name) > 40)
+}
+`, nil)
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	page, err := b.Render(t.Context(), "StoryGenerated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("x/1/1/true/true/1/1", string(page.Body)); diff != "" {
+		t.Fatalf("generated fixture output (-want +got):\n%s", diff)
+	}
+	page, err = b.Render(t.Context(), "StoryGeneratedLong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("true", string(page.Body)); diff != "" {
+		t.Fatalf("generated long-text output (-want +got):\n%s", diff)
+	}
+}
+
 func TestDiscoverRejectsBadShape(t *testing.T) {
 	for _, tc := range []struct {
 		decl, want string
