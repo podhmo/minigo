@@ -111,9 +111,11 @@ func (e *Engine) sourceReplacementValue(pkg *runtime.Package, name string, repla
 	if rt != want {
 		return nil, fmt.Errorf("ReplaceSourceFunc %s.%s: Go replacement type %s does not match source-compatible type %s", pkg.Path, name, rt, want)
 	}
-	// Even when the caller wrapped the func already, reinstall a source-call
-	// wrapper: WrapFunc uses host-call error semantics and would drop a nil
-	// trailing error result that the source signature exposes.
+	if bf, ok := v.(*runtime.BuiltinFunc); ok && !bf.WrapsTarget {
+		return v, nil
+	}
+	// A generic WrapFunc adapter uses host-call error semantics; rewrap its
+	// target so a trailing error remains the source function's result value.
 	return stdlib.WrapBind(pkg.Path+"."+name, target), nil
 }
 
