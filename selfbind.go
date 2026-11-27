@@ -14,7 +14,7 @@ import (
 // construction invariants behind NewEngine are part of the embedding API.
 // Methods are not listed here; host reflection dispatches them on the
 // *Engine values NewEngine returns.
-func minigoSelfSymbols(newEngine func(string, ...Option) *Engine) map[string]runtime.Value {
+func minigoSelfSymbols(e *Engine) map[string]runtime.Value {
 	namedBasic := func(name, underlying string, zero any) *runtime.TypeDef {
 		td := &runtime.TypeDef{Name: "minigo." + name, Kind: runtime.KindNamedBasic, HostScalar: zero}
 		if underlying != "" {
@@ -43,13 +43,13 @@ func minigoSelfSymbols(newEngine func(string, ...Option) *Engine) map[string]run
 		"ModeSource":       ModeSource,
 		"ModeDeny":         ModeDeny,
 
-		"NewEngine":             stdlib.WrapBind("minigo.NewEngine", newEngine),
+		"NewEngine":             stdlib.WrapBind("minigo.NewEngine", e.nestedNewEngine),
 		"NewScriptProfiler":     stdlib.WrapBind("minigo.NewScriptProfiler", NewScriptProfiler),
 		"WithBuildConfig":       stdlib.WrapBind("minigo.WithBuildConfig", WithBuildConfig),
 		"WithInitMode":          stdlib.WrapBind("minigo.WithInitMode", WithInitMode),
-		"WithPackageModes":      stdlib.WrapBind("minigo.WithPackageModes", WithPackageModes),
+		"WithPackageModes":      stdlib.WrapBind("minigo.WithPackageModes", e.nestedWithPackageModes),
 		"WithAllowedRoots":      stdlib.WrapBind("minigo.WithAllowedRoots", WithAllowedRoots),
-		"WithHostPolicy":        stdlib.WrapBind("minigo.WithHostPolicy", WithHostPolicy),
+		"WithHostPolicy":        stdlib.WrapBind("minigo.WithHostPolicy", e.nestedWithHostPolicy),
 		"WithOutput":            stdlib.WrapBind("minigo.WithOutput", WithOutput),
 		"WithArgs":              stdlib.WrapBind("minigo.WithArgs", WithArgs),
 		"WithStrictLazyCompile": stdlib.WrapBind("minigo.WithStrictLazyCompile", WithStrictLazyCompile),

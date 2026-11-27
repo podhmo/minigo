@@ -7,18 +7,6 @@ import (
 	"github.com/podhmo/minigo/runtime"
 )
 
-// nestedNewEngine inherits the outer host policy even when script-supplied
-// options try to replace it. AllowedRoots are handled by binding empty
-// packages below: Engine.WithResolver would otherwise replace the confined
-// resolver.
-func (e *Engine) nestedNewEngine(startDir string, opts ...Option) *Engine {
-	if e.hostPolicy != nil {
-		policy := e.hostPolicy
-		opts = append(append([]Option(nil), opts...), Option(func(ne *Engine) { ne.hostPolicy = policy }))
-	}
-	return NewEngine(startDir, opts...)
-}
-
 // registerMinigoBindings registers the embedding-facing packages whose
 // implementation lives in this repository. They are host-bound for the
 // same reason as the stdlib intrinsics, but unlike stdlib packages they
@@ -34,7 +22,7 @@ func (e *Engine) registerMinigoBindings(h *hostHelpers) {
 	e.pending.Register("github.com/podhmo/minigo", func() {
 		symbols := map[string]runtime.Value{}
 		if len(e.cfg.AllowedRoots) == 0 {
-			symbols = minigoSelfSymbols(e.nestedNewEngine)
+			symbols = minigoSelfSymbols(e)
 		}
 		e.bindBound("github.com/podhmo/minigo", symbols)
 	})

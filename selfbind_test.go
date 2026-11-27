@@ -2,9 +2,13 @@ package minigo
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo/runtime"
 )
 
 // TestSelfBoundEngineNewSession pins the embedding API inside a script:
@@ -18,8 +22,8 @@ func TestSelfBoundEngineNewSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "ok" {
-		t.Fatalf("NestedSession() = %v (%T), want ok", got, got)
+	if diff := cmp.Diff("ok", got); diff != "" {
+		t.Fatalf("NestedSession() mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -31,8 +35,78 @@ func TestSelfBoundEngineInheritsHostPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "denied" {
-		t.Fatalf("NestedHostPolicy() = %v (%T), want denied", got, got)
+	if diff := cmp.Diff("denied", got); diff != "" {
+		t.Fatalf("NestedHostPolicy() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundEngineUsesParentWorkingDir(t *testing.T) {
+	mod := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte("module example.com/childmod\n\ngo 1.23\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(mod, "app"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mod, "app", "main.go"), []byte("package app\n\nfunc Answer() string { return \"ok\" }\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	e := NewEngine(".", WithWorkingDir(mod))
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedModule")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("ok", got); diff != "" {
+		t.Fatalf("NestedModule() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundEngineInheritsModeDeny(t *testing.T) {
+	e := NewEngine(".", WithPackageModes(map[string]PackageMode{"strings": ModeDeny}))
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedModeDeny")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("denied", got); diff != "" {
+		t.Fatalf("NestedModeDeny() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundEngineModeDenySurvivesPostConstructionOption(t *testing.T) {
+	e := NewEngine(".", WithPackageModes(map[string]PackageMode{"strings": ModeDeny}))
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedResetPackageModes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("denied", got); diff != "" {
+		t.Fatalf("NestedResetPackageModes() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundEnginePolicySurvivesPostConstructionOption(t *testing.T) {
+	e := NewEngine(".", WithHostPolicy(func(path, sym string) bool {
+		return !(path == "os" && sym == "Getenv")
+	}))
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedResetHostPolicy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("denied", got); diff != "" {
+		t.Fatalf("NestedResetHostPolicy() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundEngineSessionKeepsExplicitBind(t *testing.T) {
+	e := NewEngine(".")
+	e.Bind("github.com/podhmo/minigo", map[string]runtime.Value{
+		"Marker": func() string { return "custom" },
+	})
+	got, err := e.NewSession().Run(context.Background(), "./testdata/selfbind", "NestedMarker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("custom", got); diff != "" {
+		t.Fatalf("NestedMarker() mismatch (-want +got):\n%s", diff)
 	}
 }
 
