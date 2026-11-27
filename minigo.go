@@ -970,6 +970,7 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	vmm := e.newVM()
 	vmm.EnsureProc()
 	defer vmm.ReleaseProc()
+	defer vmm.StopProcOnContext(ctx)()
 	member, err := pkg.MemberV(name, e.materialize, func(fn *runtime.Function) error {
 		_, err := vmm.Call(fn, nil)
 		return err
@@ -977,9 +978,8 @@ func (e *Engine) Call(ctx context.Context, pkg *runtime.Package, name string, ar
 	if err != nil {
 		return nil, err
 	}
-	// host arguments cross as snapshots: a []string arrives as a
-	// *runtime.Slice instead of trapping "cannot use []string as
-	// []string" in the callee's param coerce.
+	// host arguments cross as snapshots: a []string arrives as a *runtime.Slice
+	// instead of trapping "cannot use []string as []string" in the callee's param coerce.
 	sargs := make([]runtime.Value, len(args))
 	for i, a := range args {
 		sargs[i] = vm.SnapshotOf(a)
