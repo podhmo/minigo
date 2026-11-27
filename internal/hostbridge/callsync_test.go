@@ -28,3 +28,20 @@ func TestSyncProjectedInterfaceKeysKeepIntegerTypes(t *testing.T) {
 		t.Fatalf("host map mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestProjectionSnapshotsKeepIntegerKeyTypes(t *testing.T) {
+	sm := runtime.NewMap(nil, true)
+	sm.Insert(int64(1), "one")
+	sm.Insert(runtime.Tag(runtime.BasicTypedef("int8"), int64(1)), "eight")
+	if diff := cmp.Diff(2, len(scriptSnap(sm))); diff != "" {
+		t.Fatalf("script snapshot length mismatch (-want +got):\n%s", diff)
+	}
+	keys := map[string]bool{
+		hostKey(reflect.ValueOf(int(1))):   true,
+		hostKey(reflect.ValueOf(int8(1))):  true,
+		hostKey(reflect.ValueOf(int64(1))): true,
+	}
+	if diff := cmp.Diff(3, len(keys)); diff != "" {
+		t.Fatalf("host key length mismatch (-want +got):\n%s", diff)
+	}
+}
