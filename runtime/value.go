@@ -3084,9 +3084,12 @@ type Function struct {
 	OuterTParams []string
 
 	Compile func(*Function) error // injected by the engine
-	once    sync.Once
-	cerr    error
-	Chunk   *bytecode.Chunk
+	// ConstOnly marks a synthetic constant evaluator: package-member
+	// reads bind constants without completing the package's runtime init.
+	ConstOnly bool
+	once      sync.Once
+	cerr      error
+	Chunk     *bytecode.Chunk
 }
 
 // EnsureCompiled compiles the function once, through Compile, and

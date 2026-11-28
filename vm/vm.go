@@ -879,7 +879,7 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 			imported = p
 		}
 		if imported != nil {
-			mv, err := v.memberOf(imported, name)
+			mv, err := v.memberOf(imported, name, constOnlyFrame(f))
 			if err != nil {
 				return nil, nil, false, fmt.Errorf("dot import %s: %w", imported.Path, err)
 			}

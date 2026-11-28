@@ -1637,7 +1637,7 @@ func (e *Engine) bootstrapConsts(p *runtime.Package, run func(*runtime.Function)
 		}
 	}
 	e.bindCompiles(p, ch)
-	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch}
+	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch, ConstOnly: true}
 	return run(fn)
 }
 

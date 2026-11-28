@@ -255,12 +255,14 @@ const N = 1
 type Pair model.Pair
 type Pair2 model.Pair2
 type Pair3 model.Pair3
+type Pair4 model.Pair4
 
 func StoryCrossPackageArrayLen() {
 	p := fixture.Minimal[Pair]()
 	q := fixture.Minimal[Pair2]()
 	r := fixture.Minimal[Pair3]()
-	fmt.Printf("%d/%d/%d/%s", len(p), len(q), len(r), p[2])
+	s := fixture.Minimal[Pair4]()
+	fmt.Printf("%d/%d/%d/%d/%s", len(p), len(q), len(r), len(s), p[2])
 }
 `, map[string]string{
 		"model/model.go": `package model
@@ -270,10 +272,24 @@ import "x/sizes"
 type Pair [sizes.N]string
 type Pair2 [sizes.M]string
 type Pair3 [int(^uint8(252))]string
+type Pair4 [int(real(sizes.C) + 0)]string
+`,
+		"dep/dep.go": `package dep
+
+import "fmt"
+
+const Z = 3
+
+func init() { fmt.Println("dep init") }
 `,
 		"sizes/sizes.go": `package sizes
 
-import "fmt"
+import (
+	"fmt"
+	"x/dep"
+)
+
+const U = int(dep.Z)
 
 const C = 3 + 0i
 
@@ -290,7 +306,7 @@ func init() { fmt.Println("sizes init") }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("3/3/3/x", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("3/3/3/3/x", string(page.Body)); diff != "" {
 		t.Fatalf("cross-package array fixture output (-want +got):\n%s", diff)
 	}
 }

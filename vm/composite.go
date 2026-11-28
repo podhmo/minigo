@@ -52,7 +52,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		if err != nil {
 			f.trap("import %s: %s", b.Path, err)
 		}
-		mv, err := v.memberOf(p, name)
+		mv, err := v.memberOf(p, name, constOnlyFrame(f))
 		if err != nil {
 			f.trapErr(err)
 		}
@@ -69,7 +69,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		if !token.IsExported(name) {
 			f.trap("cannot refer to unexported name %s.%s", b.Path, name)
 		}
-		mv, err := v.memberOf(b, name)
+		mv, err := v.memberOf(b, name, constOnlyFrame(f))
 		if err != nil {
 			// member access on a package is namespace-only — the
 			// value's meaning must not change with its type, so the
@@ -3080,8 +3080,16 @@ func hostNewStructTagged(v runtime.Value) bool {
 // package initializer triggered from inside this VM runs on THIS VM — a
 // spawned goroutine's first touch of a package must not execute __init__
 // on the engine's root VM.
-func (v *VM) memberOf(p *runtime.Package, name string) (runtime.Value, error) {
-	return p.MemberV(name, v.H.Materialize, v.runInit)
+func (v *VM) memberOf(p *runtime.Package, name string, constOnly ...bool) (runtime.Value, error) {
+	run := v.runInit
+	if len(constOnly) > 0 && constOnly[0] {
+		run = nil
+	}
+	return p.MemberV(name, v.H.Materialize, run)
+}
+
+func constOnlyFrame(f *frame) bool {
+	return f != nil && f.fn != nil && f.fn.ConstOnly
 }
 
 // lenDerefFold reports the constant length of *p when p's type is
@@ -3331,7 +3339,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		func() {
 			defer func() { _ = recover() }()
 			if ch, err := v.H.CompileExpr(pkg, file, at.Len); err == nil && ch != nil {
-				if r, err2 := v.call(&runtime.Function{Pkg: pkg, File: file, Name: "<arraylen>", Chunk: ch}, nil, nil, nil); err2 == nil {
+				if r, err2 := v.call(&runtime.Function{Pkg: pkg, File: file, Name: "<arraylen>", Chunk: ch, ConstOnly: true}, nil, nil, nil); err2 == nil {
 					if iv, ok2 := lenConstInt(r); ok2 {
 						n, ok = iv, true
 					}
