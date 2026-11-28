@@ -267,7 +267,11 @@ type Pair [sizes.N]string
 `,
 		"sizes/sizes.go": `package sizes
 
-const N = 3
+import "fmt"
+
+const N = int(3)
+
+func init() { fmt.Println("sizes init") }
 `,
 	})
 	b := &storybook.Book{Dir: dir, Tag: "story"}

@@ -841,14 +841,33 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 			return best, bTyped, true
 		default:
-			// a T(c) conversion carries the target's width —
-			// `^uint8(0) >> 7` is 1, not the untyped 3 — which the
-			// untyped constant.Value cannot express. The emitted
-			// position fold evaluates it instead.
-			return nil, false, false
+			if len(x.Args) != 1 || !constIntConvType(id.Name) {
+				return nil, false, false
+			}
+			av, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
+			if !ok {
+				return nil, false, false
+			}
+			iv := constant.ToInt(av)
+			if iv.Kind() == constant.Unknown {
+				return nil, false, false
+			}
+			// Constant conversions cannot wrap: the source value must
+			// already be representable in the target integer type. The
+			// result is still typed, so following arithmetic remains
+			// conservative about width-sensitive operations.
+			return iv, true, true
 		}
 	}
 	return nil, false, false
+}
+
+func constIntConvType(name string) bool {
+	switch name {
+	case "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte", "rune":
+		return true
+	}
+	return false
 }
 
 func binOpOf(tok token.Token) (bytecode.BinOp, bool) {
