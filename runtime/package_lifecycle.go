@@ -155,6 +155,10 @@ func (p *Package) resolveInitRunner(run func(*Function) error) (func(*Function) 
 // from a panic) only means the constants are not bound; the caller can
 // fall back to [Package.EnsureReadyRun].
 func (p *Package) EnsureConstsRun(run func(*Function) error) error {
+	gid := execution.GoroutineID()
+	if p.constOwner.Load() == gid {
+		return fmt.Errorf("constant initialization cycle: %s", p.Name)
+	}
 	return p.constOnce.Try(func() error {
 		if p.State() == Ready || p.ConstBootstrap == nil {
 			return nil
@@ -164,6 +168,8 @@ func (p *Package) EnsureConstsRun(run func(*Function) error) error {
 			return err
 		}
 		spike.NoteInitDuringCompile()
+		p.constOwner.Store(gid)
+		defer p.constOwner.Store(0)
 		return p.ConstBootstrap(p, run)
 	})
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/runtime"
+	"github.com/podhmo/minigo/syntax"
 )
 
 // constRefsVarOrFunc reports whether any const spec's effective value or
@@ -608,6 +609,16 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 	return nil, false
 }
 
+// ConstExprValue evaluates a package-scope constant expression without
+// running any package initializer. It exists for type-level constants
+// such as array lengths, whose values must be available while constants
+// themselves are still being bound.
+func ConstExprValue(pkg *runtime.Package, file *syntax.File, e ast.Expr) (constant.Value, bool) {
+	c := &compiler{pkg: pkg, file: file, fs: newFScope(nil), iotaVal: -1}
+	c.fs.pushBlock()
+	return c.scopeConstValue(e, 0)
+}
+
 // scopeConstValue evaluates a constant expression the way constValue
 // does, but also through names that denote constants at this point:
 // `iota`, a local const binding's initializer, and package-level const
@@ -687,6 +698,48 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 		}
 		return nil, false, false
+	case *ast.SelectorExpr:
+		id, ok := x.X.(*ast.Ident)
+		if !ok {
+			return nil, false, false
+		}
+		ref, isPkg := c.importRef(id.Name)
+		if !isPkg {
+			return nil, false, false
+		}
+		res := c.askIndexed(ref)
+		if res.Kind != semantics.Found && res.Kind != semantics.Deferred {
+			return nil, false, false
+		}
+		p := res.Val
+		if p == nil || p.Index == nil {
+			return nil, false, false
+		}
+		cd := p.Index.Consts[x.Sel.Name]
+		if cd == nil {
+			return nil, false, false
+		}
+		vs, ok := cd.Spec.(*ast.ValueSpec)
+		if !ok {
+			return nil, false, false
+		}
+		var ve ast.Expr
+		switch {
+		case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
+			ve = vs.Values[cd.NameIdx]
+		case cd.NameIdx < len(cd.Inherited):
+			ve = cd.Inherited[cd.NameIdx]
+		}
+		if ve == nil {
+			return nil, false, false
+		}
+		nc := &compiler{pkg: p, file: cd.File, fs: newFScope(nil), iotaVal: -1, strictLazy: c.strictLazy}
+		nc.fs.pushBlock()
+		cv, vtyped, ok := nc.scopeConstVal(ve, depth+1, cd.Idx)
+		if !ok {
+			return nil, false, false
+		}
+		return cv, vtyped || vs.Type != nil || cd.InheritedType != nil, true
 	case *ast.UnaryExpr:
 		xv, xt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {

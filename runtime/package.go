@@ -244,7 +244,8 @@ type PackageInstance struct {
 	// constOnce is the const-only counterpart of initOnce: its panics
 	// stay swallowed so the caller can fall back to the full
 	// initializer.
-	constOnce execution.Init
+	constOnce  execution.Init
+	constOwner atomic.Int64
 	// ConstBootstrap builds and runs the const-only initializer (const
 	// decls, no var specs, no init() funcs) — injected by the engine.
 	// A constant binds without the package's side effects; a failure or

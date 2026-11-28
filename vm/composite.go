@@ -3225,6 +3225,15 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	if n, ok := runtime.FoldedArrayLen(pkg, at); ok {
 		return n, true
 	}
+	if v.H.ConstEval != nil {
+		if cv, ok := v.H.ConstEval(pkg, file, at.Len); ok {
+			if iv, ok2 := toIntConst(cv); ok2 {
+				if n, ok3 := constant.Int64Val(iv); ok3 {
+					return runtime.FoldArrayLen(pkg, at, n), true
+				}
+			}
+		}
+	}
 	switch l := at.Len.(type) {
 	case *ast.BasicLit:
 		// the length literal evaluates in the constant domain — `1e1`,
@@ -3241,14 +3250,26 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		// ran (Materialize returns NIL for const decls); fall back to the
 		// index for a const declared below the use or not yet bound.
 		if pkg != nil {
-			_ = pkg.EnsureConstsRun(v.runInit)
-			if gv, ok := pkg.Globals.Get(l.Name); ok {
+			readGlobal := func() (int64, bool) {
+				gv, ok := pkg.Globals.Get(l.Name)
+				if !ok {
+					return 0, false
+				}
 				if d, ok2 := runtime.Deref(gv); ok2 {
 					gv = d
 				}
-				if n, ok2 := lenConstInt(gv); ok2 {
-					return runtime.FoldArrayLen(pkg, at, n), true
-				}
+				return lenConstInt(gv)
+			}
+			if n, ok := readGlobal(); ok {
+				return runtime.FoldArrayLen(pkg, at, n), true
+			}
+			// Constants bind without running the package initializer.
+			// Try them only after the already-bound read: const bootstrap
+			// itself can need an array length, and re-entering its
+			// sync.Once would wait forever.
+			_ = pkg.EnsureConstsRun(v.runInit)
+			if n, ok := readGlobal(); ok {
+				return runtime.FoldArrayLen(pkg, at, n), true
 			}
 			if pkg.Index != nil && v.H.Materialize != nil {
 				if d := pkg.Index.Consts[l.Name]; d != nil {
@@ -3301,6 +3322,9 @@ func lenConstShaped(e ast.Expr) bool {
 		return lenConstShaped(x.X)
 	case *ast.BinaryExpr:
 		return lenConstShaped(x.X) && lenConstShaped(x.Y)
+	case *ast.SelectorExpr:
+		_, ok := x.X.(*ast.Ident)
+		return ok
 	case *ast.CallExpr:
 		// len/cap of an array is a constant expression — `len(a)`
 		// and `cap(a)` fold to the array's size; other calls are

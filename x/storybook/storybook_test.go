@@ -261,9 +261,13 @@ func StoryCrossPackageArrayLen() {
 `, map[string]string{
 		"model/model.go": `package model
 
-const N = 3
+import "x/sizes"
 
-type Pair [N]string
+type Pair [sizes.N]string
+`,
+		"sizes/sizes.go": `package sizes
+
+const N = 3
 `,
 	})
 	b := &storybook.Book{Dir: dir, Tag: "story"}

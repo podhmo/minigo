@@ -415,6 +415,7 @@ func (e *Engine) newVM() *vm.VM {
 		Builtin:           e.builtins.Get,
 		Materialize:       e.materialize,
 		CompileExpr:       e.compileExpr,
+		ConstEval:         compile.ConstExprValue,
 		CompileScopedExpr: e.compileScopedExpr,
 		Special: func(id runtime.SymbolID) (runtime.SpecialFunc, bool) {
 			e.mu.Lock()
