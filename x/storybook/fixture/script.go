@@ -154,7 +154,7 @@ func scriptCount(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode) int {
 }
 
 func scriptMap(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode, depth int, seen map[*runtime.TypeDef]bool) runtime.Value {
-	vt, err := vc.ElemOf(td)
+	vt, err := vc.ElemOf(u)
 	if err != nil || vt == nil {
 		return vc.Zero(td)
 	}
