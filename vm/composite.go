@@ -3364,11 +3364,22 @@ func lenConstShaped(e ast.Expr) bool {
 		_, ok := x.X.(*ast.Ident)
 		return ok
 	case *ast.CallExpr:
-		// len/cap of an array is a constant expression — `len(a)`
-		// and `cap(a)` fold to the array's size; other calls are
-		// non-constant and Go rejects them.
-		id, ok := x.Fun.(*ast.Ident)
-		return ok && (id.Name == "len" || id.Name == "cap")
+		// Calls in a valid constant length are conversions or the
+		// constant forms of len/cap/min/max. This syntactic gate cannot
+		// tell a conversion from a function call, but a real function
+		// call is invalid Go here; check only the operands' shape.
+		for _, a := range x.Args {
+			if !lenConstShaped(a) {
+				return false
+			}
+		}
+		switch f := x.Fun.(type) {
+		case *ast.Ident:
+			return true
+		case *ast.SelectorExpr:
+			_, ok := f.X.(*ast.Ident)
+			return ok
+		}
 	}
 	return false
 }
