@@ -756,13 +756,16 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			return nil, false, false
 		}
 		switch x.Op {
-		case token.ADD, token.SUB, token.XOR:
+		case token.ADD, token.SUB:
+			// Typed constant arithmetic is exact; an overflow is a
+			// compile-time error rather than a wrap, so valid programs
+			// keep the untyped operation's mathematical result.
+			return constant.UnaryOp(x.Op, xv, 0), xt, true
+		case token.XOR:
 			if xt {
-				// a typed operand wraps the result at the
-				// declared width — `^K` on `const K uint8 = 0`
-				// is 255, not the untyped -1 — which the bare
-				// value cannot express; emit and evaluate it
-				// instead.
+				// `^K` on an unsigned typed constant is width-dependent
+				// (`^uint8(0)` is 255), which the bare value cannot
+				// express without knowing K's type.
 				return nil, false, false
 			}
 			return constant.UnaryOp(x.Op, xv, 0), false, true
@@ -786,11 +789,16 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			// bool constant.
 			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), false, true
 		case token.LAND, token.LOR:
-			return nil, false, false
+			lb, rb := constant.BoolVal(lv), constant.BoolVal(rv)
+			if x.Op == token.LAND {
+				return constant.MakeBool(lb && rb), lt || rt, true
+			}
+			return constant.MakeBool(lb || rb), lt || rt, true
 		}
 		if lt || rt {
-			// an operator on a typed constant wraps at the
-			// declared width — see UnaryExpr.
+			// Numeric typed constant arithmetic rounds at the declared
+			// floating precision and rejects integer overflow; the bare
+			// value cannot express those rules without the type.
 			return nil, false, false
 		}
 		switch x.Op {
@@ -851,11 +859,30 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 			return best, bTyped, true
 		default:
-			if len(x.Args) != 1 || !constIntConvType(id.Name) {
+			if len(x.Args) != 1 {
 				return nil, false, false
 			}
 			av, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
 			if !ok {
+				return nil, false, false
+			}
+			te := c.unfoldTypExpr(x.Fun, 8)
+			tid, _ := ast.Unparen(te).(*ast.Ident)
+			if tid != nil {
+				switch tid.Name {
+				case "float32", "float64":
+					return c.roundConstForType(av, te), true, true
+				case "string":
+					if av.Kind() == constant.String {
+						return av, true, true
+					}
+				case "bool":
+					if av.Kind() == constant.Bool {
+						return av, true, true
+					}
+				}
+			}
+			if tid == nil || !constIntConvType(tid.Name) {
 				return nil, false, false
 			}
 			iv := constant.ToInt(av)
@@ -863,9 +890,7 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 				return nil, false, false
 			}
 			// Constant conversions cannot wrap: the source value must
-			// already be representable in the target integer type. The
-			// result is still typed, so following arithmetic remains
-			// conservative about width-sensitive operations.
+			// already be representable in the target integer type.
 			return iv, true, true
 		}
 	}
@@ -886,14 +911,23 @@ func (c *compiler) roundConstForType(cv constant.Value, te ast.Expr) constant.Va
 	if !ok {
 		return cv
 	}
+	real := cv
+	if cv.Kind() == constant.Complex {
+		// A complex constant with a zero imaginary part converts to a
+		// real type; a nonzero one is invalid rather than rounded away.
+		if constant.Sign(constant.Imag(cv)) != 0 {
+			return cv
+		}
+		real = constant.Real(cv)
+	}
 	// Float32Val/Float64Val's ok result reports exactness; constant
 	// conversion to a float type rounds inexact values instead.
 	switch id.Name {
 	case "float32":
-		f, _ := constant.Float32Val(cv)
+		f, _ := constant.Float32Val(real)
 		return constant.MakeFloat64(runtime.CanonConstZero(float64(f)))
 	case "float64":
-		f, _ := constant.Float64Val(cv)
+		f, _ := constant.Float64Val(real)
 		return constant.MakeFloat64(runtime.CanonConstZero(f))
 	}
 	return cv
