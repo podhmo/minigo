@@ -637,58 +637,144 @@ func (c *compiler) scopeConstValue(e ast.Expr, depth int) (cv constant.Value, ok
 // initializer re-derived at a use site): the same package-only name
 // resolution, but `iota` is undefined.
 //
-// typed reports that the folded value came from a declared type's
-// const. A bare name's value is exact either way, but operators on a
-// typed constant wrap at the declared width, which the bare
-// constant.Value cannot express — those refuse to fold so the key
-// emits and evaluates with the type's semantics.
-func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, typed bool, ok bool) {
+// typ is the basic constant type when one is known: operators convert
+// untyped operands into it and round floating arithmetic after every
+// step. "?" marks a typed local constant whose basic type is unavailable;
+// arithmetic through it refuses to fold so the key emits and evaluates
+// with the type's semantics.
+func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Value, typ string, ok bool) {
 	if depth > 8 {
-		return nil, false, false
+		return nil, "", false
 	}
 	if cv, ok := constValue(e); ok {
-		return cv, false, true
+		return cv, "", true
 	}
 	defer func() {
 		// like constValue: go/constant panics on unsound inputs; those
 		// keep runtime semantics.
 		if recover() != nil {
-			cv, typed, ok = nil, false, false
+			cv, typ, ok = nil, "", false
 		}
 	}()
+	retType := func(cv constant.Value, typ string) (constant.Value, string, bool) {
+		if cv == nil {
+			return nil, "", false
+		}
+		return cv, typ, true
+	}
+	convert := func(cv constant.Value, to string) (constant.Value, bool) {
+		return convertConstToBasic(cv, to)
+	}
+	operandType := func(lt, rt string) (string, bool) {
+		switch {
+		case lt != "" && rt != "":
+			if lt == "?" || rt == "?" || lt != rt {
+				return "", false
+			}
+			return lt, true
+		case lt != "":
+			if lt == "?" {
+				return "", false
+			}
+			return lt, true
+		case rt != "":
+			if rt == "?" {
+				return "", false
+			}
+			return rt, true
+		}
+		return "", true
+	}
+	convertOperands := func(lv, rv constant.Value, lt, rt string) (constant.Value, constant.Value, string, bool) {
+		typ, ok := operandType(lt, rt)
+		if !ok {
+			return nil, nil, "", false
+		}
+		if lt == "" && typ != "" {
+			lv, ok = convert(lv, typ)
+			if !ok {
+				return nil, nil, "", false
+			}
+		}
+		if rt == "" && typ != "" {
+			rv, ok = convert(rv, typ)
+			if !ok {
+				return nil, nil, "", false
+			}
+		}
+		return lv, rv, typ, true
+	}
+	finish := func(cv constant.Value, typ string) (constant.Value, string, bool) {
+		if cv == nil {
+			return nil, "", false
+		}
+		if typ == "float32" || typ == "float64" {
+			cv = roundConstToBasic(cv, typ)
+		}
+		return cv, typ, true
+	}
+	packageConst := func(pkg *runtime.Package, name string) (constant.Value, string, bool) {
+		if pkg == nil || pkg.Index == nil {
+			return nil, "", false
+		}
+		cd := pkg.Index.Consts[name]
+		if cd == nil {
+			return nil, "", false
+		}
+		vs, ok := cd.Spec.(*ast.ValueSpec)
+		if !ok {
+			return nil, "", false
+		}
+		var v ast.Expr
+		switch {
+		case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
+			v = vs.Values[cd.NameIdx]
+		case cd.NameIdx < len(cd.Inherited):
+			v = cd.Inherited[cd.NameIdx]
+		}
+		if v == nil {
+			return nil, "", false
+		}
+		nc := c
+		if pkg != c.pkg || cd.File != c.file {
+			nc = &compiler{pkg: pkg, file: cd.File, fs: newFScope(nil), iotaVal: -1, strictLazy: c.strictLazy}
+			nc.fs.pushBlock()
+		}
+		cv, typ, ok := nc.scopeConstVal(v, depth+1, cd.Idx)
+		if !ok {
+			return nil, "", false
+		}
+		te := vs.Type
+		if te == nil {
+			te = cd.InheritedType
+		}
+		if te != nil {
+			typ = nc.constBasicType(te)
+			if typ == "?" {
+				return nil, "", false
+			}
+			cv = roundConstToBasic(cv, typ)
+		}
+		return cv, typ, true
+	}
 	switch x := e.(type) {
 	case *ast.ParenExpr:
 		return c.scopeConstVal(x.X, depth+1, pkgIota)
 	case *ast.Ident:
 		if pkgIota == -1 {
 			if b := c.fs.lookupBinding(x.Name); b != nil && b.constVal != nil {
-				return b.constVal, !b.untypedConst, true
+				typ := ""
+				if !b.untypedConst {
+					// Local bindings do not carry the initializer's basic
+					// constant type, so typed arithmetic through them stays
+					// with the runtime evaluator.
+					typ = "?"
+				}
+				return b.constVal, typ, true
 			}
 		}
-		if c.pkg != nil && c.pkg.Index != nil {
-			if cd := c.pkg.Index.Consts[x.Name]; cd != nil {
-				if vs, ok := cd.Spec.(*ast.ValueSpec); ok {
-					var v ast.Expr
-					switch {
-					case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
-						v = vs.Values[cd.NameIdx]
-					case cd.NameIdx < len(cd.Inherited):
-						v = cd.Inherited[cd.NameIdx]
-					}
-					if v != nil {
-						cv, vtyped, ok := c.scopeConstVal(v, depth+1, cd.Idx)
-						if !ok {
-							return nil, false, false
-						}
-						te := vs.Type
-						if te == nil {
-							te = cd.InheritedType
-						}
-						cv = c.roundConstForType(cv, te)
-						return cv, vtyped || te != nil, true
-					}
-				}
-			}
+		if cv, typ, ok := packageConst(c.pkg, x.Name); ok {
+			return cv, typ, true
 		}
 		if x.Name == "iota" {
 			// iota is a predeclared identifier, not a keyword — a
@@ -696,147 +782,90 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			// spec index reads only when nothing else resolved the
 			// name.
 			if pkgIota >= 0 {
-				return constant.MakeInt64(int64(pkgIota)), false, true
+				return constant.MakeInt64(int64(pkgIota)), "", true
 			}
 			if pkgIota == -1 && c.iotaVal >= 0 {
-				return constant.MakeInt64(int64(c.iotaVal)), false, true
+				return constant.MakeInt64(int64(c.iotaVal)), "", true
 			}
 		}
-		return nil, false, false
+		return nil, "", false
 	case *ast.SelectorExpr:
 		id, ok := x.X.(*ast.Ident)
 		if !ok {
-			return nil, false, false
+			return nil, "", false
 		}
 		ref, isPkg := c.importRef(id.Name)
 		if !isPkg {
-			return nil, false, false
+			return nil, "", false
 		}
 		res := c.askIndexed(ref)
 		if res.Kind != semantics.Found && res.Kind != semantics.Deferred {
-			return nil, false, false
+			return nil, "", false
 		}
 		p := res.Val
 		if p == nil || p.Index == nil {
-			return nil, false, false
+			return nil, "", false
 		}
 		cd := p.Index.Consts[x.Sel.Name]
 		if cd == nil {
-			return nil, false, false
+			return nil, "", false
 		}
-		vs, ok := cd.Spec.(*ast.ValueSpec)
-		if !ok {
-			return nil, false, false
-		}
-		var ve ast.Expr
-		switch {
-		case len(vs.Values) == len(vs.Names) && cd.NameIdx < len(vs.Values):
-			ve = vs.Values[cd.NameIdx]
-		case cd.NameIdx < len(cd.Inherited):
-			ve = cd.Inherited[cd.NameIdx]
-		}
-		if ve == nil {
-			return nil, false, false
-		}
-		nc := &compiler{pkg: p, file: cd.File, fs: newFScope(nil), iotaVal: -1, strictLazy: c.strictLazy}
-		nc.fs.pushBlock()
-		cv, vtyped, ok := nc.scopeConstVal(ve, depth+1, cd.Idx)
-		if !ok {
-			return nil, false, false
-		}
-		te := vs.Type
-		if te == nil {
-			te = cd.InheritedType
-		}
-		cv = nc.roundConstForType(cv, te)
-		return cv, vtyped || te != nil, true
+		return packageConst(p, x.Sel.Name)
 	case *ast.UnaryExpr:
 		xv, xt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
-			return nil, false, false
+			return nil, "", false
 		}
 		switch x.Op {
 		case token.ADD, token.SUB:
-			// Typed constant arithmetic is exact; an overflow is a
-			// compile-time error rather than a wrap, so valid programs
-			// keep the untyped operation's mathematical result.
-			return constant.UnaryOp(x.Op, xv, 0), xt, true
-		case token.XOR:
-			if xt {
-				// `^K` on an unsigned typed constant is width-dependent
-				// (`^uint8(0)` is 255), which the bare value cannot
-				// express without knowing K's type.
-				return nil, false, false
+			if xt == "?" {
+				return nil, "", false
 			}
-			return constant.UnaryOp(x.Op, xv, 0), false, true
+			return finish(constant.UnaryOp(x.Op, xv, 0), xt)
+		case token.XOR:
+			if xt == "" {
+				return constant.UnaryOp(x.Op, xv, 0), "", true
+			}
+			cv, ok := xorConstTyped(xv, xt)
+			if !ok {
+				return nil, "", false
+			}
+			return cv, xt, true
 		case token.NOT:
+			if xt == "?" {
+				return nil, "", false
+			}
 			return constant.UnaryOp(x.Op, xv, 0), xt, true
 		}
-		return nil, false, false
+		return nil, "", false
 	case *ast.BinaryExpr:
 		lv, lt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
-			return nil, false, false
+			return nil, "", false
 		}
 		rv, rt, ok := c.scopeConstVal(x.Y, depth+1, pkgIota)
 		if !ok {
-			return nil, false, false
+			return nil, "", false
 		}
-		// An untyped constant operand converts to the typed operand's
-		// type before the operation. For an integer type that makes an
-		// integral float spelling an integer, so `/` stays integer
-		// division. Non-integral spellings are invalid Go and do not fold.
-		if lt && !rt && lv.Kind() == constant.Int && rv.Kind() == constant.Float {
-			if iv := constant.ToInt(rv); iv.Kind() != constant.Unknown {
-				rv = iv
-			} else {
-				return nil, false, false
-			}
-		}
-		if rt && !lt && rv.Kind() == constant.Int && lv.Kind() == constant.Float {
-			if iv := constant.ToInt(lv); iv.Kind() != constant.Unknown {
-				lv = iv
-			} else {
-				return nil, false, false
-			}
+		lv, rv, typ, ok := convertOperands(lv, rv, lt, rt)
+		if !ok {
+			return nil, "", false
 		}
 		switch x.Op {
 		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
-			// comparisons never round — a typed operand's value
-			// compares exactly and the result is an untyped
-			// bool constant.
-			return constant.MakeBool(constant.Compare(lv, x.Op, rv)), false, true
+			return retType(constant.MakeBool(constant.Compare(lv, x.Op, rv)), "")
 		case token.LAND, token.LOR:
 			lb, rb := constant.BoolVal(lv), constant.BoolVal(rv)
 			if x.Op == token.LAND {
-				return constant.MakeBool(lb && rb), lt || rt, true
+				return retType(constant.MakeBool(lb && rb), typ)
 			}
-			return constant.MakeBool(lb || rb), lt || rt, true
-		}
-		typed := lt || rt
-		floatOp := lv.Kind() == constant.Float || rv.Kind() == constant.Float
-		intOp := lv.Kind() == constant.Int && rv.Kind() == constant.Int
-		if typed && !floatOp && !intOp {
-			// Typed floating arithmetic is checked step-by-step below;
-			// typed integer arithmetic is exact for valid programs
-			// because overflow is a compile error, not a wrap. Other
-			// typed domains need type details the bare value lacks.
-			return nil, false, false
-		}
-		finish := func(cv constant.Value, typed bool) (constant.Value, bool, bool) {
-			if typed && (lv.Kind() == constant.Float || rv.Kind() == constant.Float) {
-				// Typed float operations round after every step. Accept
-				// only a step exact even at float32 precision; anything
-				// else needs the declared type and stays for the runtime
-				// constant evaluator rather than risking a wrong fold.
-				if _, exact := constant.Float32Val(cv); !exact {
-					return nil, false, false
-				}
-			}
-			return cv, typed, true
+			return retType(constant.MakeBool(lb || rb), typ)
 		}
 		switch x.Op {
 		case token.SHL, token.SHR:
+			if lt == "?" || rt == "float32" || rt == "float64" {
+				return nil, "", false
+			}
 			if lv.Kind() == constant.Float {
 				lv = constant.ToInt(lv)
 			}
@@ -845,166 +874,173 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 			s, ok := constant.Uint64Val(rv)
 			if !ok {
-				return nil, false, false
+				return nil, "", false
 			}
-			return finish(constant.Shift(lv, x.Op, uint(s)), lt)
+			// The shift count's type never propagates: the result takes
+			// the left operand's type, or stays untyped when that is
+			// untyped.
+			return retType(constant.Shift(lv, x.Op, uint(s)), lt)
 		case token.QUO:
 			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
-				return finish(constant.BinaryOp(lv, token.QUO_ASSIGN, rv), typed)
+				return finish(constant.BinaryOp(lv, token.QUO_ASSIGN, rv), typ)
 			}
-			return finish(constant.BinaryOp(lv, x.Op, rv), typed)
+			return finish(constant.BinaryOp(lv, x.Op, rv), typ)
 		default:
-			return finish(constant.BinaryOp(lv, x.Op, rv), typed)
+			return finish(constant.BinaryOp(lv, x.Op, rv), typ)
 		}
 	case *ast.CallExpr:
 		id, ok := ast.Unparen(x.Fun).(*ast.Ident)
 		if !ok {
-			return nil, false, false
+			return nil, "", false
 		}
 		switch id.Name {
 		case "len", "cap":
 			if len(x.Args) != 1 {
-				return nil, false, false
+				return nil, "", false
 			}
 			sv, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
 			if !ok || sv.Kind() != constant.String {
-				return nil, false, false
+				return nil, "", false
 			}
-			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), false, true
+			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), "", true
 		case "min", "max":
 			if len(x.Args) == 0 {
-				return nil, false, false
+				return nil, "", false
 			}
 			op := token.LSS
 			if id.Name == "max" {
 				op = token.GTR
 			}
-			var bTyped, floatResult bool
+			mode := ""
 			var args []constant.Value
-			var typedArgs []bool
+			var types []string
 			for _, a := range x.Args {
 				av, at, ok := c.scopeConstVal(a, depth+1, pkgIota)
 				if !ok {
-					return nil, false, false
+					return nil, "", false
 				}
-				bTyped = bTyped || at
-				floatResult = floatResult || at && av.Kind() == constant.Float
 				args = append(args, av)
-				typedArgs = append(typedArgs, at)
-			}
-			if !floatResult {
-				var best constant.Value
-				for _, av := range args {
-					if best == nil || constant.Compare(av, op, best) {
-						best = av
+				types = append(types, at)
+				if at != "" {
+					if mode == "" {
+						mode = at
+					} else if mode != at {
+						return nil, "", false
 					}
 				}
-				return best, bTyped, true
 			}
-			// Untyped arguments convert to the typed argument's float type
-			// before comparison. The bare value does not say whether that
-			// type is float32 or float64, so fold only when both precisions
-			// choose the same value. Typed float32 constants are exact at
-			// float32 precision already; a typed value that is not must be a
-			// wider constant whose exact comparison this shortcut cannot infer.
+			if mode == "?" {
+				return nil, "", false
+			}
+			var best constant.Value
 			for i, av := range args {
-				if typedArgs[i] && av.Kind() == constant.Float {
-					if _, exact := constant.Float32Val(av); !exact {
-						return nil, false, false
+				if types[i] == "" && mode != "" {
+					var ok bool
+					av, ok = convert(av, mode)
+					if !ok {
+						return nil, "", false
 					}
 				}
-			}
-			pick := func(width int) (constant.Value, bool) {
-				var best constant.Value
-				for i, av := range args {
-					if !typedArgs[i] && (av.Kind() == constant.Int || av.Kind() == constant.Float) {
-						var f float64
-						if width == 32 {
-							v, _ := constant.Float32Val(av)
-							f = float64(v)
-						} else {
-							v, _ := constant.Float64Val(av)
-							f = v
-						}
-						av = constant.MakeFloat64(runtime.CanonConstZero(f))
-					}
-					if best == nil || constant.Compare(av, op, best) {
-						best = av
-					}
+				if best == nil || constant.Compare(av, op, best) {
+					best = av
 				}
-				return best, best != nil
 			}
-			best32, ok32 := pick(32)
-			best64, ok64 := pick(64)
-			if !ok32 || !ok64 || constant.Compare(best32, token.NEQ, best64) {
-				return nil, false, false
-			}
-			return best64, true, true
+			return best, mode, true
 		default:
 			if len(x.Args) != 1 {
-				return nil, false, false
+				return nil, "", false
 			}
 			av, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
 			if !ok {
-				return nil, false, false
+				return nil, "", false
 			}
-			te := c.unfoldTypExpr(x.Fun, 8)
-			tid, _ := ast.Unparen(te).(*ast.Ident)
-			if tid != nil {
-				switch tid.Name {
-				case "float32", "float64":
-					return c.roundConstForType(av, te), true, true
-				case "string":
-					if av.Kind() == constant.String {
-						return av, true, true
-					}
-				case "bool":
-					if av.Kind() == constant.Bool {
-						return av, true, true
-					}
-				}
+			tn := c.constBasicType(x.Fun)
+			if tn == "" || tn == "?" {
+				return nil, "", false
 			}
-			if tid == nil || !constIntConvType(tid.Name) {
-				return nil, false, false
+			cv, ok := convert(av, tn)
+			if !ok {
+				return nil, "", false
 			}
-			iv := constant.ToInt(av)
-			if iv.Kind() == constant.Unknown {
-				return nil, false, false
-			}
-			// Constant conversions cannot wrap: the source value must
-			// already be representable in the target integer type.
-			return iv, true, true
+			return cv, tn, true
 		}
 	}
-	return nil, false, false
+	return nil, "", false
 }
 
-// roundConstForType applies the one narrowing a typed constant's
-// declaration implies for array-length evaluation: constants stay exact
-// in the source expression, but binding one to a float type rounds it to
-// that type's precision. Integer types do not round — an out-of-range
-// constant is invalid rather than modular — so they keep the exact
-// payload here.
-func (c *compiler) roundConstForType(cv constant.Value, te ast.Expr) constant.Value {
-	if cv == nil || te == nil {
-		return cv
+// constBasicType resolves a constant conversion or declaration type to
+// the basic type whose constant semantics matter here. "?" means a
+// typed expression whose basic type is not visible to this lightweight
+// evaluator; arithmetic through it must stay with the runtime evaluator.
+func (c *compiler) constBasicType(te ast.Expr) string {
+	if te == nil {
+		return ""
 	}
 	id, ok := ast.Unparen(c.unfoldTypExpr(te, 8)).(*ast.Ident)
 	if !ok {
+		return "?"
+	}
+	switch id.Name {
+	case "bool", "string",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte", "rune",
+		"float32", "float64":
+		return id.Name
+	}
+	return "?"
+}
+
+func constRealPart(cv constant.Value) (constant.Value, bool) {
+	if cv.Kind() == constant.Complex {
+		if constant.Sign(constant.Imag(cv)) != 0 {
+			return nil, false
+		}
+		return constant.Real(cv), true
+	}
+	return cv, cv.Kind() == constant.Int || cv.Kind() == constant.Float
+}
+
+func xorConstTyped(cv constant.Value, typ string) (constant.Value, bool) {
+	if cv.Kind() != constant.Int {
+		return nil, false
+	}
+	switch typ {
+	case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "byte":
+		u, ok := constant.Uint64Val(cv)
+		if !ok {
+			return nil, false
+		}
+		bits := uint(64)
+		switch typ {
+		case "uint8", "byte":
+			bits = 8
+		case "uint16":
+			bits = 16
+		case "uint32":
+			bits = 32
+		}
+		mask := ^uint64(0)
+		if bits < 64 {
+			mask = uint64(1)<<bits - 1
+		}
+		return constant.MakeUint64((^u) & mask), true
+	case "int", "int8", "int16", "int32", "int64", "rune":
+		// In every signed two's-complement width ^x is -x-1, the same
+		// operation go/constant uses for an untyped integer.
+		return constant.UnaryOp(token.XOR, cv, 0), true
+	}
+	return nil, false
+}
+
+func roundConstToBasic(cv constant.Value, typ string) constant.Value {
+	if cv == nil {
+		return nil
+	}
+	real, ok := constRealPart(cv)
+	if !ok {
 		return cv
 	}
-	real := cv
-	if cv.Kind() == constant.Complex {
-		// A complex constant with a zero imaginary part converts to a
-		// real type; a nonzero one is invalid rather than rounded away.
-		if constant.Sign(constant.Imag(cv)) != 0 {
-			return cv
-		}
-		real = constant.Real(cv)
-	}
-	// Float32Val/Float64Val's ok result reports exactness; constant
-	// conversion to a float type rounds inexact values instead.
-	switch id.Name {
+	switch typ {
 	case "float32":
 		f, _ := constant.Float32Val(real)
 		return constant.MakeFloat64(runtime.CanonConstZero(float64(f)))
@@ -1013,6 +1049,38 @@ func (c *compiler) roundConstForType(cv constant.Value, te ast.Expr) constant.Va
 		return constant.MakeFloat64(runtime.CanonConstZero(f))
 	}
 	return cv
+}
+
+func convertConstToBasic(cv constant.Value, typ string) (constant.Value, bool) {
+	if cv == nil {
+		return nil, false
+	}
+	switch typ {
+	case "float32", "float64":
+		if _, ok := constRealPart(cv); !ok {
+			return nil, false
+		}
+		return roundConstToBasic(cv, typ), true
+	case "bool":
+		return cv, cv.Kind() == constant.Bool
+	case "string":
+		return cv, cv.Kind() == constant.String
+	}
+	if !constIntConvType(typ) {
+		return nil, false
+	}
+	real, ok := constRealPart(cv)
+	if !ok {
+		return nil, false
+	}
+	iv := constant.ToInt(real)
+	if iv.Kind() == constant.Unknown {
+		return nil, false
+	}
+	// Constant conversions cannot wrap: the source value must already be
+	// representable in the target integer type. Width diagnostics stay
+	// with the compiler; valid in-range conversions keep the exact value.
+	return iv, true
 }
 
 func constIntConvType(name string) bool {

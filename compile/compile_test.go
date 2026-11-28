@@ -29,21 +29,37 @@ func TestFreshUnique(t *testing.T) {
 	}
 }
 
-func TestConstExprValueMinKeepsFloatDomain(t *testing.T) {
-	e, err := parser.ParseExpr("int(min(float32(4), 3) / 2 * 2)")
-	if err != nil {
-		t.Fatal(err)
+func TestConstExprValueIntegerResults(t *testing.T) {
+	tests := []struct {
+		name string
+		expr string
+		want int64
+	}{
+		{name: "min keeps float division", expr: "int(min(float32(4), 3) / 2 * 2)", want: 3},
+		{name: "typed integer division", expr: "int(int(5) / 2.0 * 2)", want: 4},
+		{name: "rounded min winner", expr: "int(max(float32(0), 2.99999999))", want: 3},
+		{name: "rounded min loser", expr: "int(min(float32(3), 4.1))", want: 3},
+		{name: "float64 exact intermediate", expr: "int(float64(1e100) + float64(1e100) - float64(2e100) + float64(3))", want: 3},
+		{name: "unsigned bitwise complement", expr: "int(^uint8(252))", want: 3},
 	}
-	cv, ok := ConstExprValue(nil, nil, e)
-	if !ok {
-		t.Fatal("min expression did not fold")
-	}
-	n, ok := constant.Int64Val(cv)
-	if !ok {
-		t.Fatalf("min expression = %v, want an int64 constant", cv)
-	}
-	if diff := cmp.Diff(int64(3), n); diff != "" {
-		t.Fatalf("min expression (-want +got):\n%s", diff)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, err := parser.ParseExpr(tt.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cv, ok := ConstExprValue(nil, nil, e)
+			if !ok {
+				t.Fatal("constant expression did not fold")
+			}
+			n, ok := constant.Int64Val(cv)
+			if !ok {
+				t.Fatalf("constant expression = %v, want an int64 constant", cv)
+			}
+			if diff := cmp.Diff(tt.want, n); diff != "" {
+				t.Fatalf("constant expression (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -54,57 +70,11 @@ func TestScopeConstShiftTypeFollowsLeftOperand(t *testing.T) {
 	}
 	c := &compiler{fs: newFScope(nil), iotaVal: -1}
 	c.fs.pushBlock()
-	cv, typed, ok := c.scopeConstVal(e, 0, -1)
+	cv, typ, ok := c.scopeConstVal(e, 0, -1)
 	if !ok {
 		t.Fatal("shift did not fold")
 	}
-	if typed {
-		t.Fatalf("1 << uint(2) marked typed: %v", cv)
-	}
-}
-
-func TestConstExprValueTypedIntegerDivision(t *testing.T) {
-	e, err := parser.ParseExpr("int(int(5) / 2.0 * 2)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cv, ok := ConstExprValue(nil, nil, e)
-	if !ok {
-		t.Fatal("typed integer division did not fold")
-	}
-	n, ok := constant.Int64Val(cv)
-	if !ok {
-		t.Fatalf("typed integer division = %v, want an int64 constant", cv)
-	}
-	if diff := cmp.Diff(int64(4), n); diff != "" {
-		t.Fatalf("typed integer division (-want +got):\n%s", diff)
-	}
-}
-
-func TestConstExprValueRejectsRoundedMinWinner(t *testing.T) {
-	e, err := parser.ParseExpr("int(max(float32(0), 2.99999999))")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cv, ok := ConstExprValue(nil, nil, e); ok {
-		t.Fatalf("rounded min winner folded to %v; conversion precision is unknown", cv)
-	}
-}
-
-func TestConstExprValueMinAllowsInvariantRounding(t *testing.T) {
-	e, err := parser.ParseExpr("int(min(float32(3), 4.1))")
-	if err != nil {
-		t.Fatal(err)
-	}
-	cv, ok := ConstExprValue(nil, nil, e)
-	if !ok {
-		t.Fatal("precision-invariant min expression did not fold")
-	}
-	n, ok := constant.Int64Val(cv)
-	if !ok {
-		t.Fatalf("min expression = %v, want an int64 constant", cv)
-	}
-	if diff := cmp.Diff(int64(3), n); diff != "" {
-		t.Fatalf("min expression (-want +got):\n%s", diff)
+	if typ != "" {
+		t.Fatalf("1 << uint(2) marked typed as %s: %v", typ, cv)
 	}
 }
