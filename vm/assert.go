@@ -687,7 +687,9 @@ func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.Ty
 		}
 	}
 	if tag == nil {
-		return true
+		// An untagged host container can spell only its anonymous shape;
+		// it is never a value of a declared script type.
+		return td.Name == "" && td.Spec == nil
 	}
 	if td.Name != "" || tag.Name != "" {
 		return v.typeMatchesTD(f, td, tag, nil)
