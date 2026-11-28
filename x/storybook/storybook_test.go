@@ -272,9 +272,9 @@ type Pair2 [sizes.M]string
 
 import "fmt"
 
-const F float32 = 1.5
+const P uint8 = 252
 
-const N = int(F + F)
+const N = int(^P)
 
 const G = float32(2.99999999 + 0i)
 const M = int(G)

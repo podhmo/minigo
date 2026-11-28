@@ -782,6 +782,24 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 		if !ok {
 			return nil, false, false
 		}
+		// An untyped constant operand converts to the typed operand's
+		// type before the operation. For an integer type that makes an
+		// integral float spelling an integer, so `/` stays integer
+		// division. Non-integral spellings are invalid Go and do not fold.
+		if lt && !rt && lv.Kind() == constant.Int && rv.Kind() == constant.Float {
+			if iv := constant.ToInt(rv); iv.Kind() != constant.Unknown {
+				rv = iv
+			} else {
+				return nil, false, false
+			}
+		}
+		if rt && !lt && rv.Kind() == constant.Int && lv.Kind() == constant.Float {
+			if iv := constant.ToInt(lv); iv.Kind() != constant.Unknown {
+				lv = iv
+			} else {
+				return nil, false, false
+			}
+		}
 		switch x.Op {
 		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
 			// comparisons never round — a typed operand's value

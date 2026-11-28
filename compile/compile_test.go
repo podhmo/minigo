@@ -4,6 +4,8 @@ import (
 	"go/constant"
 	"go/parser"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // fresh must never mint the same name twice — a hoisted $argN colliding
@@ -37,8 +39,11 @@ func TestConstExprValueMinKeepsFloatDomain(t *testing.T) {
 		t.Fatal("min expression did not fold")
 	}
 	n, ok := constant.Int64Val(cv)
-	if !ok || n != 3 {
-		t.Fatalf("min expression = %v, want 3", cv)
+	if !ok {
+		t.Fatalf("min expression = %v, want an int64 constant", cv)
+	}
+	if diff := cmp.Diff(int64(3), n); diff != "" {
+		t.Fatalf("min expression (-want +got):\n%s", diff)
 	}
 }
 
@@ -55,5 +60,23 @@ func TestScopeConstShiftTypeFollowsLeftOperand(t *testing.T) {
 	}
 	if typed {
 		t.Fatalf("1 << uint(2) marked typed: %v", cv)
+	}
+}
+
+func TestConstExprValueTypedIntegerDivision(t *testing.T) {
+	e, err := parser.ParseExpr("int(int(5) / 2.0 * 2)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cv, ok := ConstExprValue(nil, nil, e)
+	if !ok {
+		t.Fatal("typed integer division did not fold")
+	}
+	n, ok := constant.Int64Val(cv)
+	if !ok {
+		t.Fatalf("typed integer division = %v, want an int64 constant", cv)
+	}
+	if diff := cmp.Diff(int64(4), n); diff != "" {
+		t.Fatalf("typed integer division (-want +got):\n%s", diff)
 	}
 }
