@@ -154,7 +154,7 @@ func (v *VM) convertFrom(td *runtime.TypeDef, x runtime.Value, srcTd *runtime.Ty
 		if !ok {
 			return nil, fmt.Errorf("cannot convert %s to %s", typeNameOf(x), tdName(td))
 		}
-		x = ifaceArrayValue(x)
+		x = ifaceArrayValue(x, true)
 		if td.IfaceBase {
 			// Named never nests under Tag (it unwraps its payload),
 			// so build the pair directly — A(N(1)) keeps the
@@ -962,7 +962,7 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 		if !v.satisfiesIface(f, td, x) {
 			f.trap("cannot use %s as %s", typeNameOf(x), tdName(td))
 		}
-		x = ifaceArrayValue(x)
+		x = ifaceArrayValue(x, false)
 		if td.IfaceBase {
 			// a defined-over-interface slot stamps its declared tag on
 			// the payload's pair: `var a A = N(1)` holds an N dynamic
@@ -986,16 +986,21 @@ func (v *VM) coerce(f *frame, x runtime.Value, td *runtime.TypeDef) runtime.Valu
 // ifaceArrayValue stores a named array in an interface in the same shape
 // a stamped array value carries: the outer Named wrapper is only one way
 // the declared tag arrives, while interface identity and equality read the
-// array header's typedef. Copy first — converting an array to an interface
-// snapshots its elements like every Go assignment of an array value.
-func ifaceArrayValue(x runtime.Value) runtime.Value {
+// array header's typedef. copyFirst is true for an explicit conversion;
+// assignments already pass through valueCopy, so they only re-tag the
+// snapshot valueCopy made.
+func ifaceArrayValue(x runtime.Value, copyFirst bool) runtime.Value {
 	n, ok := x.(*runtime.Named)
 	if !ok || !runtime.ArrayTypedef(n.Typ) {
 		return x
 	}
-	cv, ok := runtime.Copy(x).(*runtime.Named)
-	if !ok {
-		return x
+	cv := n
+	if copyFirst {
+		var ok bool
+		cv, ok = runtime.Copy(x).(*runtime.Named)
+		if !ok {
+			return x
+		}
 	}
 	s, ok := runtime.Unwrap(cv.V).(*runtime.Slice)
 	if !ok {

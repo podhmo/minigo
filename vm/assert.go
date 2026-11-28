@@ -678,7 +678,13 @@ func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
 // (host-produced) containers fall back to the kind check.
 func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.TypeKind) bool {
 	if td.Kind != kind {
-		return false
+		if td.Kind != runtime.KindNamedBasic {
+			return false
+		}
+		u := v.peelNamed(td)
+		if u == nil || u.Kind != kind {
+			return false
+		}
 	}
 	if tag == nil {
 		return true

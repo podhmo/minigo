@@ -222,6 +222,7 @@ func StoryDerivedShapes() {
 	ai := any(lit)
 	lit[0] = "changed"
 	eq := any(p) == ai
+	_, backok := ai.(Pair2)
 	plain := Pair2{"x", "x"}
 	var unnamed [2]string = plain
 	var uany any = unnamed
@@ -229,7 +230,7 @@ func StoryDerivedShapes() {
 	c := fixture.Minimal[complex128]()
 	deep := fixture.Minimal[N7]()
 	tree := fixture.Minimal[Tree]()
-	fmt.Printf("%s/%d/%s/%t/%t/%t/%t/%t/%d/%d", ss[0], *ip, p[0], real(c) != 0, deep.F.F.F.F.F.F.S != "", asserts, eq, uok, len(tree.Children), len(tree.ByName))
+	fmt.Printf("%s/%d/%s/%t/%t/%t/%t/%t/%t/%d/%d", ss[0], *ip, p[0], real(c) != 0, deep.F.F.F.F.F.F.S != "", asserts, eq, backok, uok, len(tree.Children), len(tree.ByName))
 }
 `, nil)
 	b := &storybook.Book{Dir: dir, Tag: "story"}
@@ -237,7 +238,7 @@ func StoryDerivedShapes() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("x/1/x/true/true/true/true/true/1/1", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("x/1/x/true/true/true/true/true/true/1/1", string(page.Body)); diff != "" {
 		t.Fatalf("derived fixture output (-want +got):\n%s", diff)
 	}
 }
