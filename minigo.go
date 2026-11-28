@@ -130,6 +130,11 @@ type sessionState struct {
 	bindInternMu  sync.Mutex
 	bindInternSeq map[runtime.TypeID]uint64
 
+	// srcReplacements pre-seeds selected package-level source functions per
+	// package path. Sessions copy the registry so each one gets the same
+	// replacement values without sharing package state.
+	srcReplacements map[string]map[string]runtime.Value
+
 	mu              sync.Mutex
 	tidMemo         sync.Map                    // *runtime.TypeDef -> runtime.TypeID (mint-stable keys)
 	pkgs            map[string]*runtime.Package // by import path
@@ -336,18 +341,19 @@ func NewEngine(startDir string, opts ...Option) *Engine {
 			specials: execution.NewRegistry[runtime.SymbolID, runtime.SpecialFunc](),
 		},
 		sessionState: sessionState{
-			pkgs:          map[string]*runtime.Package{},
-			explicitBinds: map[string]bool{},
-			byDir:         map[string]*runtime.Package{},
-			files:         map[string]*runtime.Package{},
-			filesLenient:  map[string]*runtime.Package{},
-			names:         bind.NewNames(),
-			pending:       bind.NewPending(),
-			srcs:          map[string]*runtime.Package{},
-			pkgsLenient:   map[string]*runtime.Package{},
-			byDirLenient:  map[string]*runtime.Package{},
-			typeIntern:    execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
-			bindInternSeq: map[runtime.TypeID]uint64{},
+			pkgs:            map[string]*runtime.Package{},
+			explicitBinds:   map[string]bool{},
+			byDir:           map[string]*runtime.Package{},
+			files:           map[string]*runtime.Package{},
+			filesLenient:    map[string]*runtime.Package{},
+			names:           bind.NewNames(),
+			pending:         bind.NewPending(),
+			srcs:            map[string]*runtime.Package{},
+			pkgsLenient:     map[string]*runtime.Package{},
+			byDirLenient:    map[string]*runtime.Package{},
+			typeIntern:      execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
+			bindInternSeq:   map[runtime.TypeID]uint64{},
+			srcReplacements: map[string]map[string]runtime.Value{},
 		},
 	}
 	for _, o := range opts {
@@ -741,18 +747,19 @@ func (e *Engine) NewSession() *Engine {
 		// while the fset/cache/map members still share their contents.
 		sharedAssets: e.sharedAssets,
 		sessionState: sessionState{
-			pkgs:          map[string]*runtime.Package{},
-			explicitBinds: map[string]bool{},
-			byDir:         map[string]*runtime.Package{},
-			files:         map[string]*runtime.Package{},
-			names:         bind.NewNames(),
-			pending:       bind.NewPending(),
-			srcs:          map[string]*runtime.Package{},
-			pkgsLenient:   map[string]*runtime.Package{},
-			byDirLenient:  map[string]*runtime.Package{},
-			filesLenient:  map[string]*runtime.Package{},
-			typeIntern:    execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
-			bindInternSeq: map[runtime.TypeID]uint64{},
+			pkgs:            map[string]*runtime.Package{},
+			explicitBinds:   map[string]bool{},
+			byDir:           map[string]*runtime.Package{},
+			files:           map[string]*runtime.Package{},
+			names:           bind.NewNames(),
+			pending:         bind.NewPending(),
+			srcs:            map[string]*runtime.Package{},
+			pkgsLenient:     map[string]*runtime.Package{},
+			byDirLenient:    map[string]*runtime.Package{},
+			filesLenient:    map[string]*runtime.Package{},
+			typeIntern:      execution.NewIntern[runtime.TypeID, *runtime.TypeDef](),
+			bindInternSeq:   map[runtime.TypeID]uint64{},
+			srcReplacements: map[string]map[string]runtime.Value{},
 		},
 	}
 	s.builtins = builtin.Env(bindEnv{s})
@@ -771,6 +778,13 @@ func (e *Engine) NewSession() *Engine {
 	// An explicit parent Bind still wins: it is host-supplied rather
 	// than the session's lazy intrinsic table.
 	e.mu.Lock()
+	for path, reps := range e.srcReplacements {
+		cp := make(map[string]runtime.Value, len(reps))
+		for name, v := range reps {
+			cp[name] = v
+		}
+		s.srcReplacements[path] = cp
+	}
 	for path := range e.explicitBinds {
 		s.explicitBinds[path] = true
 	}
@@ -1393,6 +1407,9 @@ func (e *Engine) indexFiles(p *runtime.Package, files []*syntax.File, lenient bo
 
 	p.Bootstrap = e.bootstrap
 	p.ConstBootstrap = e.bootstrapConsts
+	if err := e.installSourceReplacements(p); err != nil {
+		return err
+	}
 	p.CompleteIndexing()
 	return nil
 }

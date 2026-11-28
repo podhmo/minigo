@@ -40,7 +40,7 @@ func WrapFuncWith(name string, fn any, box func(any) runtime.Value, keepErr bool
 	}
 	ft := rv.Type()
 	nin := ft.NumIn()
-	return &runtime.BuiltinFunc{Name: name, Target: fn, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return &runtime.BuiltinFunc{Name: name, Target: fn, WrapsTarget: true, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		// no recover(): a stdlib panic must reach the VM so a script
 		// recover() sees it — the same contract h.fn bindings keep.
 		variadic := ft.IsVariadic()

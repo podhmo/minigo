@@ -2679,6 +2679,9 @@ type BuiltinFunc struct {
 	// Pkg is the package this builtin was bound under (stamped by
 	// Engine.Bind); nil for ad-hoc builtins.
 	Pkg *Package
+	// WrapsTarget marks a builtin whose Fn is the generic target adapter;
+	// callers may rewrap Target without losing custom behavior.
+	WrapsTarget bool
 	// Target optionally holds the underlying Go func value the builtin
 	// adapts — inspect.Signature reads reflect.TypeOf it for the real
 	// signature. Nil for intrinsics that declare no target.

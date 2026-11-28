@@ -415,7 +415,7 @@ func funcMapElem(x runtime.Value, vc runtime.VMCaller) (hostbridge.Value, error)
 		if sig == nil {
 			return hostbridge.Value{}, fmt.Errorf("FuncMap value %T has no declared signature", x)
 		}
-		fv, err := marshalHost.AdaptFuncWith(x, sigHostType(sig), vc, hostbridge.AdaptOpts{
+		fv, err := marshalHost.AdaptFuncWith(x, hostbridge.SigHostType(sig), vc, hostbridge.AdaptOpts{
 			FuncMap: funcMapArgs(vmOf(vc), sig, &runtime.TypeDef{Pkg: pkg, File: file, Binds: binds}),
 		})
 		if err != nil {
@@ -463,48 +463,6 @@ func callBuiltinFuncMap(fx *runtime.BuiltinFunc, packed hostbridge.Value, vc run
 		}
 	}
 	return []hostbridge.Value{val, errv}
-}
-
-// sigHostType builds a host func type for a script signature: each
-// predeclared basic and `error` keeps its Go type, everything else is
-// `any`. A trailing ...T parameter stays variadic.
-func sigHostType(sig *ast.FuncType) hostbridge.Type {
-	slot := func(e ast.Expr) hostbridge.Type {
-		if id, ok := e.(*ast.Ident); ok {
-			if id.Name == "error" {
-				return hostbridge.ErrorType
-			}
-			if rt := hostbridge.HostBasicTypes[id.Name]; rt != nil {
-				return rt
-			}
-		}
-		return anyType
-	}
-	var in, out []hostbridge.Type
-	variadic := false
-	if sig.Params != nil {
-		for _, fl := range sig.Params.List {
-			e := fl.Type
-			var rt hostbridge.Type
-			if el, ok := e.(*ast.Ellipsis); ok {
-				variadic = true
-				rt = hostbridge.SliceOf(slot(el.Elt))
-			} else {
-				rt = slot(e)
-			}
-			for range max(1, len(fl.Names)) {
-				in = append(in, rt)
-			}
-		}
-	}
-	if sig.Results != nil {
-		for _, fl := range sig.Results.List {
-			for range max(1, len(fl.Names)) {
-				out = append(out, slot(fl.Type))
-			}
-		}
-	}
-	return hostbridge.FuncOf(in, out, variadic)
 }
 
 // funcMapSig is what a FuncMap func needs besides its host signature
