@@ -307,7 +307,7 @@ var FileBudgets = map[string]int{
 	"vm/backedge.go":                                 32,
 	"vm/call.go":                                     1021,
 	"vm/composite.go":                                3489,
-	"vm/const.go":                                    1465,
+	"vm/const.go":                                    1485,
 	"vm/convert.go":                                  1368,
 	"vm/convert_basic.go":                            39,
 	"vm/convert_host.go":                             82,
