@@ -3245,6 +3245,26 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}
 		return 0, false
+	case *ast.SelectorExpr:
+		// A package-qualified const reads the imported package's const
+		// bindings directly. Going through a normal selector expression
+		// would initialize the package even when the constant is already
+		// bound, mixing initializer output into a type-only fixture.
+		if id, ok := l.X.(*ast.Ident); ok && pkg != nil && file != nil {
+			if ref := pkg.Scopes[file][id.Name]; ref != nil {
+				if ip, err := ref.Materialize(); err == nil && ip != nil {
+					_ = ip.EnsureConstsRun(v.runInit)
+					if gv, ok := ip.Globals.Get(l.Sel.Name); ok {
+						if d, ok2 := runtime.Deref(gv); ok2 {
+							gv = d
+						}
+						if n, ok2 := lenConstInt(gv); ok2 {
+							return runtime.FoldArrayLen(pkg, at, n), true
+						}
+					}
+				}
+			}
+		}
 	case *ast.Ident:
 		// a named const: its value lives in the package env once init
 		// ran (Materialize returns NIL for const decls); fall back to the
@@ -3282,12 +3302,30 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}
 	}
-	// any other constant form ([N*2]int, [N+1]int): compile the length
-	// expression and run it in the typedef's package scope — const
-	// names resolve through globals like a normal expression. A
-	// non-constant shape ([...]T's Ellipsis, a call) can't evaluate;
-	// its trap is swallowed so the typedef stays non-array (ok=false).
+	// Any other constant form ([N*2]int, [N+1]int) compiles and runs in
+	// the typedef's package scope. Bind consts first — the expression's
+	// plain globals read values without running package init, while a
+	// selector's package needs its own const-only bootstrap. This keeps
+	// full constant semantics in the ordinary compiler instead of
+	// requiring ConstEval's static shortcut to cover every valid form.
 	if pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
+		_ = pkg.EnsureConstsRun(v.runInit)
+		ast.Inspect(at.Len, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			id, ok := sel.X.(*ast.Ident)
+			if !ok || file == nil {
+				return true
+			}
+			if ref := pkg.Scopes[file][id.Name]; ref != nil {
+				if ip, err := ref.Materialize(); err == nil && ip != nil {
+					_ = ip.EnsureConstsRun(v.runInit)
+				}
+			}
+			return true
+		})
 		var n int64
 		var ok bool
 		func() {
