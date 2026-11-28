@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,80 @@ func NestedSliceIsolation() string {
 		return fmt.Sprint(err)
 	}
 	return xs[0]
+}
+
+type scriptWriter struct{ n *int }
+
+func (w scriptWriter) Write(p []byte) (int, error) {
+	*w.n += len(p)
+	return len(p), nil
+}
+
+func NestedOutputWriter() string {
+	n := 0
+	e := minigo.NewEngine(".")
+	minigo.WithOutput(scriptWriter{n: &n})(e)
+	if _, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteString"); err != nil {
+		return fmt.Sprint(err)
+	}
+	return fmt.Sprint(n)
+}
+
+type writeStringInner int
+
+func (writeStringInner) WriteString(s string) (int, error) {
+	return 0, errors.New("write string failed")
+}
+
+type embeddedWriteStringWriter struct{ *writeStringInner }
+
+func (embeddedWriteStringWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+type wrongWriteString interface{ WriteString() }
+
+type embeddedWrongWriteStringWriter struct {
+	wrongWriteString
+	n *int
+}
+
+func (w embeddedWrongWriteStringWriter) Write(p []byte) (int, error) {
+	*w.n += len(p)
+	return len(p), nil
+}
+
+func NestedWrongSignatureWriteString() string {
+	n := 0
+	e := minigo.NewEngine(".")
+	minigo.WithOutput(embeddedWrongWriteStringWriter{n: &n})(e)
+	if _, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteString"); err != nil {
+		return fmt.Sprint(err)
+	}
+	return fmt.Sprint(n)
+}
+
+func NestedNilEmbeddedWriteString() string {
+	e := minigo.NewEngine(".")
+	minigo.WithOutput(embeddedWriteStringWriter{})(e)
+	r, err := e.Run(context.Background(), "./testdata/intrins", "StdoutWriteStringErr")
+	if err != nil {
+		if bytes.Contains([]byte(fmt.Sprint(err)), []byte("write string failed")) || bytes.Contains([]byte(fmt.Sprint(err)), []byte("nil pointer")) {
+			return "error"
+		}
+		return fmt.Sprint(err)
+	}
+	if bytes.Contains([]byte(fmt.Sprint(r)), []byte("write string failed")) || bytes.Contains([]byte(fmt.Sprint(r)), []byte("nil pointer")) {
+		return "error"
+	}
+	return "no error"
+}
+
+func NestedHostPolicyScriptFunc() string {
+	e := minigo.NewEngine(".")
+	minigo.WithHostPolicy(func(path, symbol string) bool { return symbol != "Getenv" })(e)
+	if _, err := e.Run(context.Background(), "./testdata/hostenv", "Read"); err != nil {
+		return "denied"
+	}
+	return "allowed"
 }
 
 func NestedMarker() string { return minigo.Marker() }

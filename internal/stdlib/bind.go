@@ -40,7 +40,7 @@ func WrapFuncWith(name string, fn any, box func(any) runtime.Value, keepErr bool
 	}
 	ft := rv.Type()
 	nin := ft.NumIn()
-	return &runtime.BuiltinFunc{Name: name, Target: fn, Fn: func(_ runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
+	return &runtime.BuiltinFunc{Name: name, Target: fn, Fn: func(vc runtime.VMCaller, args []runtime.Value) (runtime.Value, error) {
 		// no recover(): a stdlib panic must reach the VM so a script
 		// recover() sees it — the same contract h.fn bindings keep.
 		variadic := ft.IsVariadic()
@@ -56,6 +56,14 @@ func WrapFuncWith(name string, fn any, box func(any) runtime.Value, keepErr bool
 				pt = ft.In(i)
 			}
 			av, err := toNative(a, pt)
+			if err != nil {
+				// The fast wrapper unwraps only host-shaped natives. When that
+				// cannot express the argument, ask the VM marshal: it can build
+				// the reflect func/interface adapter a script value needs.
+				if hm, ok := vc.(runtime.HostMarshaler); ok {
+					av, err = hm.MarshalHost(a, pt)
+				}
+			}
 			if err != nil {
 				return nil, fmt.Errorf("%s: argument %d: %w", name, i+1, err)
 			}

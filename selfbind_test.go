@@ -53,6 +53,80 @@ func TestSelfBoundEngineCallSnapshotsScriptContainers(t *testing.T) {
 	}
 }
 
+func TestSelfBoundScriptValuesCrossEmbeddingOptions(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedOutputWriter")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("9", got); diff != "" {
+		t.Errorf("NestedOutputWriter() mismatch (-want +got):\n%s", diff)
+	}
+	got, err = e.Run(context.Background(), "./testdata/selfbind", "NestedHostPolicyScriptFunc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("denied", got); diff != "" {
+		t.Errorf("NestedHostPolicyScriptFunc() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundScriptWriterSurvivesNestedEngineReuse(t *testing.T) {
+	e := NewEngine(".")
+	for i, want := range []string{"ok", "9", "18"} {
+		name := []string{"Setup", "Use", "Use"}[i]
+		got, err := e.Run(context.Background(), "./testdata/selfbindreuse", name)
+		if err != nil {
+			t.Fatalf("%s() %d: %v", name, i, err)
+		}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Fatalf("%s() %d mismatch (-want +got):\n%s", name, i, diff)
+		}
+	}
+}
+
+func TestSelfBoundScriptHostPolicySurvivesNestedEngineReuse(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "SetupPolicy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("ok", got); diff != "" {
+		t.Fatalf("SetupPolicy() mismatch (-want +got):\n%s", diff)
+	}
+	for i := 0; i < 2; i++ {
+		got, err := e.Run(context.Background(), "./testdata/selfbindreuse", "UsePolicy")
+		if err != nil {
+			t.Fatalf("UsePolicy() %d: %v", i, err)
+		}
+		if diff := cmp.Diff("denied", got); diff != "" {
+			t.Fatalf("UsePolicy() %d mismatch (-want +got):\n%s", i, diff)
+		}
+	}
+}
+
+func TestSelfBoundWrongSignatureWriteStringFallsBack(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedWrongSignatureWriteString")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("9", got); diff != "" {
+		t.Fatalf("NestedWrongSignatureWriteString() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestSelfBoundNilEmbeddedWriteStringDoesNotFallBack(t *testing.T) {
+	e := NewEngine(".")
+	got, err := e.Run(context.Background(), "./testdata/selfbind", "NestedNilEmbeddedWriteString")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("error", got); diff != "" {
+		t.Fatalf("NestedNilEmbeddedWriteString() mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestSelfBoundEngineInheritsHostPolicy(t *testing.T) {
 	e := NewEngine(".", WithHostPolicy(func(path, sym string) bool {
 		return !(path == "os" && sym == "Getenv")

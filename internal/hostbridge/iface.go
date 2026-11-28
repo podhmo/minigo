@@ -12,8 +12,10 @@ package hostbridge
 
 import (
 	"fmt"
+	"go/parser"
 	"io"
 	"io/fs"
+	"sync"
 	"time"
 
 	"go/ast"
@@ -32,11 +34,22 @@ import (
 // ReadFrom — host code probes those opportunistically (io.Copy asserts
 // them on its io.Reader/io.Writer args), so they only appear on the
 // scriptIfaceW* variants adaptIface picks when the script declares them.
+var writeStringIfaceExpr = func() ast.Expr {
+	x, err := parser.ParseExpr("interface{ WriteString(string) (int, error) }")
+	if err != nil {
+		panic(err)
+	}
+	return x
+}()
+
 type scriptIface struct {
 	vc   runtime.MemberCaller
 	recv runtime.Value
 	// m resolves the error-boxing hook and byte fast path.
 	m *Marshal
+
+	writeStringOnce sync.Once
+	writeStringOK   bool
 }
 
 // ScriptValue reports the script receiver the proxy forwards to: when
@@ -90,7 +103,33 @@ func (s *scriptIface) Close() error {
 	return s.m.errOut(s.vc, rs, 0)
 }
 
+func (s *scriptIface) hasWriteString(vc runtime.MemberCaller) bool {
+	s.writeStringOnce.Do(func() {
+		if full, ok := vc.(runtime.VMCaller); ok {
+			// Name-only method probes cannot tell io.StringWriter from a
+			// different method that happens to be called WriteString. Convert
+			// through the script interface type itself so signature identity
+			// decides whether the fast path exists; a nil embedded provider
+			// still satisfies the static interface and must fail on invocation.
+			if from := full.TypeOf(s.recv); from != nil {
+				if td, err := full.ResolveType(from, writeStringIfaceExpr); err == nil {
+					_, err = full.Convert(td, s.recv)
+					s.writeStringOK = err == nil
+				}
+			}
+		}
+	})
+	return s.writeStringOK
+}
+
 func (s *scriptIface) WriteString(str string) (int, error) {
+	vc := s.m.AnchorMember(s.vc)
+	if !s.hasWriteString(vc) {
+		// The proxy's static io surface includes WriteString. When the
+		// script value only implements Write, io's usual fallback keeps
+		// fmt's string fast path equivalent instead of failing.
+		return s.Write([]byte(str))
+	}
 	rs, err := s.call("WriteString", str)
 	if err != nil {
 		return 0, err
