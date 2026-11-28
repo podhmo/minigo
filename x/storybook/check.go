@@ -29,7 +29,7 @@ func (b *Book) Check(ctx context.Context) error {
 	var errs []error
 	for _, story := range stories {
 		if err := ctx.Err(); err != nil {
-			return err
+			return errors.Join(append(errs, err)...)
 		}
 		page, err := b.Render(ctx, story.Name)
 		if err != nil {
