@@ -1,6 +1,10 @@
 package compile
 
-import "testing"
+import (
+	"go/constant"
+	"go/parser"
+	"testing"
+)
 
 // fresh must never mint the same name twice — a hoisted $argN colliding
 // with a still-live sibling slot was difffuzz #118; routing every
@@ -20,5 +24,36 @@ func TestFreshUnique(t *testing.T) {
 	a, b := c.fresh("$arg"), c.fresh("$arg")
 	if a == b {
 		t.Fatalf("consecutive fresh() calls must differ, got %q", a)
+	}
+}
+
+func TestConstExprValueMinKeepsFloatDomain(t *testing.T) {
+	e, err := parser.ParseExpr("int(min(float32(4), 3) / 2 * 2)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cv, ok := ConstExprValue(nil, nil, e)
+	if !ok {
+		t.Fatal("min expression did not fold")
+	}
+	n, ok := constant.Int64Val(cv)
+	if !ok || n != 3 {
+		t.Fatalf("min expression = %v, want 3", cv)
+	}
+}
+
+func TestScopeConstShiftTypeFollowsLeftOperand(t *testing.T) {
+	e, err := parser.ParseExpr("1 << uint(2)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &compiler{fs: newFScope(nil), iotaVal: -1}
+	c.fs.pushBlock()
+	cv, typed, ok := c.scopeConstVal(e, 0, -1)
+	if !ok {
+		t.Fatal("shift did not fold")
+	}
+	if typed {
+		t.Fatalf("1 << uint(2) marked typed: %v", cv)
 	}
 }

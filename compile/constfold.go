@@ -796,12 +796,26 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			return constant.MakeBool(lb || rb), lt || rt, true
 		}
 		typed := lt || rt
-		if typed && (lv.Kind() != constant.Int || rv.Kind() != constant.Int) {
-			// Typed floating arithmetic rounds at the declared precision;
-			// the bare value cannot express that without the type. Typed
-			// integer arithmetic is exact for valid programs instead:
-			// overflow is a compile error, not a wrap.
+		floatOp := lv.Kind() == constant.Float || rv.Kind() == constant.Float
+		intOp := lv.Kind() == constant.Int && rv.Kind() == constant.Int
+		if typed && !floatOp && !intOp {
+			// Typed floating arithmetic is checked step-by-step below;
+			// typed integer arithmetic is exact for valid programs
+			// because overflow is a compile error, not a wrap. Other
+			// typed domains need type details the bare value lacks.
 			return nil, false, false
+		}
+		finish := func(cv constant.Value, typed bool) (constant.Value, bool, bool) {
+			if typed && (lv.Kind() == constant.Float || rv.Kind() == constant.Float) {
+				// Typed float operations round after every step. Accept
+				// only a step exact even at float32 precision; anything
+				// else needs the declared type and stays for the runtime
+				// constant evaluator rather than risking a wrong fold.
+				if _, exact := constant.Float32Val(cv); !exact {
+					return nil, false, false
+				}
+			}
+			return cv, typed, true
 		}
 		switch x.Op {
 		case token.SHL, token.SHR:
@@ -815,14 +829,14 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			if !ok {
 				return nil, false, false
 			}
-			return constant.Shift(lv, x.Op, uint(s)), typed, true
+			return finish(constant.Shift(lv, x.Op, uint(s)), lt)
 		case token.QUO:
 			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
-				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), typed, true
+				return finish(constant.BinaryOp(lv, token.QUO_ASSIGN, rv), typed)
 			}
-			return constant.BinaryOp(lv, x.Op, rv), typed, true
+			return finish(constant.BinaryOp(lv, x.Op, rv), typed)
 		default:
-			return constant.BinaryOp(lv, x.Op, rv), typed, true
+			return finish(constant.BinaryOp(lv, x.Op, rv), typed)
 		}
 	case *ast.CallExpr:
 		id, ok := ast.Unparen(x.Fun).(*ast.Ident)
@@ -848,16 +862,24 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 				op = token.GTR
 			}
 			var best constant.Value
-			var bTyped bool
+			var bTyped, floatResult bool
 			for _, a := range x.Args {
 				av, at, ok := c.scopeConstVal(a, depth+1, pkgIota)
 				if !ok {
 					return nil, false, false
 				}
 				bTyped = bTyped || at
+				floatResult = floatResult || at && av.Kind() == constant.Float
 				if best == nil || constant.Compare(av, op, best) {
 					best = av
 				}
+			}
+			// An untyped winner still takes the typed argument's type.
+			// Keep it in the float domain so a later `/` does not become
+			// integer division; a typed integer winner already has Kind Int.
+			if floatResult && best.Kind() == constant.Int {
+				f, _ := constant.Float64Val(best)
+				best = constant.MakeFloat64(runtime.CanonConstZero(f))
 			}
 			return best, bTyped, true
 		default:
