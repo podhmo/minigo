@@ -847,6 +847,26 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 		if !ok {
 			return nil, "", false
 		}
+		if x.Op == token.SHL || x.Op == token.SHR {
+			// A shift count does not unify with the left operand's type:
+			// it only needs an integer value, while the result keeps the
+			// left operand's type. Handle it before the ordinary binary
+			// operand conversion so uint8(1) << uint(2) stays valid.
+			if lt == "?" || lt == "float32" || lt == "float64" || rt == "float32" || rt == "float64" {
+				return nil, "", false
+			}
+			if lv.Kind() == constant.Float {
+				lv = constant.ToInt(lv)
+			}
+			if rv.Kind() == constant.Float {
+				rv = constant.ToInt(rv)
+			}
+			n, ok := constant.Uint64Val(rv)
+			if !ok {
+				return nil, "", false
+			}
+			return retType(constant.Shift(lv, x.Op, uint(n)), lt)
+		}
 		lv, rv, typ, ok := convertOperands(lv, rv, lt, rt)
 		if !ok {
 			return nil, "", false
@@ -862,24 +882,6 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			return retType(constant.MakeBool(lb || rb), typ)
 		}
 		switch x.Op {
-		case token.SHL, token.SHR:
-			if lt == "?" || rt == "float32" || rt == "float64" {
-				return nil, "", false
-			}
-			if lv.Kind() == constant.Float {
-				lv = constant.ToInt(lv)
-			}
-			if rv.Kind() == constant.Float {
-				rv = constant.ToInt(rv)
-			}
-			s, ok := constant.Uint64Val(rv)
-			if !ok {
-				return nil, "", false
-			}
-			// The shift count's type never propagates: the result takes
-			// the left operand's type, or stays untyped when that is
-			// untyped.
-			return retType(constant.Shift(lv, x.Op, uint(s)), lt)
 		case token.QUO:
 			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
 				return finish(constant.BinaryOp(lv, token.QUO_ASSIGN, rv), typ)

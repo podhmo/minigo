@@ -41,6 +41,7 @@ func TestConstExprValueIntegerResults(t *testing.T) {
 		{name: "rounded min loser", expr: "int(min(float32(3), 4.1))", want: 3},
 		{name: "float64 exact intermediate", expr: "int(float64(1e100) + float64(1e100) - float64(2e100) + float64(3))", want: 3},
 		{name: "unsigned bitwise complement", expr: "int(^uint8(252))", want: 3},
+		{name: "shift count type stays independent", expr: "int(uint8(1) << uint(2))", want: 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -74,7 +75,7 @@ func TestScopeConstShiftTypeFollowsLeftOperand(t *testing.T) {
 	if !ok {
 		t.Fatal("shift did not fold")
 	}
-	if typ != "" {
-		t.Fatalf("1 << uint(2) marked typed as %s: %v", typ, cv)
+	if diff := cmp.Diff("", typ); diff != "" {
+		t.Fatalf("1 << uint(2) type (-want +got):\n%s (value %v)", diff, cv)
 	}
 }
