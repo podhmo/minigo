@@ -253,10 +253,12 @@ func TestRenderGeneratedFixtureCrossPackageArrayLen(t *testing.T) {
 const N = 1
 
 type Pair model.Pair
+type Pair2 model.Pair2
 
 func StoryCrossPackageArrayLen() {
 	p := fixture.Minimal[Pair]()
-	fmt.Printf("%d/%s", len(p), p[2])
+	q := fixture.Minimal[Pair2]()
+	fmt.Printf("%d/%d/%s", len(p), len(q), p[2])
 }
 `, map[string]string{
 		"model/model.go": `package model
@@ -264,6 +266,7 @@ func StoryCrossPackageArrayLen() {
 import "x/sizes"
 
 type Pair [sizes.N]string
+type Pair2 [sizes.M]string
 `,
 		"sizes/sizes.go": `package sizes
 
@@ -271,7 +274,10 @@ import "fmt"
 
 const F float32 = 2.99999999 + 0i
 
-const N = int(F)
+const N = int(F) + 0
+
+const G = float32(2.99999999 + 0i)
+const M = int(G)
 
 func init() { fmt.Println("sizes init") }
 `,
@@ -281,7 +287,7 @@ func init() { fmt.Println("sizes init") }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("3/x", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("3/3/x", string(page.Body)); diff != "" {
 		t.Fatalf("cross-package array fixture output (-want +got):\n%s", diff)
 	}
 }

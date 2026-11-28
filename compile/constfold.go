@@ -795,10 +795,12 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 			return constant.MakeBool(lb || rb), lt || rt, true
 		}
-		if lt || rt {
-			// Numeric typed constant arithmetic rounds at the declared
-			// floating precision and rejects integer overflow; the bare
-			// value cannot express those rules without the type.
+		typed := lt || rt
+		if typed && (lv.Kind() != constant.Int || rv.Kind() != constant.Int) {
+			// Typed floating arithmetic rounds at the declared precision;
+			// the bare value cannot express that without the type. Typed
+			// integer arithmetic is exact for valid programs instead:
+			// overflow is a compile error, not a wrap.
 			return nil, false, false
 		}
 		switch x.Op {
@@ -813,14 +815,14 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			if !ok {
 				return nil, false, false
 			}
-			return constant.Shift(lv, x.Op, uint(s)), false, true
+			return constant.Shift(lv, x.Op, uint(s)), typed, true
 		case token.QUO:
 			if lv.Kind() == constant.Int && rv.Kind() == constant.Int {
-				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), false, true
+				return constant.BinaryOp(lv, token.QUO_ASSIGN, rv), typed, true
 			}
-			return constant.BinaryOp(lv, x.Op, rv), false, true
+			return constant.BinaryOp(lv, x.Op, rv), typed, true
 		default:
-			return constant.BinaryOp(lv, x.Op, rv), false, true
+			return constant.BinaryOp(lv, x.Op, rv), typed, true
 		}
 	case *ast.CallExpr:
 		id, ok := ast.Unparen(x.Fun).(*ast.Ident)
