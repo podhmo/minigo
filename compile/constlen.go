@@ -22,6 +22,62 @@ func (c *compiler) typeScope(pkg *runtime.Package, file *syntax.File) *compiler 
 	return nc
 }
 
+func singleResultType(ft *ast.FuncType) ast.Expr {
+	if ft == nil || ft.Results == nil || len(ft.Results.List) != 1 {
+		return nil
+	}
+	f := ft.Results.List[0]
+	if len(f.Names) > 1 {
+		return nil
+	}
+	return f.Type
+}
+
+// inferredValueType reads the static type of simple package-variable
+// initializers. Function declarations are inspected through the source
+// index only; the function is never called.
+func (c *compiler) inferredValueType(nc *compiler, pkg *runtime.Package, v ast.Expr) ast.Expr {
+	switch x := ast.Unparen(v).(type) {
+	case *ast.CompositeLit:
+		return x.Type
+	case *ast.UnaryExpr:
+		if x.Op == token.AND {
+			if t := c.inferredValueType(nc, pkg, x.X); t != nil {
+				return &ast.StarExpr{X: t}
+			}
+		}
+	case *ast.CallExpr:
+		switch f := ast.Unparen(x.Fun).(type) {
+		case *ast.FuncLit:
+			return singleResultType(f.Type)
+		case *ast.Ident:
+			if pkg != nil && pkg.Index != nil {
+				if fd := pkg.Index.Funcs[f.Name]; fd != nil && fd.Func != nil {
+					return singleResultType(fd.Func.Type)
+				}
+			}
+			// Otherwise the call may be a conversion through a named type.
+			return f
+		case *ast.SelectorExpr:
+			if id, ok := ast.Unparen(f.X).(*ast.Ident); ok {
+				if ref, isPkg := nc.importRef(id.Name); isPkg {
+					res := nc.askIndexed(ref)
+					if (res.Kind == semantics.Found || res.Kind == semantics.Deferred) && res.Val != nil && res.Val.Index != nil {
+						if fd := res.Val.Index.Funcs[f.Sel.Name]; fd != nil && fd.Func != nil {
+							return singleResultType(fd.Func.Type)
+						}
+					}
+				}
+			}
+			// Otherwise the call may be a conversion through an imported named type.
+			return f
+		case *ast.ArrayType:
+			return f
+		}
+	}
+	return nil
+}
+
 func (c *compiler) packageVarType(pkg *runtime.Package, file *syntax.File, name string) (ast.Expr, bool) {
 	if pkg == nil || pkg.Index == nil {
 		return nil, false
@@ -36,15 +92,7 @@ func (c *compiler) packageVarType(pkg *runtime.Package, file *syntax.File, name 
 	}
 	te := vs.Type
 	if te == nil && len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
-		v := ast.Unparen(vs.Values[vd.NameIdx])
-		if cl, ok := v.(*ast.CompositeLit); ok {
-			te = cl.Type
-		}
-		if u, ok := v.(*ast.UnaryExpr); ok && u.Op == token.AND {
-			if cl, ok := ast.Unparen(u.X).(*ast.CompositeLit); ok {
-				te = &ast.StarExpr{X: cl.Type}
-			}
-		}
+		te = c.inferredValueType(c.typeScope(pkg, file), pkg, vs.Values[vd.NameIdx])
 	}
 	if te == nil {
 		return nil, false

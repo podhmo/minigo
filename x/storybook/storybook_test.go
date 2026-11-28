@@ -318,7 +318,9 @@ const N = int(real(C))
 const G = float32(2.99999999 + 0i)
 const M = int(G)
 
-var A [3]string
+func makeArray() [3]string { return [3]string{} }
+
+var A = makeArray()
 var P = &[3]string{}
 
 func init() { fmt.Println("sizes init") }
