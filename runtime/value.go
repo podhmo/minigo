@@ -1560,27 +1560,47 @@ func PtrArrayType(td *TypeDef) *ast.ArrayType {
 // are represented as a [Slice] whose Typ is such a typedef.
 func ArrayTypedef(td *TypeDef) bool { return arrayTypedef(td) }
 
+// ArrayTypeInfo is the array type expression behind a typedef, with the
+// package and file scope in which that expression was declared. The scope
+// matters when a derived type crosses a package boundary: `[N]T` reads N
+// in the declaring package, not in the package naming the derived type.
+type ArrayTypeInfo struct {
+	Type *ast.ArrayType
+	Pkg  *Package
+	File *syntax.File
+}
+
 // ArrayASTOf returns the ArrayType AST behind an array typedef (Anon or
 // the named spec's type) — nil when td is not array-shaped.
 func ArrayASTOf(td *TypeDef) *ast.ArrayType {
-	return arrayASTOf(td, 32)
+	info := ArrayASTInfoOf(td)
+	if info == nil {
+		return nil
+	}
+	return info.Type
+}
+
+// ArrayASTInfoOf is ArrayASTOf plus the scope of the returned array type
+// expression.
+func ArrayASTInfoOf(td *TypeDef) *ArrayTypeInfo {
+	return arrayASTInfoOf(td, 32)
 }
 
 // arrayTypedef reports whether a typedef is a fixed-size array — its
 // underlying AST is an ArrayType carrying a length (slices have none).
 func arrayTypedef(td *TypeDef) bool {
-	at := ArrayASTOf(td)
-	return at != nil && at.Len != nil
+	info := ArrayASTInfoOf(td)
+	return info != nil && info.Type.Len != nil
 }
 
-func arrayASTOf(td *TypeDef, depth int) *ast.ArrayType {
+func arrayASTInfoOf(td *TypeDef, depth int) *ArrayTypeInfo {
 	if td == nil || depth <= 0 {
 		return nil
 	}
-	return arrayASTExpr(td, td.TypeExpr(), depth)
+	return arrayASTInfoExpr(td, td.TypeExpr(), depth)
 }
 
-func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
+func arrayASTInfoExpr(td *TypeDef, x ast.Expr, depth int) *ArrayTypeInfo {
 	if depth <= 0 {
 		return nil
 	}
@@ -1593,11 +1613,11 @@ func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
 	}
 	switch t := x.(type) {
 	case *ast.ArrayType:
-		return t
+		return &ArrayTypeInfo{Type: t, Pkg: td.Pkg, File: td.File}
 	case *ast.Ident:
 		if td.Local || td.Spec == nil {
 			if lt := td.LocalTypes[t.Name]; lt != nil {
-				return arrayASTOf(lt, depth-1)
+				return arrayASTInfoOf(lt, depth-1)
 			}
 		}
 		spec, file := typeSpecInPackage(td.Pkg, t.Name)
@@ -1605,7 +1625,7 @@ func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
 			return nil
 		}
 		ctx := &TypeDef{Pkg: td.Pkg, File: file}
-		return arrayASTExpr(ctx, spec.Type, depth-1)
+		return arrayASTInfoExpr(ctx, spec.Type, depth-1)
 	case *ast.SelectorExpr:
 		pkgid, ok := t.X.(*ast.Ident)
 		if !ok || td.Pkg == nil || td.File == nil {
@@ -1624,7 +1644,7 @@ func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
 			return nil
 		}
 		ctx := &TypeDef{Pkg: ip, File: file}
-		return arrayASTExpr(ctx, spec.Type, depth-1)
+		return arrayASTInfoExpr(ctx, spec.Type, depth-1)
 	}
 	return nil
 }

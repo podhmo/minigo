@@ -132,6 +132,9 @@ func TestArrayTypedefFollowsNamedChains(t *testing.T) {
 	if !ArrayTypedef(qualified) {
 		t.Fatalf("ArrayTypedef(%s) through an imported type = false, want true", qualified.Name)
 	}
+	if info := ArrayASTInfoOf(qualified); info == nil || info.Pkg != modelPkg {
+		t.Fatalf("ArrayASTInfoOf(%s) package = %v, want the imported model package", qualified.Name, info)
+	}
 
 	// Invalid cyclic declarations still terminate: the walk is bounded.
 	cycleASpec := &ast.TypeSpec{Name: ast.NewIdent("CA"), Type: ast.NewIdent("CB")}

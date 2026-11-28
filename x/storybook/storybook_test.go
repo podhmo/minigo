@@ -21,7 +21,11 @@ func writePackage(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, src := range files {
-		writeFile(t, filepath.Join(dir, name), src)
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path, src)
 	}
 	return dir
 }
@@ -235,6 +239,39 @@ func StoryDerivedShapes() {
 	}
 	if diff := cmp.Diff("x/1/x/true/true/true/true/true/1/1", string(page.Body)); diff != "" {
 		t.Fatalf("derived fixture output (-want +got):\n%s", diff)
+	}
+}
+
+func TestRenderGeneratedFixtureCrossPackageArrayLen(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	"x/model"
+	"github.com/podhmo/minigo/x/storybook/fixture"
+)
+
+const N = 1
+
+type Pair model.Pair
+
+func StoryCrossPackageArrayLen() {
+	p := fixture.Minimal[Pair]()
+	fmt.Printf("%d/%s", len(p), p[2])
+}
+`, map[string]string{
+		"model/model.go": `package model
+
+const N = 3
+
+type Pair [N]string
+`,
+	})
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	page, err := b.Render(t.Context(), "StoryCrossPackageArrayLen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("3/x", string(page.Body)); diff != "" {
+		t.Fatalf("cross-package array fixture output (-want +got):\n%s", diff)
 	}
 }
 

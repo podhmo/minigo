@@ -3207,13 +3207,22 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	if td == nil {
 		return 0, false
 	}
-	at := runtime.ArrayASTOf(td)
-	if at == nil || at.Len == nil {
+	info := runtime.ArrayASTInfoOf(td)
+	if info == nil || info.Type.Len == nil {
 		return 0, false
+	}
+	at := info.Type
+	pkg := info.Pkg
+	if pkg == nil {
+		pkg = td.Pkg
+	}
+	file := info.File
+	if file == nil {
+		file = td.File
 	}
 	// a canonical literal (`[3]T`) or an already-folded length answers
 	// without evaluating anything.
-	if n, ok := runtime.FoldedArrayLen(td.Pkg, at); ok {
+	if n, ok := runtime.FoldedArrayLen(pkg, at); ok {
 		return n, true
 	}
 	switch l := at.Len.(type) {
@@ -3223,7 +3232,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		// strconv.ParseInt cannot read.
 		if iv, ok := toIntConst(constant.MakeFromLiteral(l.Value, l.Kind, 0)); ok {
 			if n, ok := constant.Int64Val(iv); ok {
-				return runtime.FoldArrayLen(td.Pkg, at, n), true
+				return runtime.FoldArrayLen(pkg, at, n), true
 			}
 		}
 		return 0, false
@@ -3231,20 +3240,21 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		// a named const: its value lives in the package env once init
 		// ran (Materialize returns NIL for const decls); fall back to the
 		// index for a const declared below the use or not yet bound.
-		if td.Pkg != nil {
-			if gv, ok := td.Pkg.Globals.Get(l.Name); ok {
+		if pkg != nil {
+			_ = pkg.EnsureConstsRun(v.runInit)
+			if gv, ok := pkg.Globals.Get(l.Name); ok {
 				if d, ok2 := runtime.Deref(gv); ok2 {
 					gv = d
 				}
 				if n, ok2 := lenConstInt(gv); ok2 {
-					return runtime.FoldArrayLen(td.Pkg, at, n), true
+					return runtime.FoldArrayLen(pkg, at, n), true
 				}
 			}
-			if td.Pkg.Index != nil && v.H.Materialize != nil {
-				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
-					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
+			if pkg.Index != nil && v.H.Materialize != nil {
+				if d := pkg.Index.Consts[l.Name]; d != nil {
+					if mv, err := v.H.Materialize(pkg, d); err == nil {
 						if n, ok := lenConstInt(mv); ok {
-							return runtime.FoldArrayLen(td.Pkg, at, n), true
+							return runtime.FoldArrayLen(pkg, at, n), true
 						}
 					}
 				}
@@ -3256,13 +3266,13 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	// names resolve through globals like a normal expression. A
 	// non-constant shape ([...]T's Ellipsis, a call) can't evaluate;
 	// its trap is swallowed so the typedef stays non-array (ok=false).
-	if td.Pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
+	if pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
 		var n int64
 		var ok bool
 		func() {
 			defer func() { _ = recover() }()
-			if ch, err := v.H.CompileExpr(td.Pkg, td.File, at.Len); err == nil && ch != nil {
-				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil, nil, nil); err2 == nil {
+			if ch, err := v.H.CompileExpr(pkg, file, at.Len); err == nil && ch != nil {
+				if r, err2 := v.call(&runtime.Function{Pkg: pkg, File: file, Name: "<arraylen>", Chunk: ch}, nil, nil, nil); err2 == nil {
 					if iv, ok2 := lenConstInt(r); ok2 {
 						n, ok = iv, true
 					}
@@ -3270,7 +3280,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}()
 		if ok {
-			return runtime.FoldArrayLen(td.Pkg, at, n), true
+			return runtime.FoldArrayLen(pkg, at, n), true
 		}
 	}
 	return 0, false
