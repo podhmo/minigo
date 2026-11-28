@@ -47,11 +47,13 @@ func parseDurationFlag(s string) (runtime.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return int64(v), nil
+	return v, nil
 }
 
 func intArg(v runtime.Value) int64 {
 	switch x := hostbridge.GoNative(v).(type) {
+	case time.Duration:
+		return int64(x)
 	case int64:
 		return x
 	case int:

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"testing"
+	"time"
 )
 
 var level = flag.Int("level", 7, "test level")
@@ -82,5 +83,75 @@ func TestCustomFlagSetError(t *testing.T) {
 	}
 	if v != 1 {
 		t.Fatalf("v = %d, want 1", v)
+	}
+}
+
+type yesFlag bool
+
+func (v *yesFlag) String() string { return "yes" }
+func (v *yesFlag) Set(s string) error {
+	*v = s == "true" || s == "1"
+	return nil
+}
+func (v *yesFlag) IsBoolFlag() bool { return true }
+
+func TestNewFlagSet(t *testing.T) {
+	fs := flag.NewFlagSet("case", flag.ContinueOnError)
+	name := fs.String("name", "default", "name value")
+	count := fs.Int("count", 1, "count value")
+	verbose := fs.Bool("verbose", false, "verbose value")
+	timeout := fs.Duration("timeout", time.Second, "timeout value")
+	var small smallFlag
+	fs.Var(&small, "small", "small value")
+
+	if timeout.Seconds() != 1 {
+		t.Fatalf("default timeout Seconds = %v, want 1", timeout.Seconds())
+	}
+	err := fs.Parse([]string{"-name", "bob", "-count=3", "-verbose", "-timeout=2s", "-small", "ok", "rest", "-x"})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if *name != "bob" || *count != 3 || !*verbose || small != 1 {
+		t.Fatalf("parsed values = %q, %d, %v, %d", *name, *count, *verbose, small)
+	}
+	if !fs.Parsed() {
+		t.Error("Parsed() = false")
+	}
+	if fs.NArg() != 2 || fs.Arg(0) != "rest" || fs.Arg(1) != "-x" {
+		t.Fatalf("positional args = %d %q %q", fs.NArg(), fs.Arg(0), fs.Arg(1))
+	}
+	if timeout.Seconds() != 2 {
+		t.Fatalf("timeout Seconds = %v, want 2", timeout.Seconds())
+	}
+	if fs.NFlag() != 5 {
+		t.Fatalf("NFlag = %d, want 5", fs.NFlag())
+	}
+	if fs.Lookup("name") == nil || fs.Lookup("missing") != nil {
+		t.Error("Lookup did not distinguish defined and missing flags")
+	}
+	if err := fs.Set("name", "ann"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if *name != "ann" {
+		t.Fatalf("name after Set = %q", *name)
+	}
+	if fs.NFlag() != 5 {
+		t.Fatalf("NFlag after setting the same flag = %d, want 5", fs.NFlag())
+	}
+	if err := fs.Parse([]string{"-missing", "tail"}); err == nil {
+		t.Fatal("Parse accepted an undefined flag")
+	}
+	if fs.NArg() != 1 || fs.Arg(0) != "tail" {
+		t.Fatalf("args after failed Parse = %d %q", fs.NArg(), fs.Arg(0))
+	}
+
+	fs2 := flag.NewFlagSet("bool", flag.ContinueOnError)
+	var yes yesFlag
+	fs2.Var(&yes, "yes", "yes value")
+	if err := fs2.Parse([]string{"-yes", "input"}); err != nil {
+		t.Fatalf("bool Var Parse: %v", err)
+	}
+	if !bool(yes) || fs2.NArg() != 1 || fs2.Arg(0) != "input" {
+		t.Fatalf("bool Var parse = %v, args %d %q", bool(yes), fs2.NArg(), fs2.Arg(0))
 	}
 }

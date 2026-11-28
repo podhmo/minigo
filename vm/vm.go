@@ -173,6 +173,9 @@ type Hooks struct {
 	// to a host `error` parameter, comes back to the script as itself.
 	// Nil falls back to the scriptIface proxy.
 	HostErr func(vc runtime.MemberCaller, v runtime.Value) error
+	// CwdAbs anchors a relative script path at the engine's virtual cwd.
+	// Nil leaves such paths untouched.
+	CwdAbs func(string) string
 }
 
 // VM is a stack machine. Create one as a struct literal with [Hooks] set

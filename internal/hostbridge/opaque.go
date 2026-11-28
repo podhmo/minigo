@@ -52,10 +52,102 @@ func OpaqueStoreArg(recv, name string, i int, a runtime.Value, mat Materialize) 
 		}
 		return rv, nil
 	}
+	if recv == "*minigo.Engine" {
+		// Embedding calls are a pass-through boundary, not a container:
+		// canonicalizing hashable values would pin them in the process-wide
+		// key restore table, while gc-call semantics still require the
+		// nested call to receive a snapshot of script containers. Host
+		// objects pass through so marshaling them cannot invoke methods
+		// (httptest.ResponseRecorder.Result) before the nested call runs.
+		return reflect.ValueOf(passThroughSnapshot(a, mat, map[runtime.Value]runtime.Value{})), nil
+	}
 	if ck, ok := runtime.TryOpaqueKey(a); ok {
 		return reflect.ValueOf(ck), nil
 	}
 	return opaqueStoreValue(a, mat)
+}
+
+// passThroughSnapshot copies script containers the way Engine.Call's
+// snapshot contract requires, while leaving host objects and callable
+// values untouched. It is recursive unlike runtime.Copy: Go assignment
+// shares a slice or map, but an embedding-call argument is a snapshot
+// of the caller's data, not an assignment into the callee.
+func passThroughSnapshot(v runtime.Value, mat Materialize, memo map[runtime.Value]runtime.Value) runtime.Value {
+	if u, ok := v.(*runtime.UConst); ok {
+		if mv, err := mat(u); err == nil {
+			v = mv
+		}
+	}
+	if cp, ok := memo[v]; ok {
+		return cp
+	}
+	switch x := v.(type) {
+	case *runtime.Slice:
+		cp := *x
+		cp.Host = reflect.Value{}
+		memo[v] = &cp
+		n, c := len(x.Elems), cap(x.Elems)
+		cp.Elems = make([]runtime.Value, n, c)
+		if c > n {
+			cp.Elems = cp.Elems[:c]
+			xe := x.Elems[:c]
+			for i, e := range xe {
+				cp.Elems[i] = passThroughSnapshot(e, mat, memo)
+			}
+			cp.Elems = cp.Elems[:n]
+		} else {
+			for i, e := range x.Elems {
+				cp.Elems[i] = passThroughSnapshot(e, mat, memo)
+			}
+		}
+		return &cp
+	case *runtime.Map:
+		cp := runtime.NewMap(x.Typ, x.IfaceKey)
+		memo[v] = cp
+		for i := 0; i < x.Len(); i++ {
+			k, e := x.At(i)
+			cp.Insert(passThroughSnapshot(k, mat, memo), passThroughSnapshot(e, mat, memo))
+		}
+		return cp
+	case *runtime.Struct:
+		cp := &runtime.Struct{Def: x.Def, Fields: make([]runtime.Value, len(x.Fields))}
+		memo[v] = cp
+		for i, e := range x.Fields {
+			cp.Fields[i] = passThroughSnapshot(e, mat, memo)
+		}
+		return cp
+	case *runtime.Named:
+		cp := *x
+		memo[v] = &cp
+		cp.V = passThroughSnapshot(x.V, mat, memo)
+		return &cp
+	case *runtime.GoValue:
+		rv := reflect.ValueOf(x.V)
+		if rv.IsValid() && rv.Type().Name() == "" {
+			switch rv.Kind() {
+			case reflect.Map:
+				if rv.IsNil() {
+					return v
+				}
+				cp := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+				it := rv.MapRange()
+				for it.Next() {
+					cp.SetMapIndex(it.Key(), it.Value())
+				}
+				return &runtime.GoValue{V: cp.Interface()}
+			case reflect.Slice:
+				if rv.IsNil() {
+					return v
+				}
+				cp := reflect.MakeSlice(rv.Type(), rv.Len(), rv.Cap())
+				reflect.Copy(cp, rv)
+				return &runtime.GoValue{V: cp.Interface()}
+			}
+		}
+		return v
+	default:
+		return v
+	}
 }
 
 // opaqueStoreKey packs a key-position arg in its canonical form.

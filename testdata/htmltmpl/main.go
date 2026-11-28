@@ -53,6 +53,12 @@ func MissingMethod() string {
 	return "error: " + err.Error()
 }
 
+// HTMLSpread spreads a bound named string into []byte like Go's string
+// spread does.
+func HTMLSpread() string {
+	return string(append([]byte{}, template.HTML("x&y")...))
+}
+
 // Escaper calls the variadic html/template escaper helpers on plain
 // strings (issue #1398: HTMLEscaper must be bound like URLQueryEscaper).
 func Escaper() string {

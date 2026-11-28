@@ -172,6 +172,35 @@ func ExecDirField(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// ExecDirRelative resolves a relative exec.Cmd.Dir against the engine's
+// virtual cwd rather than the host process cwd.
+func ExecDirRelative(dir string) string {
+	old, err := os.Getwd()
+	if err != nil {
+		return "wd: " + err.Error()
+	}
+	if err := os.Chdir(dir); err != nil {
+		return "chdir: " + err.Error()
+	}
+	defer os.Chdir(old)
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("cmd", "/c", "cd")
+		cmd.Dir = "sub"
+		out, err := cmd.Output()
+		if err != nil {
+			return "exec: " + err.Error()
+		}
+		return strings.TrimSpace(string(out))
+	}
+	cmd := exec.Command("pwd")
+	cmd.Dir = "sub"
+	out, err := cmd.Output()
+	if err != nil {
+		return "exec: " + err.Error()
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // FileWrite exercises os.Create + (*os.File).Write with a script []byte-ish
 // arg and Close via reflective method dispatch.
 func FileWrite(dir string) string {

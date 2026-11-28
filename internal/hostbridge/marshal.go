@@ -113,6 +113,11 @@ var OpaqueContainers = map[string]bool{
 	"*sync.Map":            true,
 	"*context.valueCtx":    true,
 	"*stdatomic.AtomicBox": true,
+	// Engine.Call's variadic args are pass-through embedding inputs,
+	// not data the callee reflects over. Projecting them would run
+	// niladic methods (httptest.ResponseRecorder.Result) before the
+	// nested engine ever starts the call.
+	"*minigo.Engine": true,
 }
 
 var stringAnyMapType = reflect.TypeFor[map[string]any]()

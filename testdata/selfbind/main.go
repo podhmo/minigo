@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/resolve"
@@ -65,6 +67,34 @@ func NestedResetPackageModes() string {
 		return fmt.Sprint(err)
 	}
 	return "allowed"
+}
+
+func NestedRecorder() string {
+	e := minigo.NewEngine(".")
+	pkg, err := e.Package(context.Background(), "./testdata/selfbindrec")
+	if err != nil {
+		return fmt.Sprint(err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	if _, err := e.Call(context.Background(), pkg, "Write", rec, req); err != nil {
+		return fmt.Sprint(err)
+	}
+	res := rec.Result()
+	return fmt.Sprintf("%d|%s|%s", res.StatusCode, res.Header.Get("X-Test"), rec.Body.String())
+}
+
+func NestedSliceIsolation() string {
+	e := minigo.NewEngine(".")
+	pkg, err := e.Package(context.Background(), "./testdata/selfbindrec")
+	if err != nil {
+		return fmt.Sprint(err)
+	}
+	xs := []string{"orig"}
+	if _, err := e.Call(context.Background(), pkg, "Mutate", xs); err != nil {
+		return fmt.Sprint(err)
+	}
+	return xs[0]
 }
 
 func NestedMarker() string { return minigo.Marker() }

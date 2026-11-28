@@ -1369,6 +1369,24 @@ func TestExecIntrinsics(t *testing.T) {
 	if !os.SameFile(dirInfo, gotInfo) {
 		t.Fatalf("ExecDirField: got %q, want dir %q", got, dir)
 	}
+	// A relative Dir anchors at the engine's virtual cwd, matching Go's
+	// process-cwd semantics under minigo's virtual process state.
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0755); err != nil {
+		t.Fatal(err)
+	}
+	got = run(t, e, "./testdata/fsops", "ExecDirRelative", dir)
+	subInfo, err := os.Stat(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInfo, err = os.Stat(got.(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(subInfo, gotInfo) {
+		t.Fatalf("ExecDirRelative: got %q, want dir %q", got, sub)
+	}
 	// exec.LookPath with a separator-bearing relative name anchors at the
 	// engine's virtual cwd, not the host process's cwd
 	tool := filepath.Join(dir, "tool.bin")
@@ -3527,6 +3545,7 @@ func TestHTMLTemplateBound(t *testing.T) {
 		run(t, e, "./testdata/htmltmpl", "MissingField"),
 		run(t, e, "./testdata/htmltmpl", "MissingMethod"),
 		run(t, e, "./testdata/htmltmpl", "Escaper"),
+		run(t, e, "./testdata/htmltmpl", "HTMLSpread"),
 	}
 	want := []any{
 		`<p title="&lt;bob&gt;">&lt; &lt;bob&gt; <b>x</b></p>|a&amp;b`,
@@ -3534,6 +3553,7 @@ func TestHTMLTemplateBound(t *testing.T) {
 		`error: template: m:1:2: executing "m" at <.Nope>: can't evaluate field Nope in type *struct { Name interface {}; Badge interface {}; Initial interface {} }`,
 		`error: template: m:1:10: executing "m" at <.Initial.Nope>: can't evaluate field Nope in type interface {}`,
 		`&lt;b&gt;x&lt;/b&gt;&lt;i&gt;y&lt;/i&gt;|a+b%26c`,
+		"x&y",
 	}
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Errorf("html/template (-want +got):\n%s", diff)
