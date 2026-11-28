@@ -258,6 +258,7 @@ type Pair3 model.Pair3
 type Pair4 model.Pair4
 type Pair5 model.Pair5
 type Pair6 model.Pair6
+type Pair7 model.Pair7
 
 func StoryCrossPackageArrayLen() {
 	p := fixture.Minimal[Pair]()
@@ -266,7 +267,8 @@ func StoryCrossPackageArrayLen() {
 	s := fixture.Minimal[Pair4]()
 	u := fixture.Minimal[Pair5]()
 	v := fixture.Minimal[Pair6]()
-	fmt.Printf("%d/%d/%d/%d/%d/%d/%s", len(p), len(q), len(r), len(s), len(u), len(v), p[2])
+	w := fixture.Minimal[Pair7]()
+	fmt.Printf("%d/%d/%d/%d/%d/%d/%d/%s", len(p), len(q), len(r), len(s), len(u), len(v), len(w), p[2])
 }
 `, map[string]string{
 		"model/model.go": `package model
@@ -282,6 +284,7 @@ type Pair3 [int(^uint8(252))]string
 type Pair4 [int(real(sizes.C) + 0)]string
 type Pair5 [D]string
 type Pair6 [len(sizes.A)]string
+type Pair7 [len(*sizes.P)]string
 `,
 		"dotconsts/dotconsts.go": `package dotconsts
 
@@ -316,6 +319,7 @@ const G = float32(2.99999999 + 0i)
 const M = int(G)
 
 var A [3]string
+var P = &[3]string{}
 
 func init() { fmt.Println("sizes init") }
 `,
@@ -325,7 +329,7 @@ func init() { fmt.Println("sizes init") }
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("3/3/3/3/3/3/x", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("3/3/3/3/3/3/3/x", string(page.Body)); diff != "" {
 		t.Fatalf("cross-package array fixture output (-want +got):\n%s", diff)
 	}
 }

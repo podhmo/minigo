@@ -6,13 +6,23 @@ package compile
 import (
 	"go/ast"
 	"go/constant"
+	"go/token"
 
 	"github.com/podhmo/minigo/internal/semantics"
 	"github.com/podhmo/minigo/runtime"
 	"github.com/podhmo/minigo/syntax"
 )
 
-func (c *compiler) arrayVarLen(pkg *runtime.Package, file *syntax.File, name string, depth int) (constant.Value, bool) {
+func (c *compiler) typeScope(pkg *runtime.Package, file *syntax.File) *compiler {
+	if pkg == c.pkg && file == c.file {
+		return c
+	}
+	nc := &compiler{pkg: pkg, file: file, fs: newFScope(nil), iotaVal: -1, strictLazy: c.strictLazy}
+	nc.fs.pushBlock()
+	return nc
+}
+
+func (c *compiler) packageVarType(pkg *runtime.Package, file *syntax.File, name string) (ast.Expr, bool) {
 	if pkg == nil || pkg.Index == nil {
 		return nil, false
 	}
@@ -26,42 +36,36 @@ func (c *compiler) arrayVarLen(pkg *runtime.Package, file *syntax.File, name str
 	}
 	te := vs.Type
 	if te == nil && len(vs.Values) == len(vs.Names) && vd.NameIdx < len(vs.Values) {
-		if cl, ok := ast.Unparen(vs.Values[vd.NameIdx]).(*ast.CompositeLit); ok {
+		v := ast.Unparen(vs.Values[vd.NameIdx])
+		if cl, ok := v.(*ast.CompositeLit); ok {
 			te = cl.Type
+		}
+		if u, ok := v.(*ast.UnaryExpr); ok && u.Op == token.AND {
+			if cl, ok := ast.Unparen(u.X).(*ast.CompositeLit); ok {
+				te = &ast.StarExpr{X: cl.Type}
+			}
 		}
 	}
 	if te == nil {
 		return nil, false
 	}
-	nc := c
-	if pkg != c.pkg || file != c.file {
-		nc = &compiler{pkg: pkg, file: file, fs: newFScope(nil), iotaVal: -1, strictLazy: c.strictLazy}
-		nc.fs.pushBlock()
-	}
-	at, ok := ast.Unparen(nc.unfoldTypExpr(te, 8)).(*ast.ArrayType)
-	if !ok || at.Len == nil {
-		return nil, false
-	}
-	lv, _, ok := nc.scopeConstVal(at.Len, depth+1, -2)
-	if !ok || lv.Kind() != constant.Int {
-		return nil, false
-	}
-	return lv, true
+	return te, true
 }
 
-func (c *compiler) arrayLenOperand(e ast.Expr, depth, pkgIota int) (constant.Value, bool) {
+// varTypeOperand resolves the declared type of a variable operand without
+// resolving the variable's value. The returned scope mode is the mode its
+// type expression belongs to: local scope for a local variable, package
+// scope outside a const spec for a package variable.
+func (c *compiler) varTypeOperand(e ast.Expr, pkgIota int) (ast.Expr, *compiler, int, bool) {
 	switch x := ast.Unparen(e).(type) {
 	case *ast.Ident:
 		if pkgIota == -1 {
 			if b := c.fs.lookupBinding(x.Name); b != nil && b.declTyp != nil {
-				if at, ok := ast.Unparen(c.unfoldTypExpr(b.declTyp, 8)).(*ast.ArrayType); ok && at.Len != nil {
-					lv, _, ok := c.scopeConstVal(at.Len, depth+1, pkgIota)
-					return lv, ok && lv.Kind() == constant.Int
-				}
+				return b.declTyp, c, pkgIota, true
 			}
 		}
-		if lv, ok := c.arrayVarLen(c.pkg, c.file, x.Name, depth); ok {
-			return lv, true
+		if te, ok := c.packageVarType(c.pkg, c.file, x.Name); ok {
+			return te, c.typeScope(c.pkg, c.file), -2, true
 		}
 		if c.pkg != nil && c.file != nil {
 			for _, ref := range c.pkg.Imports[c.file] {
@@ -77,32 +81,70 @@ func (c *compiler) arrayLenOperand(e ast.Expr, depth, pkgIota int) (constant.Val
 					continue
 				}
 				if vd := p.Index.Vars[x.Name]; vd != nil {
-					return c.arrayVarLen(p, vd.File, x.Name, depth)
+					if te, ok := c.packageVarType(p, vd.File, x.Name); ok {
+						return te, c.typeScope(p, vd.File), -2, true
+					}
 				}
 			}
 		}
-		return nil, false
 	case *ast.SelectorExpr:
 		id, ok := x.X.(*ast.Ident)
 		if !ok {
-			return nil, false
+			return nil, nil, 0, false
 		}
 		ref, isPkg := c.importRef(id.Name)
 		if !isPkg {
-			return nil, false
+			return nil, nil, 0, false
 		}
 		res := c.askIndexed(ref)
 		if res.Kind != semantics.Found && res.Kind != semantics.Deferred {
-			return nil, false
+			return nil, nil, 0, false
 		}
-		if res.Val == nil || res.Val.Index == nil {
-			return nil, false
+		p := res.Val
+		if p == nil || p.Index == nil {
+			return nil, nil, 0, false
 		}
-		vd := res.Val.Index.Vars[x.Sel.Name]
+		vd := p.Index.Vars[x.Sel.Name]
 		if vd == nil {
+			return nil, nil, 0, false
+		}
+		if te, ok := c.packageVarType(p, vd.File, x.Sel.Name); ok {
+			return te, c.typeScope(p, vd.File), -2, true
+		}
+	}
+	return nil, nil, 0, false
+}
+
+func (c *compiler) arrayTypeLen(nc *compiler, te ast.Expr, depth, mode int) (constant.Value, bool) {
+	at, ok := ast.Unparen(nc.unfoldTypExpr(te, 8)).(*ast.ArrayType)
+	if !ok || at.Len == nil {
+		return nil, false
+	}
+	lv, _, ok := nc.scopeConstVal(at.Len, depth+1, mode)
+	if !ok || lv.Kind() != constant.Int {
+		return nil, false
+	}
+	return lv, true
+}
+
+func (c *compiler) arrayLenOperand(e ast.Expr, depth, pkgIota int) (constant.Value, bool) {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		te, nc, mode, ok := c.varTypeOperand(e, pkgIota)
+		if !ok {
 			return nil, false
 		}
-		return c.arrayVarLen(res.Val, vd.File, x.Sel.Name, depth)
+		return c.arrayTypeLen(nc, te, depth, mode)
+	case *ast.StarExpr:
+		te, nc, mode, ok := c.varTypeOperand(x.X, pkgIota)
+		if !ok {
+			return nil, false
+		}
+		pt, ok := ast.Unparen(nc.unfoldTypExpr(te, 8)).(*ast.StarExpr)
+		if !ok {
+			return nil, false
+		}
+		return c.arrayTypeLen(nc, pt.X, depth, mode)
 	}
 	return nil, false
 }
