@@ -41,6 +41,7 @@ import (
 
 	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/resolve"
+	"github.com/podhmo/minigo/x/storybook/fixture"
 )
 
 // Book is one package's set of stories.
@@ -163,6 +164,7 @@ func (b *Book) baseEngine() (*minigo.Engine, string, error) {
 			opts = append(opts, minigo.WithPackageModes(modes))
 		}
 		b.base = minigo.NewEngine(dir, opts...)
+		b.base.Bind(fixture.ImportPath, fixture.Symbols())
 		b.dir = dir
 		if b.Setup != nil {
 			b.baseErr = b.Setup(b.base)

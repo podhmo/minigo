@@ -21,6 +21,7 @@ package vm
 import (
 	"fmt"
 	"go/ast"
+	"go/constant"
 	"go/token"
 	"strings"
 	"sync"
@@ -50,6 +51,9 @@ type Hooks struct {
 	// expression sees globals, file imports and builtins but not the
 	// caller's locals (see compile.Expr). Nil makes OpEvalFragment trap.
 	CompileExpr func(pkg *runtime.Package, file *syntax.File, e ast.Expr) (*bytecode.Chunk, error)
+	// ConstEval evaluates a package-scope constant expression without
+	// running initializers — the compile-time input to array lengths.
+	ConstEval func(pkg *runtime.Package, file *syntax.File, e ast.Expr) (constant.Value, bool)
 	// CompileScopedExpr compiles an expression with a caller-scope overlay
 	// (name -> caller slot/upval index) for special forms (see
 	// compile.ExprScoped). Nil makes a special form's Eval fail.
@@ -875,7 +879,7 @@ func (v *VM) resolveGlobalKind(f *frame, name string) (val runtime.Value, cell *
 			imported = p
 		}
 		if imported != nil {
-			mv, err := v.memberOf(imported, name)
+			mv, err := v.memberOf(imported, name, constOnlyFrame(f))
 			if err != nil {
 				return nil, nil, false, fmt.Errorf("dot import %s: %w", imported.Path, err)
 			}

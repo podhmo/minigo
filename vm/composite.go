@@ -28,6 +28,7 @@ import (
 	"unsafe"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -52,7 +53,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		if err != nil {
 			f.trap("import %s: %s", b.Path, err)
 		}
-		mv, err := v.memberOf(p, name)
+		mv, err := v.memberOf(p, name, constOnlyFrame(f))
 		if err != nil {
 			f.trapErr(err)
 		}
@@ -69,7 +70,7 @@ func (v *VM) selectMember(f *frame, base runtime.Value, name string, sites ...*b
 		if !token.IsExported(name) {
 			f.trap("cannot refer to unexported name %s.%s", b.Path, name)
 		}
-		mv, err := v.memberOf(b, name)
+		mv, err := v.memberOf(b, name, constOnlyFrame(f))
 		if err != nil {
 			// member access on a package is namespace-only — the
 			// value's meaning must not change with its type, so the
@@ -3080,8 +3081,21 @@ func hostNewStructTagged(v runtime.Value) bool {
 // package initializer triggered from inside this VM runs on THIS VM — a
 // spawned goroutine's first touch of a package must not execute __init__
 // on the engine's root VM.
-func (v *VM) memberOf(p *runtime.Package, name string) (runtime.Value, error) {
-	return p.MemberV(name, v.H.Materialize, v.runInit)
+func (v *VM) memberOf(p *runtime.Package, name string, constOnly ...bool) (runtime.Value, error) {
+	run := v.runInit
+	if len(constOnly) > 0 && constOnly[0] {
+		if p.Index != nil {
+			if d, ok := p.Index.Lookup(name); ok && d.Kind == index.VarDecl {
+				return nil, fmt.Errorf("constant expression cannot use variable %s.%s", p.Name, name)
+			}
+		}
+		run = nil
+	}
+	return p.MemberV(name, v.H.Materialize, run)
+}
+
+func constOnlyFrame(f *frame) bool {
+	return f != nil && f.fn != nil && f.fn.ConstOnly
 }
 
 // lenDerefFold reports the constant length of *p when p's type is
@@ -3207,14 +3221,32 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	if td == nil {
 		return 0, false
 	}
-	at, ok := td.Anon.(*ast.ArrayType)
-	if !ok || at.Len == nil {
+	info := runtime.ArrayASTInfoOf(td)
+	if info == nil || info.Type.Len == nil {
 		return 0, false
+	}
+	at := info.Type
+	pkg := info.Pkg
+	if pkg == nil {
+		pkg = td.Pkg
+	}
+	file := info.File
+	if file == nil {
+		file = td.File
 	}
 	// a canonical literal (`[3]T`) or an already-folded length answers
 	// without evaluating anything.
-	if n, ok := runtime.FoldedArrayLen(td.Pkg, at); ok {
+	if n, ok := runtime.FoldedArrayLen(pkg, at); ok {
 		return n, true
+	}
+	if v.H.ConstEval != nil {
+		if cv, ok := v.H.ConstEval(pkg, file, at.Len); ok {
+			if iv, ok2 := toIntConst(cv); ok2 {
+				if n, ok3 := constant.Int64Val(iv); ok3 {
+					return runtime.FoldArrayLen(pkg, at, n), true
+				}
+			}
+		}
 	}
 	switch l := at.Len.(type) {
 	case *ast.BasicLit:
@@ -3223,46 +3255,97 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 		// strconv.ParseInt cannot read.
 		if iv, ok := toIntConst(constant.MakeFromLiteral(l.Value, l.Kind, 0)); ok {
 			if n, ok := constant.Int64Val(iv); ok {
-				return runtime.FoldArrayLen(td.Pkg, at, n), true
+				return runtime.FoldArrayLen(pkg, at, n), true
 			}
 		}
 		return 0, false
+	case *ast.SelectorExpr:
+		// A package-qualified const reads the imported package's const
+		// bindings directly. Going through a normal selector expression
+		// would initialize the package even when the constant is already
+		// bound, mixing initializer output into a type-only fixture.
+		if id, ok := l.X.(*ast.Ident); ok && pkg != nil && file != nil {
+			if ref := pkg.Scopes[file][id.Name]; ref != nil {
+				if ip, err := ref.Materialize(); err == nil && ip != nil {
+					_ = ip.EnsureConstsRun(v.runInit)
+					if gv, ok := ip.Globals.Get(l.Sel.Name); ok {
+						if d, ok2 := runtime.Deref(gv); ok2 {
+							gv = d
+						}
+						if n, ok2 := lenConstInt(gv); ok2 {
+							return runtime.FoldArrayLen(pkg, at, n), true
+						}
+					}
+				}
+			}
+		}
 	case *ast.Ident:
 		// a named const: its value lives in the package env once init
 		// ran (Materialize returns NIL for const decls); fall back to the
 		// index for a const declared below the use or not yet bound.
-		if td.Pkg != nil {
-			if gv, ok := td.Pkg.Globals.Get(l.Name); ok {
+		if pkg != nil {
+			readGlobal := func() (int64, bool) {
+				gv, ok := pkg.Globals.Get(l.Name)
+				if !ok {
+					return 0, false
+				}
 				if d, ok2 := runtime.Deref(gv); ok2 {
 					gv = d
 				}
-				if n, ok2 := lenConstInt(gv); ok2 {
-					return runtime.FoldArrayLen(td.Pkg, at, n), true
-				}
+				return lenConstInt(gv)
 			}
-			if td.Pkg.Index != nil && v.H.Materialize != nil {
-				if d := td.Pkg.Index.Consts[l.Name]; d != nil {
-					if mv, err := v.H.Materialize(td.Pkg, d); err == nil {
+			if n, ok := readGlobal(); ok {
+				return runtime.FoldArrayLen(pkg, at, n), true
+			}
+			// Constants bind without running the package initializer.
+			// Try them only after the already-bound read: const bootstrap
+			// itself can need an array length, and re-entering its
+			// sync.Once would wait forever.
+			_ = pkg.EnsureConstsRun(v.runInit)
+			if n, ok := readGlobal(); ok {
+				return runtime.FoldArrayLen(pkg, at, n), true
+			}
+			if pkg.Index != nil && v.H.Materialize != nil {
+				if d := pkg.Index.Consts[l.Name]; d != nil {
+					if mv, err := v.H.Materialize(pkg, d); err == nil {
 						if n, ok := lenConstInt(mv); ok {
-							return runtime.FoldArrayLen(td.Pkg, at, n), true
+							return runtime.FoldArrayLen(pkg, at, n), true
 						}
 					}
 				}
 			}
 		}
 	}
-	// any other constant form ([N*2]int, [N+1]int): compile the length
-	// expression and run it in the typedef's package scope — const
-	// names resolve through globals like a normal expression. A
-	// non-constant shape ([...]T's Ellipsis, a call) can't evaluate;
-	// its trap is swallowed so the typedef stays non-array (ok=false).
-	if td.Pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
+	// Any other constant form ([N*2]int, [N+1]int) compiles and runs in
+	// the typedef's package scope. Bind consts first — the expression's
+	// plain globals read values without running package init, while a
+	// selector's package needs its own const-only bootstrap. This keeps
+	// full constant semantics in the ordinary compiler instead of
+	// requiring ConstEval's static shortcut to cover every valid form.
+	if pkg != nil && v.H.CompileExpr != nil && lenConstShaped(at.Len) {
+		_ = pkg.EnsureConstsRun(v.runInit)
+		ast.Inspect(at.Len, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			id, ok := sel.X.(*ast.Ident)
+			if !ok || file == nil {
+				return true
+			}
+			if ref := pkg.Scopes[file][id.Name]; ref != nil {
+				if ip, err := ref.Materialize(); err == nil && ip != nil {
+					_ = ip.EnsureConstsRun(v.runInit)
+				}
+			}
+			return true
+		})
 		var n int64
 		var ok bool
 		func() {
 			defer func() { _ = recover() }()
-			if ch, err := v.H.CompileExpr(td.Pkg, td.File, at.Len); err == nil && ch != nil {
-				if r, err2 := v.call(&runtime.Function{Pkg: td.Pkg, File: td.File, Name: "<arraylen>", Chunk: ch}, nil, nil, nil); err2 == nil {
+			if ch, err := v.H.CompileExpr(pkg, file, at.Len); err == nil && ch != nil {
+				if r, err2 := v.call(&runtime.Function{Pkg: pkg, File: file, Name: "<arraylen>", Chunk: ch, ConstOnly: true}, nil, nil, nil); err2 == nil {
 					if iv, ok2 := lenConstInt(r); ok2 {
 						n, ok = iv, true
 					}
@@ -3270,7 +3353,7 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 			}
 		}()
 		if ok {
-			return runtime.FoldArrayLen(td.Pkg, at, n), true
+			return runtime.FoldArrayLen(pkg, at, n), true
 		}
 	}
 	return 0, false
@@ -3291,12 +3374,26 @@ func lenConstShaped(e ast.Expr) bool {
 		return lenConstShaped(x.X)
 	case *ast.BinaryExpr:
 		return lenConstShaped(x.X) && lenConstShaped(x.Y)
+	case *ast.SelectorExpr:
+		_, ok := x.X.(*ast.Ident)
+		return ok
 	case *ast.CallExpr:
-		// len/cap of an array is a constant expression — `len(a)`
-		// and `cap(a)` fold to the array's size; other calls are
-		// non-constant and Go rejects them.
-		id, ok := x.Fun.(*ast.Ident)
-		return ok && (id.Name == "len" || id.Name == "cap")
+		// Calls in a valid constant length are conversions or the
+		// constant forms of len/cap/min/max. This syntactic gate cannot
+		// tell a conversion from a function call, but a real function
+		// call is invalid Go here; check only the operands' shape.
+		for _, a := range x.Args {
+			if !lenConstShaped(a) {
+				return false
+			}
+		}
+		switch f := x.Fun.(type) {
+		case *ast.Ident:
+			return true
+		case *ast.SelectorExpr:
+			_, ok := f.X.(*ast.Ident)
+			return ok
+		}
 	}
 	return false
 }

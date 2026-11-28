@@ -39,3 +39,21 @@ func TestSameTypedefLossySpelling(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerAssertUntaggedHostMap(t *testing.T) {
+	underlying := &runtime.TypeDef{Kind: runtime.KindMap, Anon: anonTd(t, "map[string]any").Anon}
+	v := &VM{H: Hooks{Underlying: func(td *runtime.TypeDef) (*runtime.TypeDef, error) {
+		if td.Kind == runtime.KindNamedBasic {
+			return underlying, nil
+		}
+		return td, nil
+	}}}
+	derived := &runtime.TypeDef{Kind: runtime.KindNamedBasic, Name: "DerivedMap"}
+	if v.containerAssert(nil, derived, nil, runtime.KindMap) {
+		t.Fatal("untagged host map asserted to a derived map type")
+	}
+	anon := &runtime.TypeDef{Kind: runtime.KindMap, Anon: underlying.Anon}
+	if !v.containerAssert(nil, anon, nil, runtime.KindMap) {
+		t.Fatal("untagged host map rejected by the anonymous map assertion")
+	}
+}

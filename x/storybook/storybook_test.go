@@ -21,7 +21,11 @@ func writePackage(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, src := range files {
-		writeFile(t, filepath.Join(dir, name), src)
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path, src)
 	}
 	return dir
 }
@@ -114,6 +118,224 @@ func notStory() {}
 // A story-prefixed func whose signature fits neither shape fails
 // discovery instead of being silently skipped — a typo'd signature
 // must not drop the story.
+
+func TestRenderGeneratedFixture(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	"html/template"
+	"github.com/podhmo/minigo/x/storybook/fixture"
+)
+
+type Inner struct{ Enabled bool }
+type Label string
+type Pair [2]string
+type Pair2 Pair
+type Base struct{ Text string }
+type Defined Base
+type PtrMap[K comparable, V any] map[K]V
+type DerivedMap PtrMap[*[]int, int]
+type MidMap[K comparable, V any] PtrMap[K, V]
+type FinalMap MidMap[string, int]
+type View struct {
+	Name Label
+	Count int
+	Tags []string
+	Inner *Inner
+	Scores map[string]int
+	Badge template.HTML
+	Pair Pair
+	Defined Defined
+	PtrScores map[*Inner]int
+	SlicePtrScores map[*[]int]int
+	Pair2 Pair2
+	DM DerivedMap
+	FM FinalMap
+	Next *View
+}
+
+func StoryGenerated() {
+	v := fixture.Minimal[View]()
+	fmt.Printf("%s/%d/%d/%t/%t/%d/%d/%s/%s/%t/%s/%d/%d/%s/%d/%s/%d", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"], v.Badge, v.Pair[1], v.Next == nil, v.Defined.Text, len(v.PtrScores), len(v.SlicePtrScores), v.Pair2[1], len(v.DM), copyProbe(v.Pair2), v.FM["x"])
+}
+
+func copyProbe(p Pair2) string { q := p; q[0] = "changed"; return p[0] }
+
+func StoryGeneratedLong() {
+	v := fixture.LongText[View]()
+	fmt.Print(len(v.Name) > 40)
+}
+`, nil)
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	page, err := b.Render(t.Context(), "StoryGenerated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("x/1/1/true/true/1/1/x/x/true/x/1/1/x/1/x/1", string(page.Body)); diff != "" {
+		t.Fatalf("generated fixture output (-want +got):\n%s", diff)
+	}
+	page, err = b.Render(t.Context(), "StoryGeneratedLong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("true", string(page.Body)); diff != "" {
+		t.Fatalf("generated long-text output (-want +got):\n%s", diff)
+	}
+}
+
+func TestRenderGeneratedFixtureDerivedShapes(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	"github.com/podhmo/minigo/x/storybook/fixture"
+)
+
+type Strings []string
+type Strings2 Strings
+type Strings3 Strings2
+type IntPtr *int
+type IntPtr2 IntPtr
+type IntPtr3 IntPtr2
+type Pair [2]string
+type Pair2 Pair
+type N1 struct{ S string }
+type N2 struct{ F N1 }
+type N3 struct{ F N2 }
+type N4 struct{ F N3 }
+type N5 struct{ F N4 }
+type N6 struct{ F N5 }
+type N7 struct{ F N6 }
+type Tree struct {
+	Children []Tree
+	ByName   map[string]Tree
+}
+
+func StoryDerivedShapes() {
+	ss := fixture.Minimal[Strings3]()
+	ip := fixture.Minimal[IntPtr3]()
+	var p Pair2 = fixture.Minimal[Pair2]()
+	q := p
+	q[0] = "changed"
+	var a [2]string = p
+	var asany any = a
+	_, asserts := asany.([2]string)
+	a[0] = "changed"
+	lit := Pair2{"x", "x"}
+	ai := any(lit)
+	lit[0] = "changed"
+	eq := any(p) == ai
+	_, backok := ai.(Pair2)
+	plain := Pair2{"x", "x"}
+	var unnamed [2]string = plain
+	var uany any = unnamed
+	_, uok := uany.([2]string)
+	c := fixture.Minimal[complex128]()
+	deep := fixture.Minimal[N7]()
+	tree := fixture.Minimal[Tree]()
+	fmt.Printf("%s/%d/%s/%t/%t/%t/%t/%t/%t/%d/%d", ss[0], *ip, p[0], real(c) != 0, deep.F.F.F.F.F.F.S != "", asserts, eq, backok, uok, len(tree.Children), len(tree.ByName))
+}
+`, nil)
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	page, err := b.Render(t.Context(), "StoryDerivedShapes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("x/1/x/true/true/true/true/true/true/1/1", string(page.Body)); diff != "" {
+		t.Fatalf("derived fixture output (-want +got):\n%s", diff)
+	}
+}
+
+func TestRenderGeneratedFixtureCrossPackageArrayLen(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	"x/model"
+	"github.com/podhmo/minigo/x/storybook/fixture"
+)
+
+const N = 1
+
+type Pair model.Pair
+type Pair2 model.Pair2
+type Pair3 model.Pair3
+type Pair4 model.Pair4
+type Pair5 model.Pair5
+type Pair6 model.Pair6
+type Pair7 model.Pair7
+
+func StoryCrossPackageArrayLen() {
+	p := fixture.Minimal[Pair]()
+	q := fixture.Minimal[Pair2]()
+	r := fixture.Minimal[Pair3]()
+	s := fixture.Minimal[Pair4]()
+	u := fixture.Minimal[Pair5]()
+	v := fixture.Minimal[Pair6]()
+	w := fixture.Minimal[Pair7]()
+	fmt.Printf("%d/%d/%d/%d/%d/%d/%d/%s", len(p), len(q), len(r), len(s), len(u), len(v), len(w), p[2])
+}
+`, map[string]string{
+		"model/model.go": `package model
+
+import (
+	. "x/dotconsts"
+	"x/sizes"
+)
+
+type Pair [sizes.N]string
+type Pair2 [sizes.M]string
+type Pair3 [int(^uint8(252))]string
+type Pair4 [int(real(sizes.C) + 0)]string
+type Pair5 [D]string
+type Pair6 [len(sizes.A)]string
+type Pair7 [len(*sizes.P)]string
+`,
+		"dotconsts/dotconsts.go": `package dotconsts
+
+import "fmt"
+
+const D = 3
+
+func init() { fmt.Println("dotconsts init") }
+`,
+		"dep/dep.go": `package dep
+
+import "fmt"
+
+const Z = 3
+
+func init() { fmt.Println("dep init") }
+`,
+		"sizes/sizes.go": `package sizes
+
+import (
+	"fmt"
+	"x/dep"
+)
+
+const U = int(dep.Z)
+
+const C = 3 + 0i
+
+const N = int(real(C))
+
+const G = float32(2.99999999 + 0i)
+const M = int(G)
+
+func makeArray() [3]string { return [3]string{} }
+
+var A = makeArray()
+var P = &[3]string{}
+
+func init() { fmt.Println("sizes init") }
+`,
+	})
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	page, err := b.Render(t.Context(), "StoryCrossPackageArrayLen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("3/3/3/3/3/3/3/x", string(page.Body)); diff != "" {
+		t.Fatalf("cross-package array fixture output (-want +got):\n%s", diff)
+	}
+}
+
 func TestDiscoverRejectsBadShape(t *testing.T) {
 	for _, tc := range []struct {
 		decl, want string

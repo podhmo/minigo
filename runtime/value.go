@@ -1560,25 +1560,121 @@ func PtrArrayType(td *TypeDef) *ast.ArrayType {
 // are represented as a [Slice] whose Typ is such a typedef.
 func ArrayTypedef(td *TypeDef) bool { return arrayTypedef(td) }
 
+// ArrayTypeInfo is the array type expression behind a typedef, with the
+// package and file scope in which that expression was declared. The scope
+// matters when a derived type crosses a package boundary: `[N]T` reads N
+// in the declaring package, not in the package naming the derived type.
+type ArrayTypeInfo struct {
+	Type *ast.ArrayType
+	Pkg  *Package
+	File *syntax.File
+}
+
 // ArrayASTOf returns the ArrayType AST behind an array typedef (Anon or
 // the named spec's type) — nil when td is not array-shaped.
 func ArrayASTOf(td *TypeDef) *ast.ArrayType {
-	if td == nil {
+	info := ArrayASTInfoOf(td)
+	if info == nil {
 		return nil
 	}
-	at, _ := td.TypeExpr().(*ast.ArrayType)
-	return at
+	return info.Type
+}
+
+// ArrayASTInfoOf is ArrayASTOf plus the scope of the returned array type
+// expression.
+func ArrayASTInfoOf(td *TypeDef) *ArrayTypeInfo {
+	return arrayASTInfoOf(td, 32)
 }
 
 // arrayTypedef reports whether a typedef is a fixed-size array — its
 // underlying AST is an ArrayType carrying a length (slices have none).
 func arrayTypedef(td *TypeDef) bool {
-	if td == nil {
-		return false
+	info := ArrayASTInfoOf(td)
+	return info != nil && info.Type.Len != nil
+}
+
+func arrayASTInfoOf(td *TypeDef, depth int) *ArrayTypeInfo {
+	if td == nil || depth <= 0 {
+		return nil
 	}
-	x := td.TypeExpr()
-	at, ok := x.(*ast.ArrayType)
-	return ok && at.Len != nil
+	return arrayASTInfoExpr(td, td.TypeExpr(), depth)
+}
+
+func arrayASTInfoExpr(td *TypeDef, x ast.Expr, depth int) *ArrayTypeInfo {
+	if depth <= 0 {
+		return nil
+	}
+	for {
+		p, ok := x.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		x = p.X
+	}
+	switch t := x.(type) {
+	case *ast.ArrayType:
+		return &ArrayTypeInfo{Type: t, Pkg: td.Pkg, File: td.File}
+	case *ast.Ident:
+		if td.Local || td.Spec == nil {
+			if lt := td.LocalTypes[t.Name]; lt != nil {
+				return arrayASTInfoOf(lt, depth-1)
+			}
+		}
+		spec, file := typeSpecInPackage(td.Pkg, t.Name)
+		if spec == nil {
+			return nil
+		}
+		ctx := &TypeDef{Pkg: td.Pkg, File: file}
+		return arrayASTInfoExpr(ctx, spec.Type, depth-1)
+	case *ast.SelectorExpr:
+		pkgid, ok := t.X.(*ast.Ident)
+		if !ok || td.Pkg == nil || td.File == nil {
+			return nil
+		}
+		ref := td.Pkg.Scopes[td.File][pkgid.Name]
+		if ref == nil {
+			return nil
+		}
+		ip := materializeImportRef(ref)
+		if ip == nil {
+			return nil
+		}
+		spec, file := typeSpecInPackage(ip, t.Sel.Name)
+		if spec == nil {
+			return nil
+		}
+		ctx := &TypeDef{Pkg: ip, File: file}
+		return arrayASTInfoExpr(ctx, spec.Type, depth-1)
+	}
+	return nil
+}
+
+func typeSpecInPackage(pkg *Package, name string) (*ast.TypeSpec, *syntax.File) {
+	if pkg == nil || pkg.Index == nil {
+		return nil, nil
+	}
+	info := pkg.Index.Types[name]
+	if info == nil || info.Decl == nil {
+		return nil, nil
+	}
+	spec, ok := info.Decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return nil, nil
+	}
+	return spec, info.Decl.File
+}
+
+func materializeImportRef(ref *ImportRef) (pkg *Package) {
+	defer func() {
+		if recover() != nil {
+			pkg = nil
+		}
+	}()
+	p, err := ref.Materialize()
+	if err != nil {
+		return nil
+	}
+	return p
 }
 
 // typeTagOf memoizes its spelling on the typedef itself (td.typeTag):
@@ -2988,9 +3084,12 @@ type Function struct {
 	OuterTParams []string
 
 	Compile func(*Function) error // injected by the engine
-	once    sync.Once
-	cerr    error
-	Chunk   *bytecode.Chunk
+	// ConstOnly marks a synthetic constant evaluator: package-member
+	// reads bind constants without completing the package's runtime init.
+	ConstOnly bool
+	once      sync.Once
+	cerr      error
+	Chunk     *bytecode.Chunk
 }
 
 // EnsureCompiled compiles the function once, through Compile, and

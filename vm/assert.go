@@ -678,10 +678,18 @@ func (v *VM) funcAssert(td *runtime.TypeDef, x runtime.Value) bool {
 // (host-produced) containers fall back to the kind check.
 func (v *VM) containerAssert(f *frame, td, tag *runtime.TypeDef, kind runtime.TypeKind) bool {
 	if td.Kind != kind {
-		return false
+		if td.Kind != runtime.KindNamedBasic {
+			return false
+		}
+		u := v.peelNamed(td)
+		if u == nil || u.Kind != kind {
+			return false
+		}
 	}
 	if tag == nil {
-		return true
+		// An untagged host container can spell only its anonymous shape;
+		// it is never a value of a declared script type.
+		return td.Name == "" && td.Spec == nil
 	}
 	if td.Name != "" || tag.Name != "" {
 		return v.typeMatchesTD(f, td, tag, nil)

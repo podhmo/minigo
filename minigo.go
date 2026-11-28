@@ -415,6 +415,7 @@ func (e *Engine) newVM() *vm.VM {
 		Builtin:           e.builtins.Get,
 		Materialize:       e.materialize,
 		CompileExpr:       e.compileExpr,
+		ConstEval:         compile.ConstExprValue,
 		CompileScopedExpr: e.compileScopedExpr,
 		Special: func(id runtime.SymbolID) (runtime.SpecialFunc, bool) {
 			e.mu.Lock()
@@ -1636,7 +1637,7 @@ func (e *Engine) bootstrapConsts(p *runtime.Package, run func(*runtime.Function)
 		}
 	}
 	e.bindCompiles(p, ch)
-	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch}
+	fn := &runtime.Function{Pkg: p, Name: p.Name + ".__consts__", Chunk: ch, ConstOnly: true}
 	return run(fn)
 }
 

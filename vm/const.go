@@ -624,11 +624,15 @@ func (v *VM) materializeConstErr(u *runtime.UConst, td *runtime.TypeDef) (runtim
 		}
 		x = i
 	case "float32":
-		fv, ok := constFloat(u.V)
+		rv, ok := constRealValue(u.V)
 		if !ok {
 			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
 		}
-		f32, _ := constant.Float32Val(u.V)
+		fv, ok := constFloat(rv)
+		if !ok {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		f32, _ := constant.Float32Val(rv)
 		if math.IsInf(float64(f32), 0) || math.IsInf(fv, 0) {
 			return nil, fmt.Errorf("constant %s overflows float32", u.V)
 		}
@@ -734,7 +738,11 @@ func (v *VM) convertConst(td *runtime.TypeDef, u *runtime.UConst) (runtime.Value
 	// through Float64Val first would double-round tie values.
 	switch name {
 	case "float32":
-		f32, _ := constant.Float32Val(u.V)
+		rv, ok := constRealValue(u.V)
+		if !ok {
+			return nil, fmt.Errorf("cannot use constant %s as %s", u.V, name)
+		}
+		f32, _ := constant.Float32Val(rv)
 		u = &runtime.UConst{V: constant.MakeFloat64(float64(f32)), Rune: u.Rune}
 	case "complex64":
 		re, _ := constant.Float32Val(constant.Real(u.V))
@@ -761,10 +769,22 @@ func numericBasicName(name string) bool {
 
 // constFloat reads a numeric constant as float64; a complex constant
 // with an imaginary part is not a float.
-func constFloat(cv constant.Value) (float64, bool) {
+func constRealValue(cv constant.Value) (constant.Value, bool) {
 	switch cv.Kind() {
 	case constant.Int, constant.Float:
-	default:
+		return cv, true
+	case constant.Complex:
+		if constant.Sign(constant.Imag(cv)) != 0 {
+			return nil, false
+		}
+		return constant.Real(cv), true
+	}
+	return nil, false
+}
+
+func constFloat(cv constant.Value) (float64, bool) {
+	cv, ok := constRealValue(cv)
+	if !ok {
 		return 0, false
 	}
 	// Float64Val's second result is exactness, not representability —
