@@ -90,3 +90,21 @@ func TestConstExprValueRejectsRoundedMinWinner(t *testing.T) {
 		t.Fatalf("rounded min winner folded to %v; conversion precision is unknown", cv)
 	}
 }
+
+func TestConstExprValueMinAllowsInvariantRounding(t *testing.T) {
+	e, err := parser.ParseExpr("int(min(float32(3), 4.1))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cv, ok := ConstExprValue(nil, nil, e)
+	if !ok {
+		t.Fatal("precision-invariant min expression did not fold")
+	}
+	n, ok := constant.Int64Val(cv)
+	if !ok {
+		t.Fatalf("min expression = %v, want an int64 constant", cv)
+	}
+	if diff := cmp.Diff(int64(3), n); diff != "" {
+		t.Fatalf("min expression (-want +got):\n%s", diff)
+	}
+}

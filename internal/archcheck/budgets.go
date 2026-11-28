@@ -31,7 +31,7 @@ var FileBudgets = map[string]int{
 	"compile/initfunc.go":                        118,
 	"compile/synthimports.go":                    29,
 	"compile/trap.go":                            18,
-	"compile/constfold.go":                       1070,
+	"compile/constfold.go":                       1091,
 	"compile/expr.go":                            651,
 	"compile/fieldtyp.go":                        110,
 	"compile/gate.go":                            429,

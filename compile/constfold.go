@@ -879,7 +879,6 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			if id.Name == "max" {
 				op = token.GTR
 			}
-			var best constant.Value
 			var bTyped, floatResult bool
 			var args []constant.Value
 			var typedArgs []bool
@@ -892,33 +891,55 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 				floatResult = floatResult || at && av.Kind() == constant.Float
 				args = append(args, av)
 				typedArgs = append(typedArgs, at)
-				if best == nil || constant.Compare(av, op, best) {
-					best = av
-				}
 			}
-			if floatResult {
-				// Untyped arguments convert to the typed argument's float
-				// type before comparison. Without that type's precision,
-				// accept only values exact even at float32 precision; a
-				// wider valid case stays for runtime evaluation rather
-				// than risking a differently-rounded winner.
-				for i, av := range args {
-					if typedArgs[i] || (av.Kind() != constant.Int && av.Kind() != constant.Float) {
-						continue
+			if !floatResult {
+				var best constant.Value
+				for _, av := range args {
+					if best == nil || constant.Compare(av, op, best) {
+						best = av
 					}
+				}
+				return best, bTyped, true
+			}
+			// Untyped arguments convert to the typed argument's float type
+			// before comparison. The bare value does not say whether that
+			// type is float32 or float64, so fold only when both precisions
+			// choose the same value. Typed float32 constants are exact at
+			// float32 precision already; a typed value that is not must be a
+			// wider constant whose exact comparison this shortcut cannot infer.
+			for i, av := range args {
+				if typedArgs[i] && av.Kind() == constant.Float {
 					if _, exact := constant.Float32Val(av); !exact {
 						return nil, false, false
 					}
 				}
 			}
-			// An untyped winner still takes the typed argument's type.
-			// Keep it in the float domain so a later `/` does not become
-			// integer division; a typed integer winner already has Kind Int.
-			if floatResult && best.Kind() == constant.Int {
-				f, _ := constant.Float64Val(best)
-				best = constant.MakeFloat64(runtime.CanonConstZero(f))
+			pick := func(width int) (constant.Value, bool) {
+				var best constant.Value
+				for i, av := range args {
+					if !typedArgs[i] && (av.Kind() == constant.Int || av.Kind() == constant.Float) {
+						var f float64
+						if width == 32 {
+							v, _ := constant.Float32Val(av)
+							f = float64(v)
+						} else {
+							v, _ := constant.Float64Val(av)
+							f = v
+						}
+						av = constant.MakeFloat64(runtime.CanonConstZero(f))
+					}
+					if best == nil || constant.Compare(av, op, best) {
+						best = av
+					}
+				}
+				return best, best != nil
 			}
-			return best, bTyped, true
+			best32, ok32 := pick(32)
+			best64, ok64 := pick(64)
+			if !ok32 || !ok64 || constant.Compare(best32, token.NEQ, best64) {
+				return nil, false, false
+			}
+			return best64, true, true
 		default:
 			if len(x.Args) != 1 {
 				return nil, false, false
