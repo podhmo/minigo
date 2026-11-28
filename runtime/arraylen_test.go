@@ -10,6 +10,8 @@ import (
 	"weak"
 
 	"github.com/google/go-cmp/cmp"
+
+	"github.com/podhmo/minigo/index"
 )
 
 func arrayOf(len ast.Expr) *ast.ArrayType {
@@ -70,6 +72,36 @@ func TestFoldedArrayLen(t *testing.T) {
 				t.Errorf("folded literal mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestArrayTypedefFollowsNamedChains(t *testing.T) {
+	arr := arrayOf(intLit("2"))
+	arrSpec := &ast.TypeSpec{Name: ast.NewIdent("A"), Type: arr}
+	pkg := &Package{PackageImage: PackageImage{Index: &index.Index{Types: map[string]*index.TypeDeclInfo{
+		"A": {Decl: &index.Decl{Spec: arrSpec}},
+	}}}}
+	derivedSpec := &ast.TypeSpec{Name: ast.NewIdent("B"), Type: ast.NewIdent("A")}
+	derived := &TypeDef{Pkg: pkg, Name: "B", Spec: derivedSpec, Anon: derivedSpec.Type, Kind: KindNamedBasic}
+	if !ArrayTypedef(derived) {
+		t.Fatalf("ArrayTypedef(%s) = false, want true", derived.Name)
+	}
+	if got := ArrayASTOf(derived); got != arr {
+		t.Fatalf("ArrayASTOf(%s) = %p, want the chain's array node %p", derived.Name, got, arr)
+	}
+
+	localArr := &TypeDef{Name: "LA", Anon: arr, Kind: KindSlice}
+	localSpec := &ast.TypeSpec{Name: ast.NewIdent("LB"), Type: ast.NewIdent("LA")}
+	local := &TypeDef{Name: "LB", Spec: localSpec, Anon: localSpec.Type, Kind: KindNamedBasic,
+		LocalTypes: map[string]*TypeDef{"LA": localArr}}
+	if !ArrayTypedef(local) {
+		t.Fatalf("ArrayTypedef(%s) through LocalTypes = false, want true", local.Name)
+	}
+
+	sliceSpec := &ast.TypeSpec{Name: ast.NewIdent("S"), Type: &ast.ArrayType{Elt: ast.NewIdent("int")}}
+	sliceTd := &TypeDef{Pkg: pkg, Name: "S", Spec: sliceSpec, Anon: sliceSpec.Type, Kind: KindSlice}
+	if ArrayTypedef(sliceTd) {
+		t.Fatalf("ArrayTypedef(%s) = true for a slice, want false", sliceTd.Name)
 	}
 }
 

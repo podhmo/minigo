@@ -1563,22 +1563,52 @@ func ArrayTypedef(td *TypeDef) bool { return arrayTypedef(td) }
 // ArrayASTOf returns the ArrayType AST behind an array typedef (Anon or
 // the named spec's type) — nil when td is not array-shaped.
 func ArrayASTOf(td *TypeDef) *ast.ArrayType {
-	if td == nil {
-		return nil
-	}
-	at, _ := td.TypeExpr().(*ast.ArrayType)
-	return at
+	return arrayASTOf(td, 32)
 }
 
 // arrayTypedef reports whether a typedef is a fixed-size array — its
 // underlying AST is an ArrayType carrying a length (slices have none).
 func arrayTypedef(td *TypeDef) bool {
-	if td == nil {
-		return false
+	at := ArrayASTOf(td)
+	return at != nil && at.Len != nil
+}
+
+func arrayASTOf(td *TypeDef, depth int) *ast.ArrayType {
+	if td == nil || depth <= 0 {
+		return nil
 	}
-	x := td.TypeExpr()
-	at, ok := x.(*ast.ArrayType)
-	return ok && at.Len != nil
+	return arrayASTExpr(td, td.TypeExpr(), depth)
+}
+
+func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
+	for {
+		p, ok := x.(*ast.ParenExpr)
+		if !ok {
+			break
+		}
+		x = p.X
+	}
+	switch t := x.(type) {
+	case *ast.ArrayType:
+		return t
+	case *ast.Ident:
+		if lt := td.LocalTypes[t.Name]; lt != nil {
+			return arrayASTOf(lt, depth-1)
+		}
+		if td.Pkg == nil || td.Pkg.Index == nil {
+			return nil
+		}
+		info := td.Pkg.Index.Types[t.Name]
+		if info == nil || info.Decl == nil {
+			return nil
+		}
+		spec, ok := info.Decl.Spec.(*ast.TypeSpec)
+		if !ok {
+			return nil
+		}
+		return arrayASTExpr(td, spec.Type, depth-1)
+	}
+	return nil
 }
 
 // typeTagOf memoizes its spelling on the typedef itself (td.typeTag):

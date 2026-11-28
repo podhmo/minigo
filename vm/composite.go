@@ -3207,8 +3207,8 @@ func (v *VM) arrayLen(f *frame, td *runtime.TypeDef) (int64, bool) {
 	if td == nil {
 		return 0, false
 	}
-	at, ok := td.Anon.(*ast.ArrayType)
-	if !ok || at.Len == nil {
+	at := runtime.ArrayASTOf(td)
+	if at == nil || at.Len == nil {
 		return 0, false
 	}
 	// a canonical literal (`[3]T`) or an already-folded length answers
