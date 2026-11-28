@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/podhmo/minigo"
 	"github.com/podhmo/minigo/x/storybook"
 )
 
@@ -333,6 +334,52 @@ func init() { fmt.Println("sizes init") }
 	}
 	if diff := cmp.Diff("3/3/3/3/3/3/3/x", string(page.Body)); diff != "" {
 		t.Fatalf("cross-package array fixture output (-want +got):\n%s", diff)
+	}
+}
+
+func TestCheckUsesSetupBindings(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	_ "example.com/driver"
+)
+
+func StoryOK() { fmt.Print("ok") }
+`, nil)
+	setupRan := false
+	b := &storybook.Book{Dir: dir, Tag: "story", Setup: func(e *minigo.Engine) error {
+		setupRan = true
+		e.Bind("example.com/driver", nil)
+		return nil
+	}}
+	if err := b.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if !setupRan {
+		t.Error("Setup did not run")
+	}
+}
+
+func TestCheckReportsEveryFailure(t *testing.T) {
+	dir := storyPackage(t, `import "net/http"
+
+func StoryBroken() { panic("boom") }
+
+func StoryHttpError(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }
+
+func StoryHttpNotFound(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+`, nil)
+	err := (&storybook.Book{Dir: dir, Tag: "story"}).Check(t.Context())
+	if err == nil {
+		t.Fatal("want render-check failure")
+	}
+	msg := err.Error()
+	for _, want := range []string{"StoryBroken", "StoryHttpError", "unexpected status 500"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("check error missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "StoryHttpNotFound") {
+		t.Errorf("4xx stories are intentional states, not check failures:\n%s", msg)
 	}
 }
 

@@ -209,6 +209,29 @@ page's images, JavaScript, or routes likewise need an appropriate serving
 setup; file URLs and preview URLs are not the application's original
 origin. An iframe view is not an end-to-end browser test of the application.
 
+## Regression-checking every story
+
+`Book.Check` renders every discovered story through the same configured
+book used by the preview server. Consumers embedding `storybook.Book` can
+therefore keep CI coverage of fixture construction, template execution,
+and handler-shaped stories without copying the discovery-and-render loop:
+
+```go
+func TestStories(t *testing.T) {
+	book := &storybook.Book{Dir: "./app", Tag: "story", Setup: bindApp}
+	if err := book.Check(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+```
+
+`bindApp` is the application's ordinary `Book.Setup` hook, so host
+bindings registered there apply to the check as they do to preview
+renders. A story fails the check when rendering returns an error or the
+recorded status is 5xx (or otherwise outside 1xx–4xx). A 4xx status is
+accepted because stories can intentionally exercise not-found and
+validation-error pages; assert exact statuses in focused handler tests.
+
 ## Extension: generate display fixtures from types
 
 `github.com/podhmo/minigo/x/storybook/fixture` provides four generic
