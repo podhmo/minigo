@@ -128,6 +128,8 @@ type Pair [2]string
 type Pair2 Pair
 type Base struct{ Text string }
 type Defined Base
+type PtrMap[K comparable, V any] map[K]V
+type DerivedMap PtrMap[*[]int, int]
 type View struct {
 	Name Label
 	Count int
@@ -140,13 +142,16 @@ type View struct {
 	PtrScores map[*Inner]int
 	SlicePtrScores map[*[]int]int
 	Pair2 Pair2
+	DM DerivedMap
 	Next *View
 }
 
 func StoryGenerated() {
 	v := fixture.Minimal[View]()
-	fmt.Printf("%s/%d/%d/%t/%t/%d/%d/%s/%s/%t/%s/%d/%d/%s", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"], v.Badge, v.Pair[1], v.Next == nil, v.Defined.Text, len(v.PtrScores), len(v.SlicePtrScores), v.Pair2[1])
+	fmt.Printf("%s/%d/%d/%t/%t/%d/%d/%s/%s/%t/%s/%d/%d/%s/%d/%s", v.Name, v.Count, len(v.Tags), v.Tags[0] != "", v.Inner.Enabled, len(v.Scores), v.Scores["x"], v.Badge, v.Pair[1], v.Next == nil, v.Defined.Text, len(v.PtrScores), len(v.SlicePtrScores), v.Pair2[1], len(v.DM), copyProbe(v.Pair2))
 }
+
+func copyProbe(p Pair2) string { q := p; q[0] = "changed"; return p[0] }
 
 func StoryGeneratedLong() {
 	v := fixture.LongText[View]()
@@ -158,7 +163,7 @@ func StoryGeneratedLong() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diff := cmp.Diff("x/1/1/true/true/1/1/x/x/true/x/1/1/x", string(page.Body)); diff != "" {
+	if diff := cmp.Diff("x/1/1/true/true/1/1/x/x/true/x/1/1/x/1/x", string(page.Body)); diff != "" {
 		t.Fatalf("generated fixture output (-want +got):\n%s", diff)
 	}
 	page, err = b.Render(t.Context(), "StoryGeneratedLong")

@@ -186,7 +186,7 @@ func mapKeyType(vc runtime.VMCaller, td, u *runtime.TypeDef) *runtime.TypeDef {
 	if x == nil {
 		return nil
 	}
-	return typeExprType(vc, td, x)
+	return typeExprType(vc, u, x)
 }
 
 func typeExprType(vc runtime.VMCaller, from *runtime.TypeDef, x ast.Expr) *runtime.TypeDef {
