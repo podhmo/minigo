@@ -28,6 +28,7 @@ import (
 	"unsafe"
 
 	"github.com/podhmo/minigo/bytecode"
+	"github.com/podhmo/minigo/index"
 	"github.com/podhmo/minigo/internal/hostbridge"
 	"github.com/podhmo/minigo/runtime"
 )
@@ -3083,6 +3084,11 @@ func hostNewStructTagged(v runtime.Value) bool {
 func (v *VM) memberOf(p *runtime.Package, name string, constOnly ...bool) (runtime.Value, error) {
 	run := v.runInit
 	if len(constOnly) > 0 && constOnly[0] {
+		if p.Index != nil {
+			if d, ok := p.Index.Lookup(name); ok && d.Kind == index.VarDecl {
+				return nil, fmt.Errorf("constant expression cannot use variable %s.%s", p.Name, name)
+			}
+		}
 		run = nil
 	}
 	return p.MemberV(name, v.H.Materialize, run)

@@ -486,6 +486,23 @@ func hasCharLit(e ast.Expr) bool {
 	return found
 }
 
+// constShiftInt reads an integer-valued constant shift operand. Zero-imaginary
+// complex constants and integral float spellings are integer constants for
+// shifts, just as they are for conversions.
+func constShiftInt(cv constant.Value) constant.Value {
+	if cv.Kind() == constant.Complex {
+		real, ok := constRealPart(cv)
+		if !ok {
+			return constant.MakeUnknown()
+		}
+		cv = real
+	}
+	if cv.Kind() == constant.Float {
+		return constant.ToInt(cv)
+	}
+	return cv
+}
+
 // constValue evaluates an expression made only of literal constants and
 // returns its go/constant value. ok is false when any operand is not a
 // constant (identifiers, calls, index expressions), letting the caller
@@ -577,12 +594,8 @@ func constValue(e ast.Expr) (cv constant.Value, ok bool) {
 		case token.SHL, token.SHR:
 			// integer-valued float constants shift in the exact
 			// integer domain (`1e100 >> 1000`, `x << 1.`).
-			if lv.Kind() == constant.Float {
-				lv = constant.ToInt(lv)
-			}
-			if rv.Kind() == constant.Float {
-				rv = constant.ToInt(rv)
-			}
+			lv = constShiftInt(lv)
+			rv = constShiftInt(rv)
 			s, ok := constant.Uint64Val(rv)
 			if !ok {
 				return nil, false
@@ -855,12 +868,8 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			if lt == "?" || lt == "float32" || lt == "float64" || rt == "float32" || rt == "float64" {
 				return nil, "", false
 			}
-			if lv.Kind() == constant.Float {
-				lv = constant.ToInt(lv)
-			}
-			if rv.Kind() == constant.Float {
-				rv = constant.ToInt(rv)
-			}
+			lv = constShiftInt(lv)
+			rv = constShiftInt(rv)
 			n, ok := constant.Uint64Val(rv)
 			if !ok {
 				return nil, "", false
@@ -900,11 +909,15 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			if len(x.Args) != 1 {
 				return nil, "", false
 			}
-			sv, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota)
-			if !ok || sv.Kind() != constant.String {
-				return nil, "", false
+			if sv, _, ok := c.scopeConstVal(x.Args[0], depth+1, pkgIota); ok && sv.Kind() == constant.String {
+				return constant.MakeInt64(int64(len(constant.StringVal(sv)))), "", true
 			}
-			return constant.MakeInt64(int64(len(constant.StringVal(sv)))), "", true
+			if lv, ok := c.arrayLenOperand(x.Args[0], depth+1, pkgIota); ok {
+				if n, ok := constant.Int64Val(lv); ok {
+					return constant.MakeInt64(n), "", true
+				}
+			}
+			return nil, "", false
 		case "min", "max":
 			if len(x.Args) == 0 {
 				return nil, "", false

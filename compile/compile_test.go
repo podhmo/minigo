@@ -42,6 +42,7 @@ func TestConstExprValueIntegerResults(t *testing.T) {
 		{name: "float64 exact intermediate", expr: "int(float64(1e100) + float64(1e100) - float64(2e100) + float64(3))", want: 3},
 		{name: "unsigned bitwise complement", expr: "int(^uint8(252))", want: 3},
 		{name: "shift count type stays independent", expr: "int(uint8(1) << uint(2))", want: 4},
+		{name: "complex shift count", expr: "int(uint8(1) << (2 + 0i))", want: 4},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
