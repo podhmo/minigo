@@ -85,12 +85,16 @@ func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, seen map[*run
 			el[i] = convertOr(vc, et, scriptValue(vc, et, m, seen))
 		}
 		styp := td
-		// Copy recognizes arrays through the array type expression; a
-		// derived array's outer typedef only names the previous defined type.
+		// Copy recognizes arrays through the array type expression; keep
+		// that shape in the payload and tag the outer derived type for identity.
 		if _, ok := vc.ArrayLenOf(u); ok {
 			styp = u
 		}
-		return &runtime.Slice{Elems: el, Typ: styp}
+		out := &runtime.Slice{Elems: el, Typ: styp}
+		if styp != td {
+			return runtime.Tag(td, out)
+		}
+		return out
 	case runtime.KindMap:
 		return scriptMap(vc, td, u, m, seen)
 	default:

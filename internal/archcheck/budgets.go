@@ -270,7 +270,7 @@ var FileBudgets = map[string]int{
 	"internal/stdlib/importmanager/importmanager.go": 29,
 	"stdlibreg.go":                                   100,
 	"x/storybook/fixture/fixture.go":                 213,
-	"x/storybook/fixture/script.go":                  245,
+	"x/storybook/fixture/script.go":                  249,
 	"x/storybook/discover.go":                        263,
 	"x/storybook/storybook.go":                       175,
 	"x/storybook/watch.go":                           324,

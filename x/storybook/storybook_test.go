@@ -207,7 +207,7 @@ type Tree struct {
 func StoryDerivedShapes() {
 	ss := fixture.Minimal[Strings3]()
 	ip := fixture.Minimal[IntPtr3]()
-	p := fixture.Minimal[Pair2]()
+	var p Pair2 = fixture.Minimal[Pair2]()
 	q := p
 	q[0] = "changed"
 	c := fixture.Minimal[complex128]()
