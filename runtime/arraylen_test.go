@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/podhmo/minigo/index"
+	"github.com/podhmo/minigo/syntax"
 )
 
 func arrayOf(len ast.Expr) *ast.ArrayType {
@@ -92,7 +93,7 @@ func TestArrayTypedefFollowsNamedChains(t *testing.T) {
 
 	localArr := &TypeDef{Name: "LA", Anon: arr, Kind: KindSlice}
 	localSpec := &ast.TypeSpec{Name: ast.NewIdent("LB"), Type: ast.NewIdent("LA")}
-	local := &TypeDef{Name: "LB", Spec: localSpec, Anon: localSpec.Type, Kind: KindNamedBasic,
+	local := &TypeDef{Name: "LB", Spec: localSpec, Anon: localSpec.Type, Kind: KindNamedBasic, Local: true,
 		LocalTypes: map[string]*TypeDef{"LA": localArr}}
 	if !ArrayTypedef(local) {
 		t.Fatalf("ArrayTypedef(%s) through LocalTypes = false, want true", local.Name)
@@ -102,6 +103,46 @@ func TestArrayTypedefFollowsNamedChains(t *testing.T) {
 	sliceTd := &TypeDef{Pkg: pkg, Name: "S", Spec: sliceSpec, Anon: sliceSpec.Type, Kind: KindSlice}
 	if ArrayTypedef(sliceTd) {
 		t.Fatalf("ArrayTypedef(%s) = true for a slice, want false", sliceTd.Name)
+	}
+
+	// A package declaration resolves in package scope even when the use
+	// site's typedef carries a same-named function-local type.
+	pkgXSpec := &ast.TypeSpec{Name: ast.NewIdent("X"), Type: &ast.ArrayType{Elt: ast.NewIdent("int")}}
+	pkgSSpec := &ast.TypeSpec{Name: ast.NewIdent("PS"), Type: ast.NewIdent("X")}
+	pkg.Index.Types["X"] = &index.TypeDeclInfo{Decl: &index.Decl{Spec: pkgXSpec}}
+	pkg.Index.Types["PS"] = &index.TypeDeclInfo{Decl: &index.Decl{Spec: pkgSSpec}}
+	shadowed := &TypeDef{Pkg: pkg, Name: "PS", Spec: pkgSSpec, Anon: pkgSSpec.Type, Kind: KindNamedBasic,
+		LocalTypes: map[string]*TypeDef{"X": localArr}}
+	if ArrayTypedef(shadowed) {
+		t.Fatalf("ArrayTypedef(%s) followed a use-site local type, want the package slice", shadowed.Name)
+	}
+
+	// Qualified declarations resolve through the importing file's imports.
+	modelArr := arrayOf(intLit("2"))
+	modelSpec := &ast.TypeSpec{Name: ast.NewIdent("Pair"), Type: modelArr}
+	modelPkg := &Package{PackageImage: PackageImage{Index: &index.Index{Types: map[string]*index.TypeDeclInfo{
+		"Pair": {Decl: &index.Decl{Spec: modelSpec}},
+	}}}}
+	useFile := &syntax.File{}
+	mainPkg := &Package{PackageInstance: PackageInstance{Scopes: map[*syntax.File]map[string]*ImportRef{
+		useFile: {"model": {Path: "example.test/model", Load: func(string) (*Package, error) { return modelPkg, nil }}},
+	}}}
+	qualifiedSpec := &ast.TypeSpec{Name: ast.NewIdent("QP"), Type: &ast.SelectorExpr{X: ast.NewIdent("model"), Sel: ast.NewIdent("Pair")}}
+	qualified := &TypeDef{Pkg: mainPkg, Name: "QP", File: useFile, Spec: qualifiedSpec, Anon: qualifiedSpec.Type, Kind: KindNamedBasic}
+	if !ArrayTypedef(qualified) {
+		t.Fatalf("ArrayTypedef(%s) through an imported type = false, want true", qualified.Name)
+	}
+
+	// Invalid cyclic declarations still terminate: the walk is bounded.
+	cycleASpec := &ast.TypeSpec{Name: ast.NewIdent("CA"), Type: ast.NewIdent("CB")}
+	cycleBSpec := &ast.TypeSpec{Name: ast.NewIdent("CB"), Type: ast.NewIdent("CA")}
+	cyclePkg := &Package{PackageImage: PackageImage{Index: &index.Index{Types: map[string]*index.TypeDeclInfo{
+		"CA": {Decl: &index.Decl{Spec: cycleASpec}},
+		"CB": {Decl: &index.Decl{Spec: cycleBSpec}},
+	}}}}
+	cyclic := &TypeDef{Pkg: cyclePkg, Name: "CA", Spec: cycleASpec, Anon: cycleASpec.Type, Kind: KindNamedBasic}
+	if ArrayTypedef(cyclic) {
+		t.Fatalf("ArrayTypedef(%s) = true for a cyclic non-array declaration", cyclic.Name)
 	}
 }
 

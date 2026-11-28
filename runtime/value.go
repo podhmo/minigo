@@ -1581,6 +1581,9 @@ func arrayASTOf(td *TypeDef, depth int) *ast.ArrayType {
 }
 
 func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
+	if depth <= 0 {
+		return nil
+	}
 	for {
 		p, ok := x.(*ast.ParenExpr)
 		if !ok {
@@ -1592,23 +1595,66 @@ func arrayASTExpr(td *TypeDef, x ast.Expr, depth int) *ast.ArrayType {
 	case *ast.ArrayType:
 		return t
 	case *ast.Ident:
-		if lt := td.LocalTypes[t.Name]; lt != nil {
-			return arrayASTOf(lt, depth-1)
+		if td.Local || td.Spec == nil {
+			if lt := td.LocalTypes[t.Name]; lt != nil {
+				return arrayASTOf(lt, depth-1)
+			}
 		}
-		if td.Pkg == nil || td.Pkg.Index == nil {
+		spec, file := typeSpecInPackage(td.Pkg, t.Name)
+		if spec == nil {
 			return nil
 		}
-		info := td.Pkg.Index.Types[t.Name]
-		if info == nil || info.Decl == nil {
+		ctx := &TypeDef{Pkg: td.Pkg, File: file}
+		return arrayASTExpr(ctx, spec.Type, depth-1)
+	case *ast.SelectorExpr:
+		pkgid, ok := t.X.(*ast.Ident)
+		if !ok || td.Pkg == nil || td.File == nil {
 			return nil
 		}
-		spec, ok := info.Decl.Spec.(*ast.TypeSpec)
-		if !ok {
+		ref := td.Pkg.Scopes[td.File][pkgid.Name]
+		if ref == nil {
 			return nil
 		}
-		return arrayASTExpr(td, spec.Type, depth-1)
+		ip := materializeImportRef(ref)
+		if ip == nil {
+			return nil
+		}
+		spec, file := typeSpecInPackage(ip, t.Sel.Name)
+		if spec == nil {
+			return nil
+		}
+		ctx := &TypeDef{Pkg: ip, File: file}
+		return arrayASTExpr(ctx, spec.Type, depth-1)
 	}
 	return nil
+}
+
+func typeSpecInPackage(pkg *Package, name string) (*ast.TypeSpec, *syntax.File) {
+	if pkg == nil || pkg.Index == nil {
+		return nil, nil
+	}
+	info := pkg.Index.Types[name]
+	if info == nil || info.Decl == nil {
+		return nil, nil
+	}
+	spec, ok := info.Decl.Spec.(*ast.TypeSpec)
+	if !ok {
+		return nil, nil
+	}
+	return spec, info.Decl.File
+}
+
+func materializeImportRef(ref *ImportRef) (pkg *Package) {
+	defer func() {
+		if recover() != nil {
+			pkg = nil
+		}
+	}()
+	p, err := ref.Materialize()
+	if err != nil {
+		return nil
+	}
+	return p
 }
 
 // typeTagOf memoizes its spelling on the typedef itself (td.typeTag):
