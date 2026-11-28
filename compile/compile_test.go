@@ -80,3 +80,13 @@ func TestConstExprValueTypedIntegerDivision(t *testing.T) {
 		t.Fatalf("typed integer division (-want +got):\n%s", diff)
 	}
 }
+
+func TestConstExprValueRejectsRoundedMinWinner(t *testing.T) {
+	e, err := parser.ParseExpr("int(max(float32(0), 2.99999999))")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cv, ok := ConstExprValue(nil, nil, e); ok {
+		t.Fatalf("rounded min winner folded to %v; conversion precision is unknown", cv)
+	}
+}

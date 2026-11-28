@@ -881,6 +881,8 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 			}
 			var best constant.Value
 			var bTyped, floatResult bool
+			var args []constant.Value
+			var typedArgs []bool
 			for _, a := range x.Args {
 				av, at, ok := c.scopeConstVal(a, depth+1, pkgIota)
 				if !ok {
@@ -888,8 +890,25 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 				}
 				bTyped = bTyped || at
 				floatResult = floatResult || at && av.Kind() == constant.Float
+				args = append(args, av)
+				typedArgs = append(typedArgs, at)
 				if best == nil || constant.Compare(av, op, best) {
 					best = av
+				}
+			}
+			if floatResult {
+				// Untyped arguments convert to the typed argument's float
+				// type before comparison. Without that type's precision,
+				// accept only values exact even at float32 precision; a
+				// wider valid case stays for runtime evaluation rather
+				// than risking a differently-rounded winner.
+				for i, av := range args {
+					if typedArgs[i] || (av.Kind() != constant.Int && av.Kind() != constant.Float) {
+						continue
+					}
+					if _, exact := constant.Float32Val(av); !exact {
+						return nil, false, false
+					}
 				}
 			}
 			// An untyped winner still takes the typed argument's type.
