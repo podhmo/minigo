@@ -269,7 +269,9 @@ type Pair [sizes.N]string
 
 import "fmt"
 
-const N = int(3)
+const F float32 = 2.999999999999999999
+
+const N = int(F)
 
 func init() { fmt.Println("sizes init") }
 `,

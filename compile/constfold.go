@@ -680,7 +680,12 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 						if !ok {
 							return nil, false, false
 						}
-						return cv, vtyped || vs.Type != nil || cd.InheritedType != nil, true
+						te := vs.Type
+						if te == nil {
+							te = cd.InheritedType
+						}
+						cv = c.roundConstForType(cv, te)
+						return cv, vtyped || te != nil, true
 					}
 				}
 			}
@@ -739,7 +744,12 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 		if !ok {
 			return nil, false, false
 		}
-		return cv, vtyped || vs.Type != nil || cd.InheritedType != nil, true
+		te := vs.Type
+		if te == nil {
+			te = cd.InheritedType
+		}
+		cv = nc.roundConstForType(cv, te)
+		return cv, vtyped || te != nil, true
 	case *ast.UnaryExpr:
 		xv, xt, ok := c.scopeConstVal(x.X, depth+1, pkgIota)
 		if !ok {
@@ -860,6 +870,33 @@ func (c *compiler) scopeConstVal(e ast.Expr, depth, pkgIota int) (cv constant.Va
 		}
 	}
 	return nil, false, false
+}
+
+// roundConstForType applies the one narrowing a typed constant's
+// declaration implies for array-length evaluation: constants stay exact
+// in the source expression, but binding one to a float type rounds it to
+// that type's precision. Integer types do not round — an out-of-range
+// constant is invalid rather than modular — so they keep the exact
+// payload here.
+func (c *compiler) roundConstForType(cv constant.Value, te ast.Expr) constant.Value {
+	if cv == nil || te == nil {
+		return cv
+	}
+	id, ok := ast.Unparen(c.unfoldTypExpr(te, 8)).(*ast.Ident)
+	if !ok {
+		return cv
+	}
+	// Float32Val/Float64Val's ok result reports exactness; constant
+	// conversion to a float type rounds inexact values instead.
+	switch id.Name {
+	case "float32":
+		f, _ := constant.Float32Val(cv)
+		return constant.MakeFloat64(runtime.CanonConstZero(float64(f)))
+	case "float64":
+		f, _ := constant.Float64Val(cv)
+		return constant.MakeFloat64(runtime.CanonConstZero(f))
+	}
+	return cv
 }
 
 func constIntConvType(name string) bool {
