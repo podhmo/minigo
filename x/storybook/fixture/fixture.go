@@ -34,7 +34,7 @@ func LongText[T any]() T { return build[T](modeLongText) }
 
 func build[T any](m mode) T {
 	var z T
-	out := buildValue(reflect.TypeOf(z), m, 0, map[reflect.Type]bool{})
+	out := buildValue(reflect.TypeOf(z), m, map[reflect.Type]bool{})
 	if !out.IsValid() {
 		return z
 	}
@@ -44,8 +44,8 @@ func build[T any](m mode) T {
 	return z
 }
 
-func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) reflect.Value {
-	if t == nil || depth > 5 {
+func buildValue(t reflect.Type, m mode, seen map[reflect.Type]bool) reflect.Value {
+	if t == nil {
 		return reflect.Value{}
 	}
 	if m == modeEmpty {
@@ -62,7 +62,7 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 			return reflect.Zero(t)
 		}
 		p := reflect.New(t.Elem())
-		if v := buildValue(t.Elem(), m, depth+1, seen); v.IsValid() {
+		if v := buildValue(t.Elem(), m, seen); v.IsValid() {
 			p.Elem().Set(v)
 		}
 		if p.Type() != t {
@@ -76,7 +76,7 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 			if !f.CanSet() {
 				continue
 			}
-			if fv := buildValue(t.Field(i).Type, m, depth+1, seen); fv.IsValid() {
+			if fv := buildValue(t.Field(i).Type, m, seen); fv.IsValid() {
 				f.Set(fv)
 			}
 		}
@@ -85,7 +85,7 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 		n := countFor(t, m)
 		v := reflect.MakeSlice(t, n, n)
 		for i := range n {
-			if ev := buildValue(t.Elem(), m, depth+1, seen); ev.IsValid() {
+			if ev := buildValue(t.Elem(), m, seen); ev.IsValid() {
 				v.Index(i).Set(ev)
 			}
 		}
@@ -93,7 +93,7 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 	case reflect.Array:
 		v := reflect.New(t).Elem()
 		for i := range t.Len() {
-			if ev := buildValue(t.Elem(), m, depth+1, seen); ev.IsValid() {
+			if ev := buildValue(t.Elem(), m, seen); ev.IsValid() {
 				v.Index(i).Set(ev)
 			}
 		}
@@ -102,8 +102,8 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 		n := countFor(t, m)
 		v := reflect.MakeMapWithSize(t, n)
 		for i := range n {
-			kv := buildValue(t.Key(), m, depth+1, seen)
-			ev := buildValue(t.Elem(), m, depth+1, seen)
+			kv := buildValue(t.Key(), m, seen)
+			ev := buildValue(t.Elem(), m, seen)
 			if kv.IsValid() && ev.IsValid() {
 				kv = varyKey(kv, i)
 				v.SetMapIndex(kv, ev)
@@ -122,6 +122,10 @@ func buildValue(t reflect.Type, m mode, depth int, seen map[reflect.Type]bool) r
 		return floatValue(t, m, math.MaxFloat32)
 	case reflect.Float64:
 		return floatValue(t, m, math.MaxFloat64)
+	case reflect.Complex64:
+		return complexValue(t, m, math.MaxFloat32)
+	case reflect.Complex128:
+		return complexValue(t, m, math.MaxFloat64)
 	}
 	return reflect.Zero(t)
 }
@@ -161,6 +165,16 @@ func floatValue(t reflect.Type, m mode, max float64) reflect.Value {
 	}
 	out := reflect.New(t).Elem()
 	out.SetFloat(v)
+	return out
+}
+
+func complexValue(t reflect.Type, m mode, max float64) reflect.Value {
+	v := complex(1, 1)
+	if m == modeMaximal {
+		v = complex(max, max)
+	}
+	out := reflect.New(t).Elem()
+	out.SetComplex(v)
 	return out
 }
 

@@ -72,3 +72,23 @@ func TestNativeCompositeShapes(t *testing.T) {
 		t.Fatalf("composite Minimal mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestNativeComplexAndDeepShapes(t *testing.T) {
+	if diff := cmp.Diff(complex128(complex(1, 1)), Minimal[complex128]()); diff != "" {
+		t.Fatalf("complex128 Minimal mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(complex64(complex(1, 1)), Minimal[complex64]()); diff != "" {
+		t.Fatalf("complex64 Minimal mismatch (-want +got):\n%s", diff)
+	}
+
+	type n1 struct{ S string }
+	type n2 struct{ F n1 }
+	type n3 struct{ F n2 }
+	type n4 struct{ F n3 }
+	type n5 struct{ F n4 }
+	type n6 struct{ F n5 }
+	type n7 struct{ F n6 }
+	if diff := cmp.Diff("x", Minimal[n7]().F.F.F.F.F.F.S); diff != "" {
+		t.Fatalf("deep Minimal mismatch (-want +got):\n%s", diff)
+	}
+}

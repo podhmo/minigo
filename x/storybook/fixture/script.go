@@ -34,12 +34,12 @@ func genericFixture(name string, m mode) *runtime.BuiltinFunc {
 		if !ok || td == nil {
 			return nil, fmt.Errorf("%s: type argument is %T, not a type", name, targs[0])
 		}
-		return scriptValue(vc, td, m, 0, map[*runtime.TypeDef]bool{}), nil
+		return scriptValue(vc, td, m, map[*runtime.TypeDef]bool{}), nil
 	}}
 }
 
-func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, depth int, seen map[*runtime.TypeDef]bool) runtime.Value {
-	if td == nil || depth > 5 || seen[td] || m == modeEmpty {
+func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, seen map[*runtime.TypeDef]bool) runtime.Value {
+	if td == nil || seen[td] || m == modeEmpty {
 		return vc.Zero(td)
 	}
 	seen[td] = true
@@ -62,31 +62,37 @@ func scriptValue(vc runtime.VMCaller, td *runtime.TypeDef, m mode, depth int, se
 		}
 		for i := range st.Fields {
 			if i < len(fts) && fts[i] != nil {
-				st.Fields[i] = convertOr(vc, fts[i], scriptValue(vc, fts[i], m, depth+1, seen))
+				st.Fields[i] = convertOr(vc, fts[i], scriptValue(vc, fts[i], m, seen))
 			}
 		}
 		return z
 	case runtime.KindNamedBasic:
 		return convertOr(vc, td, scalarValue(u, m))
 	case runtime.KindPointer:
-		et, err := vc.ElemOf(td)
+		et, err := vc.ElemOf(u)
 		if err != nil || et == nil || seen[et] {
 			return vc.Zero(td)
 		}
-		return convertOr(vc, td, &runtime.Cell{Elem: scriptValue(vc, et, m, depth+1, seen)})
+		return convertOr(vc, td, &runtime.Cell{Elem: scriptValue(vc, et, m, seen)})
 	case runtime.KindSlice:
-		et, err := vc.ElemOf(td)
+		et, err := vc.ElemOf(u)
 		if err != nil || et == nil {
 			return vc.Zero(td)
 		}
 		n := scriptCount(vc, td, u, m)
 		el := make([]runtime.Value, n)
 		for i := range el {
-			el[i] = convertOr(vc, et, scriptValue(vc, et, m, depth+1, seen))
+			el[i] = convertOr(vc, et, scriptValue(vc, et, m, seen))
 		}
-		return &runtime.Slice{Elems: el, Typ: td}
+		styp := td
+		// Copy recognizes arrays through the array type expression; a
+		// derived array's outer typedef only names the previous defined type.
+		if _, ok := vc.ArrayLenOf(u); ok {
+			styp = u
+		}
+		return &runtime.Slice{Elems: el, Typ: styp}
 	case runtime.KindMap:
-		return scriptMap(vc, td, u, m, depth, seen)
+		return scriptMap(vc, td, u, m, seen)
 	default:
 		return vc.Zero(td)
 	}
@@ -112,6 +118,16 @@ func scalarValue(td *runtime.TypeDef, m mode) runtime.Value {
 			return float64(math.MaxFloat64)
 		}
 		return float64(1.25)
+	case "complex64":
+		if m == modeMaximal {
+			return &runtime.GoValue{V: complex64(complex(math.MaxFloat32, math.MaxFloat32))}
+		}
+		return &runtime.GoValue{V: complex64(complex(1, 1))}
+	case "complex128":
+		if m == modeMaximal {
+			return &runtime.GoValue{V: complex(math.MaxFloat64, math.MaxFloat64)}
+		}
+		return &runtime.GoValue{V: complex(1, 1)}
 	case "uint", "uint64", "uintptr", "int", "int64":
 		// script integers are int64-shaped; use the largest
 		// representable positive value rather than a negative wrap.
@@ -153,7 +169,7 @@ func scriptCount(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode) int {
 	return 1
 }
 
-func scriptMap(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode, depth int, seen map[*runtime.TypeDef]bool) runtime.Value {
+func scriptMap(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode, seen map[*runtime.TypeDef]bool) runtime.Value {
 	vt, err := vc.ElemOf(u)
 	if err != nil || vt == nil {
 		return vc.Zero(td)
@@ -168,9 +184,9 @@ func scriptMap(vc runtime.VMCaller, td, u *runtime.TypeDef, m mode, depth int, s
 	}
 	out := vc.NewMap(td)
 	for i := range n {
-		k := scriptValue(vc, kt, m, depth+1, seen)
+		k := scriptValue(vc, kt, m, seen)
 		k = varyScriptKey(k, i)
-		v := scriptValue(vc, vt, m, depth+1, seen)
+		v := scriptValue(vc, vt, m, seen)
 		out.Insert(convertOr(vc, kt, k), convertOr(vc, vt, v))
 	}
 	return out

@@ -178,6 +178,54 @@ func StoryGeneratedLong() {
 	}
 }
 
+func TestRenderGeneratedFixtureDerivedShapes(t *testing.T) {
+	dir := storyPackage(t, `import (
+	"fmt"
+	"github.com/podhmo/minigo/x/storybook/fixture"
+)
+
+type Strings []string
+type Strings2 Strings
+type Strings3 Strings2
+type IntPtr *int
+type IntPtr2 IntPtr
+type IntPtr3 IntPtr2
+type Pair [2]string
+type Pair2 Pair
+type N1 struct{ S string }
+type N2 struct{ F N1 }
+type N3 struct{ F N2 }
+type N4 struct{ F N3 }
+type N5 struct{ F N4 }
+type N6 struct{ F N5 }
+type N7 struct{ F N6 }
+type Tree struct {
+	Children []Tree
+	ByName   map[string]Tree
+}
+
+func StoryDerivedShapes() {
+	ss := fixture.Minimal[Strings3]()
+	ip := fixture.Minimal[IntPtr3]()
+	p := fixture.Minimal[Pair2]()
+	q := p
+	q[0] = "changed"
+	c := fixture.Minimal[complex128]()
+	deep := fixture.Minimal[N7]()
+	tree := fixture.Minimal[Tree]()
+	fmt.Printf("%s/%d/%s/%t/%t/%d/%d", ss[0], *ip, p[0], real(c) != 0, deep.F.F.F.F.F.F.S != "", len(tree.Children), len(tree.ByName))
+}
+`, nil)
+	b := &storybook.Book{Dir: dir, Tag: "story"}
+	page, err := b.Render(t.Context(), "StoryDerivedShapes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := cmp.Diff("x/1/x/true/true/1/1", string(page.Body)); diff != "" {
+		t.Fatalf("derived fixture output (-want +got):\n%s", diff)
+	}
+}
+
 func TestDiscoverRejectsBadShape(t *testing.T) {
 	for _, tc := range []struct {
 		decl, want string
